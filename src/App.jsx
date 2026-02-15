@@ -1565,18 +1565,60 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
             Track selections, pricing, and budget across {FINISH_CATEGORIES.length} trades and {FINISH_ROOMS.length} rooms
           </p>
         </div>
-        <button
-          onClick={() => setShowAddForm(!showAddForm)}
-          style={{
-            padding: "10px 20px", borderRadius: 8, border: "none",
-            background: C.mint, color: C.white,
-            fontFamily: font, fontSize: 13, fontWeight: 700, cursor: "pointer",
-            display: "flex", alignItems: "center", gap: 6,
-            boxShadow: "0 2px 8px rgba(46,175,123,0.25)",
-          }}
-        >
-          <span style={{ fontSize: 16, lineHeight: 1 }}>+</span> Add Item
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={() => {
+              const headers = ["Trade", "Room", "Item", "Contractor Options", "Selection", "Unit Price", "Quantity", "Unit", "Line Total", "Product Link", "Notes"];
+              const csvRows = [headers.join(",")];
+              finishes.forEach(item => {
+                const catLabel = FINISH_CATEGORIES.find(c => c.id === item.category)?.label || item.category;
+                const roomLabel = FINISH_ROOMS.find(r => r.id === item.room)?.label || item.room;
+                const lineTotal = (item.unitPrice != null && item.quantity != null) ? item.unitPrice * item.quantity : "";
+                const esc = (s) => `"${String(s || "").replace(/"/g, '""')}"`;
+                csvRows.push([
+                  esc(catLabel), esc(roomLabel), esc(item.item),
+                  esc((item.contractorOptions || []).join("; ")),
+                  esc(item.selection), item.unitPrice ?? "", item.quantity ?? "",
+                  esc(item.unit), lineTotal, esc(item.url), esc(item.notes),
+                ].join(","));
+              });
+              if (targetBudget != null) {
+                csvRows.push("");
+                csvRows.push(`"Budget Target",,,,,,,,${targetBudget},,`);
+                const grandTotal = finishes.reduce((s, i) => s + ((i.unitPrice ?? 0) * (i.quantity ?? 0)), 0);
+                csvRows.push(`"Grand Total",,,,,,,,${grandTotal},,`);
+                csvRows.push(`"Variance",,,,,,,,${targetBudget - grandTotal},,`);
+              }
+              const blob = new Blob([csvRows.join("\n")], { type: "text/csv" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "pool-paddle-finishes.csv";
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+            style={{
+              padding: "10px 16px", borderRadius: 8,
+              border: `1px solid ${C.border}`, background: C.white, color: C.textSecondary,
+              fontFamily: font, fontSize: 13, fontWeight: 600, cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 6,
+            }}
+          >
+            Export CSV
+          </button>
+          <button
+            onClick={() => setShowAddForm(!showAddForm)}
+            style={{
+              padding: "10px 20px", borderRadius: 8, border: "none",
+              background: C.mint, color: C.white,
+              fontFamily: font, fontSize: 13, fontWeight: 700, cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 6,
+              boxShadow: "0 2px 8px rgba(46,175,123,0.25)",
+            }}
+          >
+            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span> Add Item
+          </button>
+        </div>
       </div>
 
       {/* Budget Summary Bar */}
@@ -1797,11 +1839,17 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                       }}
                     >
                       {/* Selection status dot */}
-                      <div style={{
-                        width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                        background: item.selection ? C.mint : C.borderLight,
-                        border: item.selection ? "none" : `1.5px solid ${C.textMuted}`,
-                      }} />
+                      {(() => {
+                        const filled = item.selection && item.selection.trim() !== "";
+                        return (
+                          <div style={{
+                            width: 10, height: 10, borderRadius: "50%", flexShrink: 0,
+                            background: filled ? C.mint : "transparent",
+                            border: `2px solid ${filled ? C.mint : C.textMuted}`,
+                            transition: "all 0.2s",
+                          }} />
+                        );
+                      })()}
 
                       {/* Item name */}
                       <div style={{ flex: 1, minWidth: 0 }}>
@@ -1881,9 +1929,10 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                     {/* Expanded edit panel */}
                     {isExpanded && (
                       <div style={{
-                        padding: "14px 16px 16px 34px",
-                        background: C.offWhite,
+                        padding: "16px 20px 18px 38px",
+                        background: C.white,
                         borderBottom: i < arr.length - 1 ? `1px solid ${C.borderLight}` : "none",
+                        borderTop: `1px solid ${C.borderLight}`,
                       }}>
                         {/* Contractor options reference */}
                         {item.contractorOptions && item.contractorOptions.length > 0 && (
@@ -1908,69 +1957,66 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                           </div>
                         )}
 
+                        {(() => {
+                          const inputStyle = {
+                            width: "100%", padding: "10px 12px", borderRadius: 8,
+                            border: `1.5px solid ${C.border}`, background: C.pageBg,
+                            color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
+                            outline: "none", boxSizing: "border-box",
+                          };
+                          return (<>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                           {/* Selection */}
                           <div style={{ gridColumn: "1 / -1" }}>
-                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Selection</label>
+                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 }}>Selection</label>
                             <input
                               type="text" value={item.selection || ""}
                               onChange={e => updateItem(item.id, { selection: e.target.value })}
                               onClick={e => e.stopPropagation()}
                               placeholder="Type or click a contractor option above"
-                              style={{
-                                width: "100%", padding: "8px 12px", borderRadius: 6,
-                                border: `1.5px solid ${C.border}`, background: C.white,
-                                color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
-                                outline: "none", boxSizing: "border-box",
-                              }}
-                              onFocus={e => e.target.style.borderColor = C.mint}
-                              onBlur={e => e.target.style.borderColor = C.border}
+                              style={inputStyle}
+                              onFocus={e => { e.target.style.borderColor = C.mint; e.target.style.background = C.white; }}
+                              onBlur={e => { e.target.style.borderColor = C.border; e.target.style.background = C.pageBg; }}
                             />
                           </div>
 
                           {/* Unit Price */}
                           <div>
-                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Unit Price ($)</label>
+                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 }}>Unit Price ($)</label>
                             <input
                               type="number" value={item.unitPrice ?? ""}
                               onChange={e => updateItem(item.id, { unitPrice: e.target.value === "" ? null : parseFloat(e.target.value) })}
                               onClick={e => e.stopPropagation()}
                               placeholder="0.00"
-                              style={{
-                                width: "100%", padding: "8px 12px", borderRadius: 6,
-                                border: `1.5px solid ${C.border}`, background: C.white,
-                                color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
-                                outline: "none", boxSizing: "border-box",
-                              }}
+                              style={inputStyle}
+                              onFocus={e => { e.target.style.borderColor = C.mint; e.target.style.background = C.white; }}
+                              onBlur={e => { e.target.style.borderColor = C.border; e.target.style.background = C.pageBg; }}
                             />
                           </div>
 
                           {/* Quantity + Unit */}
                           <div style={{ display: "flex", gap: 8 }}>
                             <div style={{ flex: 1 }}>
-                              <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Quantity</label>
+                              <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 }}>Quantity</label>
                               <input
                                 type="number" value={item.quantity ?? ""}
                                 onChange={e => updateItem(item.id, { quantity: e.target.value === "" ? null : parseFloat(e.target.value) })}
                                 onClick={e => e.stopPropagation()}
                                 placeholder="0"
-                                style={{
-                                  width: "100%", padding: "8px 12px", borderRadius: 6,
-                                  border: `1.5px solid ${C.border}`, background: C.white,
-                                  color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
-                                  outline: "none", boxSizing: "border-box",
-                                }}
+                                style={inputStyle}
+                                onFocus={e => { e.target.style.borderColor = C.mint; e.target.style.background = C.white; }}
+                                onBlur={e => { e.target.style.borderColor = C.border; e.target.style.background = C.pageBg; }}
                               />
                             </div>
                             <div style={{ width: 80 }}>
-                              <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Unit</label>
+                              <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 }}>Unit</label>
                               <select
                                 value={item.unit || "ea"}
                                 onChange={e => { e.stopPropagation(); updateItem(item.id, { unit: e.target.value }); }}
                                 onClick={e => e.stopPropagation()}
                                 style={{
-                                  width: "100%", padding: "8px 6px", borderRadius: 6,
-                                  border: `1.5px solid ${C.border}`, background: C.white,
+                                  width: "100%", padding: "10px 6px", borderRadius: 8,
+                                  border: `1.5px solid ${C.border}`, background: C.pageBg,
                                   color: C.charcoal, fontFamily: font, fontSize: 12, fontWeight: 500,
                                 }}
                               >
@@ -1986,35 +2032,29 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
 
                           {/* URL */}
                           <div style={{ gridColumn: "1 / -1" }}>
-                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Product Link</label>
+                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 }}>Product Link</label>
                             <input
                               type="url" value={item.url || ""}
                               onChange={e => updateItem(item.id, { url: e.target.value })}
                               onClick={e => e.stopPropagation()}
                               placeholder="https://..."
-                              style={{
-                                width: "100%", padding: "8px 12px", borderRadius: 6,
-                                border: `1.5px solid ${C.border}`, background: C.white,
-                                color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
-                                outline: "none", boxSizing: "border-box",
-                              }}
+                              style={inputStyle}
+                              onFocus={e => { e.target.style.borderColor = C.mint; e.target.style.background = C.white; }}
+                              onBlur={e => { e.target.style.borderColor = C.border; e.target.style.background = C.pageBg; }}
                             />
                           </div>
 
                           {/* Notes */}
                           <div style={{ gridColumn: "1 / -1" }}>
-                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Notes</label>
+                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 }}>Notes</label>
                             <input
                               type="text" value={item.notes || ""}
                               onChange={e => updateItem(item.id, { notes: e.target.value })}
                               onClick={e => e.stopPropagation()}
                               placeholder="Any notes about this selection..."
-                              style={{
-                                width: "100%", padding: "8px 12px", borderRadius: 6,
-                                border: `1.5px solid ${C.border}`, background: C.white,
-                                color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
-                                outline: "none", boxSizing: "border-box",
-                              }}
+                              style={inputStyle}
+                              onFocus={e => { e.target.style.borderColor = C.mint; e.target.style.background = C.white; }}
+                              onBlur={e => { e.target.style.borderColor = C.border; e.target.style.background = C.pageBg; }}
                             />
                           </div>
                         </div>
@@ -2028,6 +2068,9 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                             Line total: {fmtMoney(lineTotal)} ({item.quantity} {item.unit} × ${item.unitPrice}/{item.unit})
                           </div>
                         )}
+                        </>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>
