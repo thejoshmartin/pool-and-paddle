@@ -2257,6 +2257,17 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
 
                           return (<>
 
+                        {/* Editable item name */}
+                        <div style={{ marginBottom: 14 }}>
+                          <label style={labelStyle}>Item Name</label>
+                          <input
+                            type="text" value={item.item || ""}
+                            onChange={e => updateItem(item.id, { item: e.target.value })}
+                            onClick={e => e.stopPropagation()}
+                            style={inputStyle} {...focusHandlers}
+                          />
+                        </div>
+
                         {/* Linked item banner */}
                         {item.linkedTo && parentItem && (
                           <div style={{
