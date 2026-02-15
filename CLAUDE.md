@@ -4,7 +4,7 @@
 Luxury STR (short-term rental) command center for Josh & KM's beach house. Single-page React app with 5 tabs: Dashboard, Executive Brief, Podcast Intel, Task Tracker, and Design (finish selections). Deployed on Vercel with Upstash Redis for shared state.
 
 ## Architecture
-- **Single file app**: Everything lives in `src/App.jsx` (~2200 lines). All components, state, and styling are inline.
+- **Single file app**: Everything lives in `src/App.jsx` (~2700 lines). All components, state, and styling are inline.
 - **No routing**: Tab switching via `activeView` state in the App component.
 - **Design tokens**: All colors/fonts in `C` object and `font` variable at top of file. Use these — never hardcode colors.
 - **Inline styles only**: No CSS files. All styling is React inline `style={{}}` objects.
