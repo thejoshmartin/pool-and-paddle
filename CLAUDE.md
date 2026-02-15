@@ -18,7 +18,7 @@ Luxury STR (short-term rental) command center for Josh & KM's beach house. Singl
 
 ## API Routes (Vercel Serverless)
 - `api/tasks.js` — GET/PUT, Redis key: `tasks`, stores array of task objects
-- `api/finishes.js` — GET/PUT, Redis key: `finishes`, stores `{ items: [...], targetBudget: number|null }`
+- `api/finishes.js` — GET/PUT, Redis key: `finishes`, stores `{ items: [...], targetBudget: number|null, roomData: {...} }`
 - `middleware.js` — Password protection via Vercel Edge Middleware
 
 ## Design Tab Data Model
@@ -29,6 +29,8 @@ Items have: `id, category, room, item, contractorOptions[], selection, unitPrice
 Categories (11 trades): flooring, shower-bath-tile, kitchens, countertops, paint, decking, doors, plumbing, appliances, electrical, drywall
 
 Rooms (14): whole-house, master-suite, bed1-bath, bed2, bed3-bath, bunk-bath, pool-bath, upper-half-bath, kitchen, wet-bar, summer-kitchen, laundry, garage, exterior
+
+**Room data** (`roomData` state): Per-room metadata stored as `{ [roomId]: { miroUrl: string, furniture: [...] } }`. Each furniture item has: `id, name, price, url, notes, purchased`. Persisted alongside finishes in the same Redis payload. Miro URLs are simple link-outs (no API integration).
 
 ## Build & Deploy
 ```bash
