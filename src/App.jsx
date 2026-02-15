@@ -1454,7 +1454,7 @@ function mergeFinishes(saved) {
   const defaultIds = new Set(DEFAULT_FINISH_ITEMS.map(i => i.id));
   const merged = DEFAULT_FINISH_ITEMS.map(item => {
     const s = saved.find(s => s.id === item.id);
-    return s ? { ...item, selection: s.selection ?? "", unitPrice: s.unitPrice ?? null, quantity: s.quantity ?? null, unit: s.unit ?? item.unit, url: s.url ?? "", notes: s.notes ?? "" } : item;
+    return s ? { ...item, selection: s.selection ?? "", unitPrice: s.unitPrice ?? null, quantity: s.quantity ?? null, unit: s.unit ?? item.unit, url: s.url ?? "", notes: s.notes ?? "", linkedTo: s.linkedTo ?? null } : item;
   });
   const userItems = saved.filter(s => s.userCreated && !defaultIds.has(s.id));
   return [...merged, ...userItems];
@@ -1502,14 +1502,37 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
 
   const groupMeta = groupBy === "trade" ? FINISH_CATEGORIES : FINISH_ROOMS;
 
+  // Resolve linked item values — parent's selection/price/unit/url, child's own quantity/notes
+  const resolveItem = (item) => {
+    if (!item.linkedTo) return item;
+    const parent = finishes.find(p => p.id === item.linkedTo);
+    if (!parent) return item;
+    return {
+      ...item,
+      selection: parent.selection,
+      unitPrice: parent.unitPrice,
+      unit: parent.unit,
+      url: parent.url,
+    };
+  };
+
+  // Items available to link to (have a selection filled in)
+  const linkableItems = useMemo(() => {
+    return finishes.filter(i => i.selection && i.selection.trim() !== "");
+  }, [finishes]);
+
   const grandTotal = useMemo(() => {
     return finishes.reduce((sum, item) => {
-      if (item.unitPrice != null && item.quantity != null) return sum + item.unitPrice * item.quantity;
+      const r = resolveItem(item);
+      if (r.unitPrice != null && item.quantity != null) return sum + r.unitPrice * item.quantity;
       return sum;
     }, 0);
   }, [finishes]);
 
-  const pricedCount = useMemo(() => finishes.filter(i => i.unitPrice != null && i.quantity != null).length, [finishes]);
+  const pricedCount = useMemo(() => finishes.filter(i => {
+    const r = resolveItem(i);
+    return r.unitPrice != null && i.quantity != null;
+  }).length, [finishes]);
   const variance = targetBudget != null ? targetBudget - grandTotal : null;
 
   const updateItem = (id, updates) => {
@@ -1548,7 +1571,8 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
 
   const groupSubtotal = (items) => {
     return items.reduce((sum, item) => {
-      if (item.unitPrice != null && item.quantity != null) return sum + item.unitPrice * item.quantity;
+      const r = resolveItem(item);
+      if (r.unitPrice != null && item.quantity != null) return sum + r.unitPrice * item.quantity;
       return sum;
     }, 0);
   };
@@ -1568,18 +1592,20 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
         <div style={{ display: "flex", gap: 8 }}>
           <button
             onClick={() => {
-              const headers = ["Trade", "Room", "Item", "Contractor Options", "Selection", "Unit Price", "Quantity", "Unit", "Line Total", "Product Link", "Notes"];
+              const headers = ["Trade", "Room", "Item", "Contractor Options", "Selection", "Unit Price", "Quantity", "Unit", "Line Total", "Product Link", "Notes", "Linked To"];
               const csvRows = [headers.join(",")];
               finishes.forEach(item => {
+                const r = resolveItem(item);
                 const catLabel = FINISH_CATEGORIES.find(c => c.id === item.category)?.label || item.category;
-                const roomLabel = FINISH_ROOMS.find(r => r.id === item.room)?.label || item.room;
-                const lineTotal = (item.unitPrice != null && item.quantity != null) ? item.unitPrice * item.quantity : "";
+                const roomLabel = FINISH_ROOMS.find(rr => rr.id === item.room)?.label || item.room;
+                const lineTotal = (r.unitPrice != null && item.quantity != null) ? r.unitPrice * item.quantity : "";
+                const parentName = item.linkedTo ? finishes.find(p => p.id === item.linkedTo)?.item || "" : "";
                 const esc = (s) => `"${String(s || "").replace(/"/g, '""')}"`;
                 csvRows.push([
                   esc(catLabel), esc(roomLabel), esc(item.item),
                   esc((item.contractorOptions || []).join("; ")),
-                  esc(item.selection), item.unitPrice ?? "", item.quantity ?? "",
-                  esc(item.unit), lineTotal, esc(item.url), esc(item.notes),
+                  esc(r.selection), r.unitPrice ?? "", item.quantity ?? "",
+                  esc(r.unit), lineTotal, esc(r.url), esc(item.notes), esc(parentName),
                 ].join(","));
               });
               if (targetBudget != null) {
@@ -1819,10 +1845,12 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
             }}>
               {items.map((item, i, arr) => {
                 const isExpanded = expandedId === item.id;
+                const resolved = resolveItem(item);
+                const parentItem = item.linkedTo ? finishes.find(p => p.id === item.linkedTo) : null;
                 const crossRef = groupBy === "trade"
                   ? FINISH_ROOMS.find(r => r.id === item.room)?.label
                   : FINISH_CATEGORIES.find(c => c.id === item.category)?.label;
-                const lineTotal = (item.unitPrice != null && item.quantity != null) ? item.unitPrice * item.quantity : null;
+                const lineTotal = (resolved.unitPrice != null && item.quantity != null) ? resolved.unitPrice * item.quantity : null;
                 return (
                   <div key={item.id}>
                     <div
@@ -1840,7 +1868,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                     >
                       {/* Selection status dot */}
                       {(() => {
-                        const filled = item.selection && item.selection.trim() !== "";
+                        const filled = resolved.selection && resolved.selection.trim() !== "";
                         return (
                           <div style={{
                             width: 10, height: 10, borderRadius: "50%", flexShrink: 0,
@@ -1866,9 +1894,10 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                             }}>CUSTOM</span>
                           )}
                         </div>
-                        {item.selection && !isExpanded && (
-                          <div style={{ fontFamily: font, fontSize: 11, color: C.textMuted, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                            {item.selection}
+                        {resolved.selection && !isExpanded && (
+                          <div style={{ fontFamily: font, fontSize: 11, color: C.textMuted, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "flex", alignItems: "center", gap: 4 }}>
+                            {item.linkedTo && <span style={{ color: C.ocean, fontSize: 10 }}>🔗</span>}
+                            {resolved.selection}
                           </div>
                         )}
                       </div>
@@ -1891,8 +1920,8 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                       </span>
 
                       {/* Link icon */}
-                      {item.url && (
-                        <a href={item.url} target="_blank" rel="noopener noreferrer"
+                      {resolved.url && (
+                        <a href={resolved.url} target="_blank" rel="noopener noreferrer"
                           onClick={e => e.stopPropagation()}
                           style={{ color: C.mint, fontSize: 14, flexShrink: 0, textDecoration: "none", lineHeight: 1 }}
                         >🔗</a>
@@ -1934,8 +1963,91 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                         borderBottom: i < arr.length - 1 ? `1px solid ${C.borderLight}` : "none",
                         borderTop: `1px solid ${C.borderLight}`,
                       }}>
-                        {/* Contractor options reference */}
-                        {item.contractorOptions && item.contractorOptions.length > 0 && (
+                        {(() => {
+                          const inputStyle = {
+                            width: "100%", padding: "10px 12px", borderRadius: 8,
+                            border: `1.5px solid ${C.border}`, background: C.pageBg,
+                            color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
+                            outline: "none", boxSizing: "border-box",
+                          };
+                          const focusHandlers = {
+                            onFocus: e => { e.target.style.borderColor = C.mint; e.target.style.background = C.white; },
+                            onBlur: e => { e.target.style.borderColor = C.border; e.target.style.background = C.pageBg; },
+                          };
+                          const labelStyle = { fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 };
+
+                          return (<>
+
+                        {/* Linked item banner */}
+                        {item.linkedTo && parentItem && (
+                          <div style={{
+                            display: "flex", alignItems: "center", gap: 10, marginBottom: 14,
+                            padding: "10px 14px", borderRadius: 8,
+                            background: C.oceanLight, border: `1px solid ${C.ocean}20`,
+                          }}>
+                            <span style={{ fontSize: 14 }}>🔗</span>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontFamily: font, fontSize: 12, fontWeight: 700, color: C.ocean }}>
+                                Linked to: {parentItem.item}
+                              </div>
+                              <div style={{ fontFamily: font, fontSize: 11, color: C.textSecondary, marginTop: 1 }}>
+                                Inherits selection, price, unit & link — set quantity and notes here
+                              </div>
+                            </div>
+                            <button
+                              onClick={e => { e.stopPropagation(); updateItem(item.id, { linkedTo: null }); }}
+                              style={{
+                                padding: "4px 12px", borderRadius: 6, border: `1px solid ${C.border}`,
+                                background: C.white, color: C.textSecondary,
+                                fontFamily: font, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                              }}
+                            >Unlink</button>
+                          </div>
+                        )}
+
+                        {/* Link to parent selector (when not linked and no own selection) */}
+                        {!item.linkedTo && (
+                          <div style={{
+                            marginBottom: 14, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
+                          }}>
+                            {linkableItems.filter(li => li.id !== item.id).length > 0 && (
+                              <>
+                                <span style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted }}>Link to:</span>
+                                <select
+                                  value=""
+                                  onClick={e => e.stopPropagation()}
+                                  onChange={e => {
+                                    e.stopPropagation();
+                                    if (e.target.value) updateItem(item.id, { linkedTo: e.target.value, selection: "", unitPrice: null, url: "" });
+                                  }}
+                                  style={{
+                                    padding: "5px 10px", borderRadius: 6,
+                                    border: `1px solid ${C.ocean}40`, background: C.oceanLight,
+                                    color: C.ocean, fontFamily: font, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                                  }}
+                                >
+                                  <option value="">Pick a parent item...</option>
+                                  {FINISH_CATEGORIES.map(cat => {
+                                    const catItems = linkableItems.filter(li => li.id !== item.id && li.category === cat.id);
+                                    if (catItems.length === 0) return null;
+                                    return (
+                                      <optgroup key={cat.id} label={`${cat.icon} ${cat.label}`}>
+                                        {catItems.map(li => {
+                                          const roomLabel = FINISH_ROOMS.find(r => r.id === li.room)?.label || li.room;
+                                          return <option key={li.id} value={li.id}>{li.item} ({roomLabel}) — {li.selection}</option>;
+                                        })}
+                                      </optgroup>
+                                    );
+                                  })}
+                                </select>
+                                <span style={{ fontFamily: font, fontSize: 11, color: C.textMuted, fontStyle: "italic" }}>or fill in manually below</span>
+                              </>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Contractor options (only when not linked) */}
+                        {!item.linkedTo && item.contractorOptions && item.contractorOptions.length > 0 && (
                           <div style={{
                             marginBottom: 14, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap",
                           }}>
@@ -1957,104 +2069,128 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                           </div>
                         )}
 
-                        {(() => {
-                          const inputStyle = {
-                            width: "100%", padding: "10px 12px", borderRadius: 8,
-                            border: `1.5px solid ${C.border}`, background: C.pageBg,
-                            color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
-                            outline: "none", boxSizing: "border-box",
-                          };
-                          return (<>
+                        {/* Inherited values display (when linked) */}
+                        {item.linkedTo && parentItem && (
+                          <div style={{
+                            display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12,
+                            padding: "10px 14px", borderRadius: 8, background: C.pageBg,
+                          }}>
+                            <div>
+                              <div style={labelStyle}>Selection (from parent)</div>
+                              <div style={{ fontFamily: font, fontSize: 13, fontWeight: 500, color: C.charcoal }}>{resolved.selection || "—"}</div>
+                            </div>
+                            <div>
+                              <div style={labelStyle}>Unit Price (from parent)</div>
+                              <div style={{ fontFamily: font, fontSize: 13, fontWeight: 500, color: C.charcoal }}>{resolved.unitPrice != null ? `$${resolved.unitPrice}` : "—"}</div>
+                            </div>
+                            <div>
+                              <div style={labelStyle}>Unit (from parent)</div>
+                              <div style={{ fontFamily: font, fontSize: 13, fontWeight: 500, color: C.charcoal }}>{resolved.unit || "—"}</div>
+                            </div>
+                          </div>
+                        )}
+
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                          {/* Selection */}
-                          <div style={{ gridColumn: "1 / -1" }}>
-                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 }}>Selection</label>
-                            <input
-                              type="text" value={item.selection || ""}
-                              onChange={e => updateItem(item.id, { selection: e.target.value })}
-                              onClick={e => e.stopPropagation()}
-                              placeholder="Type or click a contractor option above"
-                              style={inputStyle}
-                              onFocus={e => { e.target.style.borderColor = C.mint; e.target.style.background = C.white; }}
-                              onBlur={e => { e.target.style.borderColor = C.border; e.target.style.background = C.pageBg; }}
-                            />
-                          </div>
-
-                          {/* Unit Price */}
-                          <div>
-                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 }}>Unit Price ($)</label>
-                            <input
-                              type="number" value={item.unitPrice ?? ""}
-                              onChange={e => updateItem(item.id, { unitPrice: e.target.value === "" ? null : parseFloat(e.target.value) })}
-                              onClick={e => e.stopPropagation()}
-                              placeholder="0.00"
-                              style={inputStyle}
-                              onFocus={e => { e.target.style.borderColor = C.mint; e.target.style.background = C.white; }}
-                              onBlur={e => { e.target.style.borderColor = C.border; e.target.style.background = C.pageBg; }}
-                            />
-                          </div>
-
-                          {/* Quantity + Unit */}
-                          <div style={{ display: "flex", gap: 8 }}>
-                            <div style={{ flex: 1 }}>
-                              <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 }}>Quantity</label>
+                          {/* Selection (only when not linked) */}
+                          {!item.linkedTo && (
+                            <div style={{ gridColumn: "1 / -1" }}>
+                              <label style={labelStyle}>Selection</label>
                               <input
-                                type="number" value={item.quantity ?? ""}
-                                onChange={e => updateItem(item.id, { quantity: e.target.value === "" ? null : parseFloat(e.target.value) })}
+                                type="text" value={item.selection || ""}
+                                onChange={e => updateItem(item.id, { selection: e.target.value })}
                                 onClick={e => e.stopPropagation()}
-                                placeholder="0"
-                                style={inputStyle}
-                                onFocus={e => { e.target.style.borderColor = C.mint; e.target.style.background = C.white; }}
-                                onBlur={e => { e.target.style.borderColor = C.border; e.target.style.background = C.pageBg; }}
+                                placeholder="Type or click a contractor option above"
+                                style={inputStyle} {...focusHandlers}
                               />
                             </div>
-                            <div style={{ width: 80 }}>
-                              <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 }}>Unit</label>
-                              <select
-                                value={item.unit || "ea"}
-                                onChange={e => { e.stopPropagation(); updateItem(item.id, { unit: e.target.value }); }}
+                          )}
+
+                          {/* Unit Price (only when not linked) */}
+                          {!item.linkedTo && (
+                            <div>
+                              <label style={labelStyle}>Unit Price ($)</label>
+                              <input
+                                type="number" value={item.unitPrice ?? ""}
+                                onChange={e => updateItem(item.id, { unitPrice: e.target.value === "" ? null : parseFloat(e.target.value) })}
                                 onClick={e => e.stopPropagation()}
-                                style={{
-                                  width: "100%", padding: "10px 6px", borderRadius: 8,
-                                  border: `1.5px solid ${C.border}`, background: C.pageBg,
-                                  color: C.charcoal, fontFamily: font, fontSize: 12, fontWeight: 500,
-                                }}
-                              >
-                                <option value="ea">ea</option>
-                                <option value="sq ft">sq ft</option>
-                                <option value="lin ft">lin ft</option>
-                                <option value="set">set</option>
-                                <option value="lot">lot</option>
-                                <option value="gal">gal</option>
-                              </select>
+                                placeholder="0.00"
+                                style={inputStyle} {...focusHandlers}
+                              />
                             </div>
-                          </div>
+                          )}
 
-                          {/* URL */}
-                          <div style={{ gridColumn: "1 / -1" }}>
-                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 }}>Product Link</label>
-                            <input
-                              type="url" value={item.url || ""}
-                              onChange={e => updateItem(item.id, { url: e.target.value })}
-                              onClick={e => e.stopPropagation()}
-                              placeholder="https://..."
-                              style={inputStyle}
-                              onFocus={e => { e.target.style.borderColor = C.mint; e.target.style.background = C.white; }}
-                              onBlur={e => { e.target.style.borderColor = C.border; e.target.style.background = C.pageBg; }}
-                            />
-                          </div>
+                          {/* Quantity (always editable) */}
+                          {!item.linkedTo ? (
+                            <div style={{ display: "flex", gap: 8 }}>
+                              <div style={{ flex: 1 }}>
+                                <label style={labelStyle}>Quantity</label>
+                                <input
+                                  type="number" value={item.quantity ?? ""}
+                                  onChange={e => updateItem(item.id, { quantity: e.target.value === "" ? null : parseFloat(e.target.value) })}
+                                  onClick={e => e.stopPropagation()}
+                                  placeholder="0"
+                                  style={inputStyle} {...focusHandlers}
+                                />
+                              </div>
+                              <div style={{ width: 80 }}>
+                                <label style={labelStyle}>Unit</label>
+                                <select
+                                  value={item.unit || "ea"}
+                                  onChange={e => { e.stopPropagation(); updateItem(item.id, { unit: e.target.value }); }}
+                                  onClick={e => e.stopPropagation()}
+                                  style={{
+                                    width: "100%", padding: "10px 6px", borderRadius: 8,
+                                    border: `1.5px solid ${C.border}`, background: C.pageBg,
+                                    color: C.charcoal, fontFamily: font, fontSize: 12, fontWeight: 500,
+                                  }}
+                                >
+                                  <option value="ea">ea</option>
+                                  <option value="sq ft">sq ft</option>
+                                  <option value="lin ft">lin ft</option>
+                                  <option value="set">set</option>
+                                  <option value="lot">lot</option>
+                                  <option value="gal">gal</option>
+                                </select>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8 }}>
+                              <div style={{ flex: 1 }}>
+                                <label style={labelStyle}>Quantity (this room)</label>
+                                <input
+                                  type="number" value={item.quantity ?? ""}
+                                  onChange={e => updateItem(item.id, { quantity: e.target.value === "" ? null : parseFloat(e.target.value) })}
+                                  onClick={e => e.stopPropagation()}
+                                  placeholder="0"
+                                  style={inputStyle} {...focusHandlers}
+                                />
+                              </div>
+                            </div>
+                          )}
 
-                          {/* Notes */}
+                          {/* URL (only when not linked) */}
+                          {!item.linkedTo && (
+                            <div style={{ gridColumn: "1 / -1" }}>
+                              <label style={labelStyle}>Product Link</label>
+                              <input
+                                type="url" value={item.url || ""}
+                                onChange={e => updateItem(item.id, { url: e.target.value })}
+                                onClick={e => e.stopPropagation()}
+                                placeholder="https://..."
+                                style={inputStyle} {...focusHandlers}
+                              />
+                            </div>
+                          )}
+
+                          {/* Notes (always editable) */}
                           <div style={{ gridColumn: "1 / -1" }}>
-                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textSecondary, display: "block", marginBottom: 4 }}>Notes</label>
+                            <label style={labelStyle}>Notes</label>
                             <input
                               type="text" value={item.notes || ""}
                               onChange={e => updateItem(item.id, { notes: e.target.value })}
                               onClick={e => e.stopPropagation()}
                               placeholder="Any notes about this selection..."
-                              style={inputStyle}
-                              onFocus={e => { e.target.style.borderColor = C.mint; e.target.style.background = C.white; }}
-                              onBlur={e => { e.target.style.borderColor = C.border; e.target.style.background = C.pageBg; }}
+                              style={inputStyle} {...focusHandlers}
                             />
                           </div>
                         </div>
@@ -2065,7 +2201,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                             marginTop: 12, textAlign: "right",
                             fontFamily: font, fontSize: 13, fontWeight: 700, color: C.mint,
                           }}>
-                            Line total: {fmtMoney(lineTotal)} ({item.quantity} {item.unit} × ${item.unitPrice}/{item.unit})
+                            Line total: {fmtMoney(lineTotal)} ({item.quantity} {resolved.unit} × ${resolved.unitPrice}/{resolved.unit})
                           </div>
                         )}
                         </>
