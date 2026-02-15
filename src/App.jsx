@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import PODCAST_DATABASE from "./podcast-data.json";
 import EXEC_SUMMARY from "./executive-summary.json";
 import TOOLS_DATA from "./tools-data.json";
+import FINISHES_DATA from "./finishes-data.json";
 
 // ─── DATA ───────────────────────────────────────────────────────────────────
 
@@ -186,6 +187,7 @@ function Header({ activeView, setActiveView }) {
               { key: "summary", label: "Executive Brief" },
               { key: "podcast", label: "Podcast Intel" },
               { key: "tasks", label: "Task Tracker" },
+              { key: "design", label: "Design" },
             ].map(v => (
               <button
                 key={v.key}
@@ -1441,6 +1443,613 @@ function ExecutiveSummary() {
   );
 }
 
+// ─── DESIGN VIEW ────────────────────────────────────────────────────────────
+
+const FINISH_CATEGORIES = FINISHES_DATA.categories;
+const FINISH_ROOMS = FINISHES_DATA.rooms;
+const DEFAULT_FINISH_ITEMS = FINISHES_DATA.items.map(item => ({ ...item, userCreated: false }));
+
+function mergeFinishes(saved) {
+  if (!saved || !Array.isArray(saved)) return DEFAULT_FINISH_ITEMS;
+  const defaultIds = new Set(DEFAULT_FINISH_ITEMS.map(i => i.id));
+  const merged = DEFAULT_FINISH_ITEMS.map(item => {
+    const s = saved.find(s => s.id === item.id);
+    return s ? { ...item, selection: s.selection ?? "", unitPrice: s.unitPrice ?? null, quantity: s.quantity ?? null, unit: s.unit ?? item.unit, url: s.url ?? "", notes: s.notes ?? "" } : item;
+  });
+  const userItems = saved.filter(s => s.userCreated && !defaultIds.has(s.id));
+  return [...merged, ...userItems];
+}
+
+function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
+  const [groupBy, setGroupBy] = useState("trade");
+  const [filterCat, setFilterCat] = useState("all");
+  const [filterRoom, setFilterRoom] = useState("all");
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [expandedId, setExpandedId] = useState(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newItem, setNewItem] = useState({ item: "", category: FINISH_CATEGORIES[0].id, room: FINISH_ROOMS[0].id });
+  const [editingBudget, setEditingBudget] = useState(false);
+  const [budgetInput, setBudgetInput] = useState("");
+  const [hoveredRow, setHoveredRow] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const selectStyle = {
+    padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.border}`,
+    background: C.white, color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
+  };
+
+  const filtered = useMemo(() => {
+    return finishes.filter(item => {
+      const matchCat = filterCat === "all" || item.category === filterCat;
+      const matchRoom = filterRoom === "all" || item.room === filterRoom;
+      const matchStatus = filterStatus === "all" ||
+        (filterStatus === "priced" ? (item.unitPrice != null && item.quantity != null) :
+         filterStatus === "selected" ? (item.selection && item.selection.trim() !== "") :
+         filterStatus === "needs-selection" ? (!item.selection || item.selection.trim() === "") : true);
+      return matchCat && matchRoom && matchStatus;
+    });
+  }, [finishes, filterCat, filterRoom, filterStatus]);
+
+  const grouped = useMemo(() => {
+    const g = {};
+    filtered.forEach(item => {
+      const key = groupBy === "trade" ? item.category : item.room;
+      if (!g[key]) g[key] = [];
+      g[key].push(item);
+    });
+    return g;
+  }, [filtered, groupBy]);
+
+  const groupMeta = groupBy === "trade" ? FINISH_CATEGORIES : FINISH_ROOMS;
+
+  const grandTotal = useMemo(() => {
+    return finishes.reduce((sum, item) => {
+      if (item.unitPrice != null && item.quantity != null) return sum + item.unitPrice * item.quantity;
+      return sum;
+    }, 0);
+  }, [finishes]);
+
+  const pricedCount = useMemo(() => finishes.filter(i => i.unitPrice != null && i.quantity != null).length, [finishes]);
+  const variance = targetBudget != null ? targetBudget - grandTotal : null;
+
+  const updateItem = (id, updates) => {
+    setFinishes(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
+  };
+
+  const deleteItem = (id) => {
+    setFinishes(prev => prev.filter(item => item.id !== id));
+    setConfirmDelete(null);
+  };
+
+  const addItem = () => {
+    if (!newItem.item.trim()) return;
+    setFinishes(prev => [...prev, {
+      id: "uf" + Date.now(),
+      category: newItem.category,
+      room: newItem.room,
+      item: newItem.item.trim(),
+      contractorOptions: [],
+      selection: "",
+      unitPrice: null,
+      quantity: null,
+      unit: "ea",
+      url: "",
+      notes: "",
+      userCreated: true,
+    }]);
+    setNewItem({ item: "", category: FINISH_CATEGORIES[0].id, room: FINISH_ROOMS[0].id });
+    setShowAddForm(false);
+  };
+
+  const fmtMoney = (n) => {
+    if (n == null) return "—";
+    return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  };
+
+  const groupSubtotal = (items) => {
+    return items.reduce((sum, item) => {
+      if (item.unitPrice != null && item.quantity != null) return sum + item.unitPrice * item.quantity;
+      return sum;
+    }, 0);
+  };
+
+  return (
+    <div style={{ padding: "36px 32px", maxWidth: 1400, margin: "0 auto" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ fontFamily: font, fontSize: 26, fontWeight: 800, color: C.charcoal, margin: "0 0 6px 0", letterSpacing: "-0.02em" }}>
+            Finish Selections
+          </h2>
+          <p style={{ fontFamily: font, fontSize: 14, color: C.textMuted, margin: 0, fontWeight: 500 }}>
+            Track selections, pricing, and budget across {FINISH_CATEGORIES.length} trades and {FINISH_ROOMS.length} rooms
+          </p>
+        </div>
+        <button
+          onClick={() => setShowAddForm(!showAddForm)}
+          style={{
+            padding: "10px 20px", borderRadius: 8, border: "none",
+            background: C.mint, color: C.white,
+            fontFamily: font, fontSize: 13, fontWeight: 700, cursor: "pointer",
+            display: "flex", alignItems: "center", gap: 6,
+            boxShadow: "0 2px 8px rgba(46,175,123,0.25)",
+          }}
+        >
+          <span style={{ fontSize: 16, lineHeight: 1 }}>+</span> Add Item
+        </button>
+      </div>
+
+      {/* Budget Summary Bar */}
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
+        <StatCard label="Grand Total" value={fmtMoney(grandTotal)} sub={grandTotal === 0 ? "No items priced yet" : "Materials & finishes"} accent={C.mint} />
+        <StatCard label="Items Priced" value={`${pricedCount} of ${finishes.length}`} sub={`${finishes.length - pricedCount} still need pricing`} accent={C.ocean} />
+        <div style={{
+          background: C.white, border: `1px solid ${C.border}`, borderRadius: 14,
+          padding: "24px 26px", flex: "1 1 200px",
+          boxShadow: "0 1px 4px rgba(0,0,0,0.04)", cursor: "pointer",
+        }} onClick={() => { setEditingBudget(true); setBudgetInput(targetBudget != null ? String(targetBudget) : ""); }}>
+          {editingBudget ? (
+            <div>
+              <input
+                type="number"
+                value={budgetInput}
+                onChange={e => setBudgetInput(e.target.value)}
+                placeholder="Enter budget..."
+                autoFocus
+                onKeyDown={e => {
+                  if (e.key === "Enter") {
+                    const val = budgetInput.trim() ? parseFloat(budgetInput) : null;
+                    setTargetBudget(val);
+                    setEditingBudget(false);
+                  }
+                  if (e.key === "Escape") setEditingBudget(false);
+                }}
+                onBlur={() => {
+                  const val = budgetInput.trim() ? parseFloat(budgetInput) : null;
+                  setTargetBudget(val);
+                  setEditingBudget(false);
+                }}
+                style={{
+                  width: "100%", padding: "6px 0", border: "none", borderBottom: `2px solid ${C.mint}`,
+                  background: "transparent", color: C.charcoal, fontFamily: font, fontSize: 28, fontWeight: 800,
+                  outline: "none", boxSizing: "border-box",
+                }}
+              />
+              <div style={{ fontFamily: font, fontSize: 13, fontWeight: 600, color: C.charcoal, marginTop: 6 }}>Budget Target</div>
+            </div>
+          ) : (
+            <div>
+              <div style={{
+                fontFamily: font, fontSize: 36, fontWeight: 800,
+                color: C.mint, lineHeight: 1, letterSpacing: "-0.02em",
+              }}>{targetBudget != null ? fmtMoney(targetBudget) : "Set"}</div>
+              <div style={{ fontFamily: font, fontSize: 13, fontWeight: 600, color: C.charcoal, marginTop: 6 }}>Budget Target</div>
+              <div style={{ fontFamily: font, fontSize: 11, color: C.textMuted, marginTop: 4, fontWeight: 500 }}>
+                {targetBudget != null ? "Click to edit" : "Click to set a target"}
+              </div>
+            </div>
+          )}
+        </div>
+        <StatCard
+          label="Variance"
+          value={variance != null ? (variance >= 0 ? "+" : "") + fmtMoney(Math.abs(variance)) : "—"}
+          sub={variance != null ? (variance >= 0 ? "Under budget" : "Over budget") : "Set a budget target first"}
+          accent={variance == null ? C.textMuted : variance >= 0 ? C.mint : "#D94444"}
+        />
+      </div>
+
+      {/* Add Item Form */}
+      {showAddForm && (
+        <div style={{
+          background: C.white, border: `1px solid ${C.seafoam}`, borderRadius: 10,
+          padding: 16, marginBottom: 20, display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap",
+          boxShadow: "0 2px 12px rgba(46,175,123,0.1)",
+        }}>
+          <div style={{ flex: "1 1 300px" }}>
+            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Item Description</label>
+            <input
+              type="text" value={newItem.item}
+              onChange={e => setNewItem(p => ({ ...p, item: e.target.value }))}
+              placeholder="What finish item needs to be selected?"
+              autoFocus
+              onKeyDown={e => { if (e.key === "Enter") addItem(); if (e.key === "Escape") setShowAddForm(false); }}
+              style={{
+                width: "100%", padding: "8px 12px", borderRadius: 6,
+                border: `1.5px solid ${C.border}`, background: C.offWhite,
+                color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500, outline: "none", boxSizing: "border-box",
+              }}
+            />
+          </div>
+          <div>
+            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Trade</label>
+            <select value={newItem.category} onChange={e => setNewItem(p => ({ ...p, category: e.target.value }))} style={selectStyle}>
+              {FINISH_CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Room</label>
+            <select value={newItem.room} onChange={e => setNewItem(p => ({ ...p, room: e.target.value }))} style={selectStyle}>
+              {FINISH_ROOMS.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+            </select>
+          </div>
+          <button onClick={addItem} style={{
+            padding: "8px 20px", borderRadius: 6, border: "none",
+            background: C.mint, color: C.white,
+            fontFamily: font, fontSize: 13, fontWeight: 700, cursor: "pointer",
+            opacity: newItem.item.trim() ? 1 : 0.5,
+          }}>Add</button>
+        </div>
+      )}
+
+      {/* Toggle + Filters */}
+      <div style={{
+        display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 24,
+        padding: "14px 18px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 10,
+        boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+      }}>
+        {/* Segmented toggle */}
+        <div style={{
+          display: "flex", borderRadius: 8, overflow: "hidden",
+          border: `1px solid ${C.border}`,
+        }}>
+          {[{ key: "trade", label: "By Trade" }, { key: "room", label: "By Room" }].map(opt => (
+            <button
+              key={opt.key}
+              onClick={() => setGroupBy(opt.key)}
+              style={{
+                padding: "7px 16px", border: "none",
+                background: groupBy === opt.key ? C.mint : C.white,
+                color: groupBy === opt.key ? C.white : C.textSecondary,
+                fontFamily: font, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                transition: "all 0.15s",
+              }}
+            >{opt.label}</button>
+          ))}
+        </div>
+        <select value={filterCat} onChange={e => setFilterCat(e.target.value)} style={selectStyle}>
+          <option value="all">All Trades</option>
+          {FINISH_CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
+        </select>
+        <select value={filterRoom} onChange={e => setFilterRoom(e.target.value)} style={selectStyle}>
+          <option value="all">All Rooms</option>
+          {FINISH_ROOMS.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+        </select>
+        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={selectStyle}>
+          <option value="all">All Status</option>
+          <option value="selected">Has Selection</option>
+          <option value="needs-selection">Needs Selection</option>
+          <option value="priced">Priced</option>
+        </select>
+        <span style={{ fontFamily: font, fontSize: 12, color: C.textMuted, marginLeft: "auto", fontWeight: 600 }}>
+          {filtered.length} item{filtered.length !== 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {/* Grouped Sections */}
+      {Object.entries(grouped).sort(([a], [b]) => {
+        return groupMeta.findIndex(m => m.id === a) - groupMeta.findIndex(m => m.id === b);
+      }).map(([groupId, items]) => {
+        const meta = groupMeta.find(m => m.id === groupId);
+        if (!meta) return null;
+        const sub = groupSubtotal(items);
+        const catInfo = groupBy === "trade" ? FINISH_CATEGORIES.find(c => c.id === groupId) : null;
+        return (
+          <div key={groupId} style={{ marginBottom: 28 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              {groupBy === "trade" && <span style={{ fontSize: 22 }}>{meta.icon}</span>}
+              <h3 style={{ fontFamily: font, fontSize: 17, fontWeight: 700, color: C.charcoal, margin: 0 }}>
+                {meta.label}
+              </h3>
+              <span style={{
+                fontFamily: font, fontSize: 12, fontWeight: 600,
+                color: C.textMuted, background: C.borderLight,
+                padding: "2px 8px", borderRadius: 10,
+              }}>{items.length} item{items.length !== 1 ? "s" : ""}</span>
+              {sub > 0 && (
+                <span style={{
+                  fontFamily: font, fontSize: 12, fontWeight: 700,
+                  color: C.mint, marginLeft: "auto",
+                }}>{fmtMoney(sub)}</span>
+              )}
+            </div>
+
+            {/* Contractor recommendation callout */}
+            {groupBy === "trade" && catInfo?.contractorNote && (
+              <div style={{
+                background: C.seafoamFaint, borderRadius: 10, padding: "12px 16px",
+                marginBottom: 10, display: "flex", gap: 10, alignItems: "flex-start",
+              }}>
+                <span style={{ fontSize: 14, flexShrink: 0, marginTop: 1 }}>💬</span>
+                <div>
+                  <div style={{ fontFamily: font, fontSize: 11, fontWeight: 700, color: C.mint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>
+                    Contractor Note
+                  </div>
+                  <div style={{ fontFamily: font, fontSize: 12, color: C.charcoal, lineHeight: 1.5 }}>
+                    {catInfo.contractorNote}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div style={{
+              background: C.white, border: `1px solid ${C.border}`, borderRadius: 10,
+              overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+            }}>
+              {items.map((item, i, arr) => {
+                const isExpanded = expandedId === item.id;
+                const crossRef = groupBy === "trade"
+                  ? FINISH_ROOMS.find(r => r.id === item.room)?.label
+                  : FINISH_CATEGORIES.find(c => c.id === item.category)?.label;
+                const lineTotal = (item.unitPrice != null && item.quantity != null) ? item.unitPrice * item.quantity : null;
+                return (
+                  <div key={item.id}>
+                    <div
+                      onClick={() => setExpandedId(isExpanded ? null : item.id)}
+                      onMouseEnter={() => setHoveredRow(item.id)}
+                      onMouseLeave={() => { setHoveredRow(null); if (confirmDelete === item.id) setConfirmDelete(null); }}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 10,
+                        padding: "10px 16px",
+                        borderBottom: (i < arr.length - 1 || isExpanded) ? `1px solid ${C.borderLight}` : "none",
+                        background: isExpanded ? C.offWhite : (hoveredRow === item.id ? C.offWhite : C.white),
+                        cursor: "pointer",
+                        transition: "background 0.15s",
+                      }}
+                    >
+                      {/* Selection status dot */}
+                      <div style={{
+                        width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+                        background: item.selection ? C.mint : C.borderLight,
+                        border: item.selection ? "none" : `1.5px solid ${C.textMuted}`,
+                      }} />
+
+                      {/* Item name */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          <span style={{
+                            fontFamily: font, fontSize: 13, fontWeight: 500, color: C.charcoal,
+                          }}>{item.item}</span>
+                          {item.userCreated && (
+                            <span style={{
+                              fontFamily: font, fontSize: 9, fontWeight: 700,
+                              color: C.ocean, background: C.oceanLight,
+                              padding: "1px 5px", borderRadius: 3,
+                              textTransform: "uppercase", letterSpacing: "0.04em",
+                            }}>CUSTOM</span>
+                          )}
+                        </div>
+                        {item.selection && !isExpanded && (
+                          <div style={{ fontFamily: font, fontSize: 11, color: C.textMuted, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {item.selection}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Cross-reference badge */}
+                      <span style={{
+                        fontFamily: font, fontSize: 10, fontWeight: 600,
+                        color: C.textMuted, background: C.pageBg,
+                        padding: "2px 8px", borderRadius: 4, flexShrink: 0,
+                        whiteSpace: "nowrap",
+                      }}>{crossRef}</span>
+
+                      {/* Price summary */}
+                      <span style={{
+                        fontFamily: font, fontSize: 12, fontWeight: 600,
+                        color: lineTotal != null ? C.charcoal : C.textMuted,
+                        flexShrink: 0, minWidth: 80, textAlign: "right",
+                      }}>
+                        {lineTotal != null ? fmtMoney(lineTotal) : "—"}
+                      </span>
+
+                      {/* Link icon */}
+                      {item.url && (
+                        <a href={item.url} target="_blank" rel="noopener noreferrer"
+                          onClick={e => e.stopPropagation()}
+                          style={{ color: C.mint, fontSize: 14, flexShrink: 0, textDecoration: "none", lineHeight: 1 }}
+                        >🔗</a>
+                      )}
+
+                      {/* Delete button */}
+                      <div style={{ width: 28, flexShrink: 0, display: "flex", justifyContent: "center" }}>
+                        {confirmDelete === item.id ? (
+                          <button onClick={e => { e.stopPropagation(); deleteItem(item.id); }} style={{
+                            padding: "2px 8px", borderRadius: 4, border: "none",
+                            background: "#D94444", color: C.white,
+                            fontFamily: font, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                          }}>Yes</button>
+                        ) : hoveredRow === item.id ? (
+                          <button onClick={e => {
+                            e.stopPropagation();
+                            if (item.userCreated) { deleteItem(item.id); }
+                            else { setConfirmDelete(confirmDelete === item.id ? null : item.id); }
+                          }} style={{
+                            background: "none", border: "none",
+                            color: C.textMuted, fontSize: 16, cursor: "pointer", padding: 0, lineHeight: 1,
+                          }}>×</button>
+                        ) : null}
+                      </div>
+
+                      {/* Expand chevron */}
+                      <span style={{
+                        color: C.textMuted, fontSize: 14, flexShrink: 0,
+                        transform: isExpanded ? "rotate(180deg)" : "rotate(0)",
+                        transition: "transform 0.2s",
+                      }}>▾</span>
+                    </div>
+
+                    {/* Expanded edit panel */}
+                    {isExpanded && (
+                      <div style={{
+                        padding: "14px 16px 16px 34px",
+                        background: C.offWhite,
+                        borderBottom: i < arr.length - 1 ? `1px solid ${C.borderLight}` : "none",
+                      }}>
+                        {/* Contractor options reference */}
+                        {item.contractorOptions && item.contractorOptions.length > 0 && (
+                          <div style={{
+                            marginBottom: 14, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap",
+                          }}>
+                            <span style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted }}>Contractor options:</span>
+                            {item.contractorOptions.map((opt, oi) => (
+                              <button
+                                key={oi}
+                                onClick={e => { e.stopPropagation(); updateItem(item.id, { selection: opt }); }}
+                                style={{
+                                  padding: "3px 10px", borderRadius: 6,
+                                  border: `1px solid ${item.selection === opt ? C.seafoam : C.borderLight}`,
+                                  background: item.selection === opt ? C.seafoamFaint : C.white,
+                                  color: item.selection === opt ? C.mintDark : C.textSecondary,
+                                  fontFamily: font, fontSize: 11, fontWeight: 500, cursor: "pointer",
+                                  transition: "all 0.15s",
+                                }}
+                              >{opt}</button>
+                            ))}
+                          </div>
+                        )}
+
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                          {/* Selection */}
+                          <div style={{ gridColumn: "1 / -1" }}>
+                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Selection</label>
+                            <input
+                              type="text" value={item.selection || ""}
+                              onChange={e => updateItem(item.id, { selection: e.target.value })}
+                              onClick={e => e.stopPropagation()}
+                              placeholder="Type or click a contractor option above"
+                              style={{
+                                width: "100%", padding: "8px 12px", borderRadius: 6,
+                                border: `1.5px solid ${C.border}`, background: C.white,
+                                color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
+                                outline: "none", boxSizing: "border-box",
+                              }}
+                              onFocus={e => e.target.style.borderColor = C.mint}
+                              onBlur={e => e.target.style.borderColor = C.border}
+                            />
+                          </div>
+
+                          {/* Unit Price */}
+                          <div>
+                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Unit Price ($)</label>
+                            <input
+                              type="number" value={item.unitPrice ?? ""}
+                              onChange={e => updateItem(item.id, { unitPrice: e.target.value === "" ? null : parseFloat(e.target.value) })}
+                              onClick={e => e.stopPropagation()}
+                              placeholder="0.00"
+                              style={{
+                                width: "100%", padding: "8px 12px", borderRadius: 6,
+                                border: `1.5px solid ${C.border}`, background: C.white,
+                                color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
+                                outline: "none", boxSizing: "border-box",
+                              }}
+                            />
+                          </div>
+
+                          {/* Quantity + Unit */}
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <div style={{ flex: 1 }}>
+                              <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Quantity</label>
+                              <input
+                                type="number" value={item.quantity ?? ""}
+                                onChange={e => updateItem(item.id, { quantity: e.target.value === "" ? null : parseFloat(e.target.value) })}
+                                onClick={e => e.stopPropagation()}
+                                placeholder="0"
+                                style={{
+                                  width: "100%", padding: "8px 12px", borderRadius: 6,
+                                  border: `1.5px solid ${C.border}`, background: C.white,
+                                  color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
+                                  outline: "none", boxSizing: "border-box",
+                                }}
+                              />
+                            </div>
+                            <div style={{ width: 80 }}>
+                              <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Unit</label>
+                              <select
+                                value={item.unit || "ea"}
+                                onChange={e => { e.stopPropagation(); updateItem(item.id, { unit: e.target.value }); }}
+                                onClick={e => e.stopPropagation()}
+                                style={{
+                                  width: "100%", padding: "8px 6px", borderRadius: 6,
+                                  border: `1.5px solid ${C.border}`, background: C.white,
+                                  color: C.charcoal, fontFamily: font, fontSize: 12, fontWeight: 500,
+                                }}
+                              >
+                                <option value="ea">ea</option>
+                                <option value="sq ft">sq ft</option>
+                                <option value="lin ft">lin ft</option>
+                                <option value="set">set</option>
+                                <option value="lot">lot</option>
+                                <option value="gal">gal</option>
+                              </select>
+                            </div>
+                          </div>
+
+                          {/* URL */}
+                          <div style={{ gridColumn: "1 / -1" }}>
+                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Product Link</label>
+                            <input
+                              type="url" value={item.url || ""}
+                              onChange={e => updateItem(item.id, { url: e.target.value })}
+                              onClick={e => e.stopPropagation()}
+                              placeholder="https://..."
+                              style={{
+                                width: "100%", padding: "8px 12px", borderRadius: 6,
+                                border: `1.5px solid ${C.border}`, background: C.white,
+                                color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
+                                outline: "none", boxSizing: "border-box",
+                              }}
+                            />
+                          </div>
+
+                          {/* Notes */}
+                          <div style={{ gridColumn: "1 / -1" }}>
+                            <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Notes</label>
+                            <input
+                              type="text" value={item.notes || ""}
+                              onChange={e => updateItem(item.id, { notes: e.target.value })}
+                              onClick={e => e.stopPropagation()}
+                              placeholder="Any notes about this selection..."
+                              style={{
+                                width: "100%", padding: "8px 12px", borderRadius: 6,
+                                border: `1.5px solid ${C.border}`, background: C.white,
+                                color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
+                                outline: "none", boxSizing: "border-box",
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Line total */}
+                        {lineTotal != null && (
+                          <div style={{
+                            marginTop: 12, textAlign: "right",
+                            fontFamily: font, fontSize: 13, fontWeight: 700, color: C.mint,
+                          }}>
+                            Line total: {fmtMoney(lineTotal)} ({item.quantity} {item.unit} × ${item.unitPrice}/{item.unit})
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+
+      {filtered.length === 0 && (
+        <div style={{
+          textAlign: "center", padding: "48px 24px",
+          fontFamily: font, fontSize: 14, color: C.textMuted,
+        }}>
+          No items match your filters. Try adjusting the trade, room, or status filters above.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
 function mergeTasks(saved) {
@@ -1465,9 +2074,30 @@ export default function App() {
     } catch (e) {}
     return DEFAULT_TASKS;
   });
+  const [finishes, setFinishes] = useState(() => {
+    try {
+      const raw = localStorage.getItem("pool-paddle-finishes-v1");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return mergeFinishes(parsed.items || parsed);
+      }
+    } catch (e) {}
+    return DEFAULT_FINISH_ITEMS;
+  });
+  const [targetBudget, setTargetBudget] = useState(() => {
+    try {
+      const raw = localStorage.getItem("pool-paddle-finishes-v1");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return parsed.targetBudget ?? null;
+      }
+    } catch (e) {}
+    return null;
+  });
   const serverLoaded = useRef(false);
+  const finishesServerLoaded = useRef(false);
 
-  // Fetch from server (source of truth) — localStorage is just a fast cache
+  // Fetch tasks from server
   useEffect(() => {
     fetch('/api/tasks')
       .then(r => r.json())
@@ -1476,7 +2106,6 @@ export default function App() {
         if (data && Array.isArray(data) && data.length > 0) {
           setTasks(mergeTasks(data));
         } else {
-          // First load — seed server with current state
           fetch('/api/tasks', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -1487,7 +2116,27 @@ export default function App() {
       .catch(() => { serverLoaded.current = true; });
   }, []);
 
-  // Save to localStorage immediately + server (debounced)
+  // Fetch finishes from server
+  useEffect(() => {
+    fetch('/api/finishes')
+      .then(r => r.json())
+      .then(data => {
+        finishesServerLoaded.current = true;
+        if (data && data.items && Array.isArray(data.items) && data.items.length > 0) {
+          setFinishes(mergeFinishes(data.items));
+          if (data.targetBudget != null) setTargetBudget(data.targetBudget);
+        } else {
+          fetch('/api/finishes', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: finishes, targetBudget }),
+          }).catch(() => {});
+        }
+      })
+      .catch(() => { finishesServerLoaded.current = true; });
+  }, []);
+
+  // Save tasks to localStorage + server (debounced)
   useEffect(() => {
     try {
       localStorage.setItem("pool-paddle-tasks-v2", JSON.stringify(tasks));
@@ -1506,6 +2155,26 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [tasks]);
 
+  // Save finishes to localStorage + server (debounced)
+  useEffect(() => {
+    const payload = { items: finishes, targetBudget };
+    try {
+      localStorage.setItem("pool-paddle-finishes-v1", JSON.stringify(payload));
+    } catch (e) {}
+
+    if (!finishesServerLoaded.current) return;
+
+    const timer = setTimeout(() => {
+      fetch('/api/finishes', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).catch(() => {});
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [finishes, targetBudget]);
+
   return (
     <div style={{ minHeight: "100vh", background: C.pageBg, fontFamily: font }}>
       <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -1514,6 +2183,7 @@ export default function App() {
       {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} />}
+      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} />}
     </div>
   );
 }
