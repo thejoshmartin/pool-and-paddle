@@ -1460,7 +1460,7 @@ function mergeFinishes(saved) {
   return [...merged, ...userItems];
 }
 
-function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
+function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, roomData, setRoomData }) {
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -1570,6 +1570,52 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
     setShowAddForm(false);
   };
 
+  const [editingMiroRoom, setEditingMiroRoom] = useState(null);
+  const [miroInput, setMiroInput] = useState("");
+  const [expandedFurnitureRoom, setExpandedFurnitureRoom] = useState(null);
+  const [showAddFurniture, setShowAddFurniture] = useState(null);
+  const [newFurniture, setNewFurniture] = useState({ name: "", price: "", url: "", notes: "" });
+
+  const getRoomData = (roomId) => roomData[roomId] || { miroUrl: "", furniture: [] };
+
+  const updateRoomData = (roomId, updates) => {
+    setRoomData(prev => ({
+      ...prev,
+      [roomId]: { ...getRoomData(roomId), ...updates },
+    }));
+  };
+
+  const addFurnitureItem = (roomId) => {
+    if (!newFurniture.name.trim()) return;
+    const rd = getRoomData(roomId);
+    updateRoomData(roomId, {
+      furniture: [...rd.furniture, {
+        id: "furn" + Date.now(),
+        name: newFurniture.name.trim(),
+        price: newFurniture.price ? parseFloat(newFurniture.price) : null,
+        url: newFurniture.url || "",
+        notes: newFurniture.notes || "",
+        purchased: false,
+      }],
+    });
+    setNewFurniture({ name: "", price: "", url: "", notes: "" });
+    setShowAddFurniture(null);
+  };
+
+  const updateFurnitureItem = (roomId, furnId, updates) => {
+    const rd = getRoomData(roomId);
+    updateRoomData(roomId, {
+      furniture: rd.furniture.map(f => f.id === furnId ? { ...f, ...updates } : f),
+    });
+  };
+
+  const deleteFurnitureItem = (roomId, furnId) => {
+    const rd = getRoomData(roomId);
+    updateRoomData(roomId, {
+      furniture: rd.furniture.filter(f => f.id !== furnId),
+    });
+  };
+
   const fmtMoney = (n) => {
     if (n == null) return "—";
     return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -1614,12 +1660,32 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                   esc(r.unit), lineTotal, esc(r.url), esc(item.notes), esc(parentName),
                 ].join(","));
               });
+              // Furniture items per room
+              const furnitureRows = [];
+              FINISH_ROOMS.forEach(room => {
+                const rd = getRoomData(room.id);
+                if (rd.furniture && rd.furniture.length > 0) {
+                  rd.furniture.forEach(f => {
+                    furnitureRows.push([
+                      esc("Furniture"), esc(room.label), esc(f.name),
+                      "", "", f.price ?? "", "", "",
+                      f.price ?? "", esc(f.url), esc(f.notes), "",
+                    ].join(","));
+                  });
+                }
+              });
+              if (furnitureRows.length > 0) {
+                csvRows.push("");
+                csvRows.push(`"--- Furniture ---",,,,,,,,,,`);
+                csvRows.push(...furnitureRows);
+              }
+              // Budget summary
               if (targetBudget != null) {
                 csvRows.push("");
+                const gt = finishes.reduce((s, i) => { const r = resolveItem(i); return s + ((r.unitPrice ?? 0) * (i.quantity ?? 0)); }, 0);
                 csvRows.push(`"Budget Target",,,,,,,,${targetBudget},,`);
-                const grandTotal = finishes.reduce((s, i) => s + ((i.unitPrice ?? 0) * (i.quantity ?? 0)), 0);
-                csvRows.push(`"Grand Total",,,,,,,,${grandTotal},,`);
-                csvRows.push(`"Variance",,,,,,,,${targetBudget - grandTotal},,`);
+                csvRows.push(`"Grand Total",,,,,,,,${gt},,`);
+                csvRows.push(`"Variance",,,,,,,,${targetBudget - gt},,`);
               }
               const blob = new Blob([csvRows.join("\n")], { type: "text/csv" });
               const url = URL.createObjectURL(blob);
@@ -1809,7 +1875,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
         const catInfo = groupBy === "trade" ? FINISH_CATEGORIES.find(c => c.id === groupId) : null;
         return (
           <div key={groupId} style={{ marginBottom: 28 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
               {groupBy === "trade" && <span style={{ fontSize: 22 }}>{meta.icon}</span>}
               <h3 style={{ fontFamily: font, fontSize: 17, fontWeight: 700, color: C.charcoal, margin: 0 }}>
                 {meta.label}
@@ -1822,9 +1888,57 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
               {sub > 0 && (
                 <span style={{
                   fontFamily: font, fontSize: 12, fontWeight: 700,
-                  color: C.mint, marginLeft: "auto",
+                  color: C.mint,
                 }}>{fmtMoney(sub)}</span>
               )}
+              {/* Miro link — room groups only */}
+              {groupBy === "room" && (() => {
+                const rd = getRoomData(groupId);
+                return editingMiroRoom === groupId ? (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: "auto" }} onClick={e => e.stopPropagation()}>
+                    <input
+                      type="url" value={miroInput}
+                      onChange={e => setMiroInput(e.target.value)}
+                      placeholder="Paste Miro board URL..."
+                      autoFocus
+                      onKeyDown={e => {
+                        if (e.key === "Enter") { updateRoomData(groupId, { miroUrl: miroInput.trim() }); setEditingMiroRoom(null); }
+                        if (e.key === "Escape") setEditingMiroRoom(null);
+                      }}
+                      onBlur={() => { updateRoomData(groupId, { miroUrl: miroInput.trim() }); setEditingMiroRoom(null); }}
+                      style={{
+                        padding: "5px 10px", borderRadius: 6, border: `1.5px solid ${C.border}`,
+                        background: C.white, color: C.charcoal, fontFamily: font, fontSize: 12,
+                        fontWeight: 500, outline: "none", width: isMobile ? 160 : 260,
+                      }}
+                    />
+                  </div>
+                ) : rd.miroUrl ? (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: "auto" }}>
+                    <a href={rd.miroUrl} target="_blank" rel="noopener noreferrer"
+                      style={{
+                        padding: "4px 12px", borderRadius: 6,
+                        background: "#FFD02F", color: "#050038",
+                        fontFamily: font, fontSize: 11, fontWeight: 700, textDecoration: "none",
+                        display: "flex", alignItems: "center", gap: 4,
+                      }}
+                    >Miro Board</a>
+                    <button onClick={() => { setEditingMiroRoom(groupId); setMiroInput(rd.miroUrl); }}
+                      style={{ background: "none", border: "none", color: C.textMuted, fontSize: 12, cursor: "pointer", padding: 0 }}
+                    >edit</button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setEditingMiroRoom(groupId); setMiroInput(""); }}
+                    style={{
+                      padding: "4px 12px", borderRadius: 6,
+                      border: `1px dashed ${C.textMuted}`, background: "transparent",
+                      color: C.textMuted, fontFamily: font, fontSize: 11, fontWeight: 600,
+                      cursor: "pointer", marginLeft: "auto",
+                    }}
+                  >+ Miro Link</button>
+                );
+              })()}
             </div>
 
             {/* Contractor recommendation callout */}
@@ -1844,6 +1958,157 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                 </div>
               </div>
             )}
+
+            {/* Furniture section — room groups only */}
+            {groupBy === "room" && (() => {
+              const rd = getRoomData(groupId);
+              const hasFurniture = rd.furniture && rd.furniture.length > 0;
+              const furnitureTotal = (rd.furniture || []).reduce((s, f) => s + (f.price || 0), 0);
+              const isExpFurn = expandedFurnitureRoom === groupId;
+              return (
+                <div style={{
+                  background: C.white, border: `1px solid ${C.border}`, borderRadius: 10,
+                  marginBottom: 10, overflow: "hidden",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+                }}>
+                  <div
+                    onClick={() => setExpandedFurnitureRoom(isExpFurn ? null : groupId)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      padding: "10px 16px", cursor: "pointer",
+                      background: isExpFurn ? C.offWhite : C.white,
+                    }}
+                  >
+                    <span style={{ fontSize: 16 }}>🛋️</span>
+                    <span style={{ fontFamily: font, fontSize: 13, fontWeight: 600, color: C.charcoal, flex: 1 }}>
+                      Furniture
+                    </span>
+                    <span style={{
+                      fontFamily: font, fontSize: 11, fontWeight: 600,
+                      color: C.textMuted, background: C.borderLight,
+                      padding: "2px 8px", borderRadius: 10,
+                    }}>{(rd.furniture || []).length}</span>
+                    {furnitureTotal > 0 && (
+                      <span style={{ fontFamily: font, fontSize: 12, fontWeight: 700, color: C.mint }}>
+                        {fmtMoney(furnitureTotal)}
+                      </span>
+                    )}
+                    <span style={{
+                      color: C.textMuted, fontSize: 14,
+                      transform: isExpFurn ? "rotate(180deg)" : "rotate(0)",
+                      transition: "transform 0.2s",
+                    }}>▾</span>
+                  </div>
+
+                  {isExpFurn && (
+                    <div style={{ borderTop: `1px solid ${C.borderLight}` }}>
+                      {(rd.furniture || []).map((furn, fi) => (
+                        <div key={furn.id} style={{
+                          display: "flex", alignItems: "center", gap: 8,
+                          padding: isMobile ? "8px 12px" : "8px 16px",
+                          borderBottom: `1px solid ${C.borderLight}`,
+                        }}>
+                          <input type="checkbox" checked={furn.purchased || false}
+                            onChange={() => updateFurnitureItem(groupId, furn.id, { purchased: !furn.purchased })}
+                            style={{ width: 16, height: 16, accentColor: C.mint, cursor: "pointer", flexShrink: 0, margin: 0 }}
+                          />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{
+                              fontFamily: font, fontSize: 13, fontWeight: 500,
+                              color: furn.purchased ? C.textMuted : C.charcoal,
+                              textDecoration: furn.purchased ? "line-through" : "none",
+                            }}>{furn.name}</div>
+                            {furn.notes && (
+                              <div style={{ fontFamily: font, fontSize: 11, color: C.textMuted, marginTop: 1 }}>{furn.notes}</div>
+                            )}
+                          </div>
+                          {furn.price != null && (
+                            <span style={{ fontFamily: font, fontSize: 12, fontWeight: 600, color: C.charcoal, flexShrink: 0 }}>
+                              {fmtMoney(furn.price)}
+                            </span>
+                          )}
+                          {furn.url && (
+                            <a href={furn.url} target="_blank" rel="noopener noreferrer"
+                              style={{ color: C.mint, fontSize: 13, flexShrink: 0, textDecoration: "none" }}
+                            >🔗</a>
+                          )}
+                          <button onClick={() => deleteFurnitureItem(groupId, furn.id)}
+                            style={{ background: "none", border: "none", color: C.textMuted, fontSize: 16, cursor: "pointer", padding: 0, lineHeight: 1, flexShrink: 0 }}
+                          >×</button>
+                        </div>
+                      ))}
+
+                      {/* Add furniture form */}
+                      {showAddFurniture === groupId ? (
+                        <div style={{
+                          padding: isMobile ? "10px 12px" : "10px 16px",
+                          display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end",
+                        }}>
+                          <div style={{ flex: "1 1 180px" }}>
+                            <label style={{ fontFamily: font, fontSize: 10, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 3 }}>Item</label>
+                            <input type="text" value={newFurniture.name}
+                              onChange={e => setNewFurniture(p => ({ ...p, name: e.target.value }))}
+                              placeholder="Furniture item..."
+                              autoFocus
+                              onKeyDown={e => { if (e.key === "Enter") addFurnitureItem(groupId); if (e.key === "Escape") setShowAddFurniture(null); }}
+                              style={{
+                                width: "100%", padding: "7px 10px", borderRadius: 6,
+                                border: `1.5px solid ${C.border}`, background: C.pageBg,
+                                color: C.charcoal, fontFamily: font, fontSize: 12, fontWeight: 500,
+                                outline: "none", boxSizing: "border-box",
+                              }}
+                            />
+                          </div>
+                          <div style={{ width: 90 }}>
+                            <label style={{ fontFamily: font, fontSize: 10, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 3 }}>Price</label>
+                            <input type="number" value={newFurniture.price}
+                              onChange={e => setNewFurniture(p => ({ ...p, price: e.target.value }))}
+                              placeholder="$"
+                              onKeyDown={e => { if (e.key === "Enter") addFurnitureItem(groupId); }}
+                              style={{
+                                width: "100%", padding: "7px 10px", borderRadius: 6,
+                                border: `1.5px solid ${C.border}`, background: C.pageBg,
+                                color: C.charcoal, fontFamily: font, fontSize: 12, fontWeight: 500,
+                                outline: "none", boxSizing: "border-box",
+                              }}
+                            />
+                          </div>
+                          <div style={{ flex: "1 1 180px" }}>
+                            <label style={{ fontFamily: font, fontSize: 10, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 3 }}>Link</label>
+                            <input type="url" value={newFurniture.url}
+                              onChange={e => setNewFurniture(p => ({ ...p, url: e.target.value }))}
+                              placeholder="https://..."
+                              onKeyDown={e => { if (e.key === "Enter") addFurnitureItem(groupId); }}
+                              style={{
+                                width: "100%", padding: "7px 10px", borderRadius: 6,
+                                border: `1.5px solid ${C.border}`, background: C.pageBg,
+                                color: C.charcoal, fontFamily: font, fontSize: 12, fontWeight: 500,
+                                outline: "none", boxSizing: "border-box",
+                              }}
+                            />
+                          </div>
+                          <button onClick={() => addFurnitureItem(groupId)} style={{
+                            padding: "7px 14px", borderRadius: 6, border: "none",
+                            background: C.mint, color: C.white,
+                            fontFamily: font, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                            opacity: newFurniture.name.trim() ? 1 : 0.5,
+                          }}>Add</button>
+                        </div>
+                      ) : (
+                        <div style={{ padding: "8px 16px" }}>
+                          <button onClick={() => { setShowAddFurniture(groupId); setNewFurniture({ name: "", price: "", url: "", notes: "" }); }}
+                            style={{
+                              background: "none", border: "none", color: C.mint,
+                              fontFamily: font, fontSize: 12, fontWeight: 600, cursor: "pointer", padding: 0,
+                            }}
+                          >+ Add Furniture</button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <div style={{
               background: C.white, border: `1px solid ${C.border}`, borderRadius: 10,
@@ -2287,6 +2552,16 @@ export default function App() {
     } catch (e) {}
     return null;
   });
+  const [roomData, setRoomData] = useState(() => {
+    try {
+      const raw = localStorage.getItem("pool-paddle-finishes-v1");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return parsed.roomData ?? {};
+      }
+    } catch (e) {}
+    return {};
+  });
   const serverLoaded = useRef(false);
   const finishesServerLoaded = useRef(false);
 
@@ -2318,11 +2593,12 @@ export default function App() {
         if (data && data.items && Array.isArray(data.items) && data.items.length > 0) {
           setFinishes(mergeFinishes(data.items));
           if (data.targetBudget != null) setTargetBudget(data.targetBudget);
+          if (data.roomData) setRoomData(data.roomData);
         } else {
           fetch('/api/finishes', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items: finishes, targetBudget }),
+            body: JSON.stringify({ items: finishes, targetBudget, roomData }),
           }).catch(() => {});
         }
       })
@@ -2350,7 +2626,7 @@ export default function App() {
 
   // Save finishes to localStorage + server (debounced)
   useEffect(() => {
-    const payload = { items: finishes, targetBudget };
+    const payload = { items: finishes, targetBudget, roomData };
     try {
       localStorage.setItem("pool-paddle-finishes-v1", JSON.stringify(payload));
     } catch (e) {}
@@ -2366,7 +2642,7 @@ export default function App() {
     }, 500);
 
     return () => clearTimeout(timer);
-  }, [finishes, targetBudget]);
+  }, [finishes, targetBudget, roomData]);
 
   return (
     <div style={{ minHeight: "100vh", background: C.pageBg, fontFamily: font }}>
@@ -2376,7 +2652,7 @@ export default function App() {
       {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} />}
-      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} />}
+      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} />}
     </div>
   );
 }
