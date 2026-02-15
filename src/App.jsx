@@ -1441,6 +1441,19 @@ function ExecutiveSummary() {
   );
 }
 
+// ─── HELPERS ────────────────────────────────────────────────────────────────
+
+function mergeTasks(saved) {
+  if (!saved || !Array.isArray(saved)) return DEFAULT_TASKS;
+  const defaultIds = new Set(DEFAULT_TASKS.map(t => t.id));
+  const merged = DEFAULT_TASKS.map(t => {
+    const s = saved.find(s => s.id === t.id);
+    return s ? { ...t, done: s.done, notes: s.notes ?? t.notes, assignee: s.assignee ?? null, dueDate: s.dueDate ?? null, completedDate: s.completedDate ?? null } : t;
+  });
+  const userTasks = saved.filter(s => s.userCreated && !defaultIds.has(s.id));
+  return [...merged, ...userTasks];
+}
+
 // ─── MAIN APP ──────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -1448,24 +1461,49 @@ export default function App() {
   const [tasks, setTasks] = useState(() => {
     try {
       const raw = localStorage.getItem("pool-paddle-tasks-v2");
-      if (raw) {
-        const saved = JSON.parse(raw);
-        const defaultIds = new Set(DEFAULT_TASKS.map(t => t.id));
-        const merged = DEFAULT_TASKS.map(t => {
-          const s = saved.find(s => s.id === t.id);
-          return s ? { ...t, done: s.done, notes: s.notes ?? t.notes, assignee: s.assignee ?? null, dueDate: s.dueDate ?? null, completedDate: s.completedDate ?? null } : t;
-        });
-        const userTasks = saved.filter(s => s.userCreated && !defaultIds.has(s.id));
-        return [...merged, ...userTasks];
-      }
-    } catch (e) { /* localStorage not available */ }
+      if (raw) return mergeTasks(JSON.parse(raw));
+    } catch (e) {}
     return DEFAULT_TASKS;
   });
+  const serverLoaded = useRef(false);
 
+  // Fetch from server (source of truth) — localStorage is just a fast cache
+  useEffect(() => {
+    fetch('/api/tasks')
+      .then(r => r.json())
+      .then(data => {
+        serverLoaded.current = true;
+        if (data && Array.isArray(data) && data.length > 0) {
+          setTasks(mergeTasks(data));
+        } else {
+          // First load — seed server with current state
+          fetch('/api/tasks', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(tasks),
+          }).catch(() => {});
+        }
+      })
+      .catch(() => { serverLoaded.current = true; });
+  }, []);
+
+  // Save to localStorage immediately + server (debounced)
   useEffect(() => {
     try {
       localStorage.setItem("pool-paddle-tasks-v2", JSON.stringify(tasks));
-    } catch (e) { /* localStorage not available */ }
+    } catch (e) {}
+
+    if (!serverLoaded.current) return;
+
+    const timer = setTimeout(() => {
+      fetch('/api/tasks', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(tasks),
+      }).catch(() => {});
+    }, 500);
+
+    return () => clearTimeout(timer);
   }, [tasks]);
 
   return (
