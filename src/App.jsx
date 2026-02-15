@@ -941,20 +941,20 @@ function TaskView({ tasks, setTasks }) {
 
                     {/* Due date */}
                     <div
-                      onClick={e => { e.stopPropagation(); try { dateRefs.current[task.id]?.showPicker(); } catch(_) { dateRefs.current[task.id]?.focus(); } }}
                       style={{ flexShrink: 0, minWidth: 70, textAlign: "center", cursor: "pointer", position: "relative" }}
                     >
                       <span style={{
                         fontFamily: font, fontSize: 12, fontWeight: 500,
                         color: task.dueDate ? (isOverdue(task) ? "#D94444" : C.textSecondary) : C.textMuted,
+                        pointerEvents: "none",
                       }}>
                         {fmtDate(task.dueDate) || "Set date"}
                       </span>
                       <input type="date" value={task.dueDate || ""}
                         ref={el => { dateRefs.current[task.id] = el; }}
                         onChange={e => setDueDate(task.id, e.target.value)}
-                        tabIndex={-1}
-                        style={{ position: "absolute", top: 0, left: 0, width: 1, height: 1, opacity: 0, overflow: "hidden", pointerEvents: "none" }} />
+                        onClick={e => e.stopPropagation()}
+                        style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer" }} />
                     </div>
 
                     {/* Episode links */}
