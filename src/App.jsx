@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import PODCAST_DATABASE from "./podcast-data.json";
+import EXEC_SUMMARY from "./executive-summary.json";
+import TOOLS_DATA from "./tools-data.json";
 
 // ─── DATA ───────────────────────────────────────────────────────────────────
 
@@ -181,6 +183,7 @@ function Header({ activeView, setActiveView }) {
           <nav style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
             {[
               { key: "dashboard", label: "Dashboard" },
+              { key: "summary", label: "Executive Brief" },
               { key: "podcast", label: "Podcast Intel" },
               { key: "tasks", label: "Task Tracker" },
             ].map(v => (
@@ -317,6 +320,71 @@ function Dashboard({ tasks, podcastData }) {
           ))}
         </div>
       </div>
+
+      {/* Upcoming Tasks */}
+      {(() => {
+        const today = new Date().toISOString().split("T")[0];
+        const upcoming = tasks
+          .filter(t => !t.done && t.dueDate)
+          .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+          .slice(0, 8);
+        const overdue = upcoming.filter(t => t.dueDate < today);
+        if (upcoming.length === 0) return null;
+        return (
+          <div style={{
+            background: C.white, border: `1px solid ${C.border}`, borderRadius: 14,
+            padding: 28, marginBottom: 32, boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+          }}>
+            <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: "0 0 4px 0" }}>
+              Upcoming Tasks
+            </h3>
+            <p style={{ fontFamily: font, fontSize: 12, color: C.textMuted, margin: "0 0 16px 0" }}>
+              {overdue.length > 0 ? `${overdue.length} overdue · ` : ""}{upcoming.length} tasks with due dates
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+              {upcoming.map((t, i) => {
+                const isOverdue = t.dueDate < today;
+                const isSoon = !isOverdue && t.dueDate <= new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0];
+                const catInfo = TASK_CATEGORIES.find(c => c.id === t.category);
+                return (
+                  <div key={t.id} style={{
+                    display: "flex", alignItems: "center", gap: 12, padding: "12px 0",
+                    borderTop: i > 0 ? `1px solid ${C.borderLight}` : "none",
+                  }}>
+                    <div style={{
+                      width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+                      background: priorityColors[t.priority] || C.textMuted,
+                    }} />
+                    <span style={{ fontSize: 16, width: 24, flexShrink: 0 }}>{catInfo?.icon || "📋"}</span>
+                    <div style={{ flex: 1, fontFamily: font, fontSize: 13, fontWeight: 500, color: C.charcoal }}>
+                      {t.task}
+                    </div>
+                    {t.assignee && (
+                      <span style={{
+                        fontFamily: font, fontSize: 10, fontWeight: 700,
+                        width: 24, height: 24, borderRadius: "50%",
+                        background: t.assignee === "JM" ? C.ocean : C.mint,
+                        color: C.white, display: "flex", alignItems: "center", justifyContent: "center",
+                        flexShrink: 0,
+                      }}>
+                        {t.assignee}
+                      </span>
+                    )}
+                    <span style={{
+                      fontFamily: font, fontSize: 12, fontWeight: 600, flexShrink: 0,
+                      color: isOverdue ? "#E53E3E" : isSoon ? "#D69E2E" : C.textMuted,
+                      background: isOverdue ? "#FED7D7" : isSoon ? "#FEFCBF" : C.pageBg,
+                      padding: "3px 10px", borderRadius: 6,
+                    }}>
+                      {new Date(t.dueDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Executive Summary */}
       <div style={{
@@ -682,7 +750,7 @@ function TaskView({ tasks, setTasks }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ fontFamily: font, fontSize: 26, fontWeight: 800, color: C.charcoal, margin: "0 0 6px 0", letterSpacing: "-0.02em" }}>
-            Launch Task Tracker
+            Pending Tasks
           </h2>
           <p style={{ fontFamily: font, fontSize: 14, color: C.textMuted, margin: 0, fontWeight: 500 }}>
             Curated from 538+ episodes — only the tasks that actually matter
@@ -971,6 +1039,408 @@ function TaskView({ tasks, setTasks }) {
   );
 }
 
+// ─── EXECUTIVE SUMMARY ────────────────────────────────────────────────────
+
+const categoryIcons = {
+  "Operations": "⚙️",
+  "Industry Trends": "📈",
+  "Pricing & Revenue": "💰",
+  "Marketing": "📸",
+  "Getting Started": "🏗️",
+  "Legal & Compliance": "⚖️",
+  "Guest Experience": "⭐",
+  "Furnishing & Design": "🛋️",
+  "Technology": "💻",
+};
+
+function ExecutiveSummary() {
+  const [expandedCat, setExpandedCat] = useState(null);
+  const data = EXEC_SUMMARY;
+
+  return (
+    <div style={{ maxWidth: 1000, margin: "0 auto", padding: "32px 24px 64px" }}>
+      {/* Header */}
+      <div style={{ marginBottom: 32 }}>
+        <h2 style={{ fontFamily: font, fontSize: 26, fontWeight: 800, color: C.charcoal, margin: "0 0 8px 0", letterSpacing: "-0.02em" }}>
+          Executive Brief
+        </h2>
+        <p style={{ fontFamily: font, fontSize: 14, color: C.textMuted, margin: 0 }}>
+          Intelligence from {data.nonGimmickCount} episodes of <em>Thanks for Visiting</em> — filtered for luxury STR relevance, gimmicks excluded
+        </p>
+      </div>
+
+      {/* Luxury Strategy Overview */}
+      <div style={{
+        background: `linear-gradient(135deg, ${C.charcoal} 0%, #1a1a2e 100%)`,
+        borderRadius: 16,
+        padding: "32px 36px",
+        marginBottom: 28,
+        color: C.white,
+      }}>
+        <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, margin: "0 0 16px 0", color: C.seafoam }}>
+          Pool & Paddle — Luxury Positioning Strategy
+        </h3>
+        <div style={{ fontFamily: font, fontSize: 14, lineHeight: 1.85, color: "rgba(255,255,255,0.88)" }}>
+          <p style={{ margin: "0 0 14px 0" }}>
+            <strong style={{ color: C.white }}>Your Differentiator:</strong> A pool and paddle sports property has a built-in guest avatar and brand identity that most STRs lack. Annette and Sarah consistently emphasize that confused positioning loses bookings — your focused niche is a strategic advantage. Every design choice, amenity, photo, and listing word should reinforce the luxury active-leisure experience.
+          </p>
+          <p style={{ margin: "0 0 14px 0" }}>
+            <strong style={{ color: C.white }}>The Luxury Framework:</strong> Premium guests expect flawless operations, not just pretty interiors. Invest where guests feel it most — sleep quality, seating comfort, kitchen function, and the pool area experience. Create one unforgettable "wow" moment that guests photograph and share. Skip decorative clutter, cheap barware, and trend-chasing.
+          </p>
+          <p style={{ margin: 0 }}>
+            <strong style={{ color: C.white }}>Revenue-First Mindset:</strong> Use dynamic pricing tools (PriceLabs/Wheelhouse), track Airbnb's professional hosting metrics, analyze competitor reviews systematically, and treat this as a data-driven business from day one. The podcast's most successful hosts combine hospitality instinct with analytical rigor.
+          </p>
+        </div>
+      </div>
+
+      {/* Stats Row */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 28 }}>
+        {[
+          { label: "Episodes Analyzed", value: data.nonGimmickCount, color: C.mint },
+          { label: "Critical Priority", value: data.categories.reduce((s, c) => s + c.topEpisodes.filter(e => e.priority === "critical").length, 0) > 0 ? data.categories.reduce((s, c) => s + c.criticalHighCount, 0) : 0, sub: "critical + high", color: C.ocean },
+          { label: "Categories", value: data.categories.length, color: C.mint },
+          { label: "Gimmicks Excluded", value: data.totalEpisodes - data.nonGimmickCount, color: C.textMuted },
+        ].map((s, i) => (
+          <div key={i} style={{
+            background: C.white, border: `1px solid ${C.border}`, borderRadius: 12,
+            padding: "16px 18px", textAlign: "center",
+          }}>
+            <div style={{ fontFamily: font, fontSize: 28, fontWeight: 800, color: s.color }}>{s.value}</div>
+            <div style={{ fontFamily: font, fontSize: 11, color: C.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Top Critical Insights */}
+      <div style={{
+        background: C.white, border: `1px solid ${C.border}`, borderRadius: 14,
+        padding: 28, marginBottom: 28, boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+      }}>
+        <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: "0 0 6px 0" }}>
+          Top 20 Must-Know Insights
+        </h3>
+        <p style={{ fontFamily: font, fontSize: 12, color: C.textMuted, margin: "0 0 20px 0" }}>
+          Critical-priority takeaways across all categories — the essentials for launching a luxury STR
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+          {data.topInsights.map((ep, i) => (
+            <div key={ep.ep} style={{
+              display: "flex", gap: 14, alignItems: "flex-start",
+              padding: "14px 0",
+              borderTop: i > 0 ? `1px solid ${C.borderLight}` : "none",
+            }}>
+              <div style={{
+                minWidth: 32, height: 32, borderRadius: 8,
+                background: C.oceanLight, color: C.ocean,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontFamily: font, fontSize: 11, fontWeight: 700, flexShrink: 0, marginTop: 2,
+              }}>
+                {ep.ep}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: font, fontSize: 13, fontWeight: 600, color: C.charcoal, marginBottom: 4 }}>
+                  {ep.title}
+                  <span style={{
+                    marginLeft: 8, fontSize: 10, fontWeight: 600, color: C.textMuted,
+                    background: C.pageBg, padding: "2px 8px", borderRadius: 4,
+                  }}>
+                    {ep.category}
+                  </span>
+                </div>
+                <div style={{ fontFamily: font, fontSize: 13, color: C.textSecondary, lineHeight: 1.6 }}>
+                  {ep.keyInsight}
+                </div>
+              </div>
+              <a
+                href={`https://thanksforvisiting.com/podcasts/${ep.ep}/`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  fontFamily: font, fontSize: 11, color: C.mint, textDecoration: "none",
+                  fontWeight: 600, flexShrink: 0, marginTop: 4,
+                }}
+              >
+                Listen
+              </a>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Category Deep Dives */}
+      <div style={{ marginBottom: 28 }}>
+        <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: "0 0 20px 0" }}>
+          Category Intelligence
+        </h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {data.categories.map(cat => {
+            const isOpen = expandedCat === cat.name;
+            return (
+              <div key={cat.name} style={{
+                background: C.white, border: `1px solid ${C.border}`, borderRadius: 14,
+                overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+              }}>
+                <button
+                  onClick={() => setExpandedCat(isOpen ? null : cat.name)}
+                  style={{
+                    width: "100%", display: "flex", alignItems: "center", gap: 14,
+                    padding: "18px 24px", border: "none", background: "transparent",
+                    cursor: "pointer", textAlign: "left",
+                  }}
+                >
+                  <span style={{ fontSize: 22 }}>{categoryIcons[cat.name] || "📋"}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontFamily: font, fontSize: 15, fontWeight: 700, color: C.charcoal }}>
+                      {cat.name}
+                    </div>
+                    <div style={{ fontFamily: font, fontSize: 12, color: C.textMuted, marginTop: 2 }}>
+                      {cat.count} episodes · {cat.criticalHighCount} critical/high priority
+                    </div>
+                  </div>
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                  }}>
+                    <div style={{
+                      width: 80, height: 6, background: C.seafoamFaint, borderRadius: 3, overflow: "hidden",
+                    }}>
+                      <div style={{
+                        width: `${(cat.criticalHighCount / cat.count * 100)}%`,
+                        height: "100%", background: C.mint, borderRadius: 3,
+                      }} />
+                    </div>
+                    <span style={{
+                      fontFamily: font, fontSize: 18, color: C.textMuted,
+                      transform: isOpen ? "rotate(180deg)" : "rotate(0deg)",
+                      transition: "transform 0.2s", display: "inline-block",
+                    }}>
+                      ▾
+                    </span>
+                  </div>
+                </button>
+
+                {isOpen && (
+                  <div style={{ padding: "0 24px 24px", borderTop: `1px solid ${C.borderLight}` }}>
+                    {/* Luxury Relevance */}
+                    <div style={{
+                      background: C.seafoamFaint, borderRadius: 10, padding: "14px 18px",
+                      marginTop: 16, marginBottom: 18,
+                    }}>
+                      <div style={{ fontFamily: font, fontSize: 11, fontWeight: 700, color: C.mint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+                        Luxury Relevance
+                      </div>
+                      <div style={{ fontFamily: font, fontSize: 13, color: C.charcoal, lineHeight: 1.6 }}>
+                        {cat.luxuryRelevance}
+                      </div>
+                    </div>
+
+                    {/* Tags */}
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 18 }}>
+                      {cat.topTags.map(tag => (
+                        <span key={tag} style={{
+                          fontFamily: font, fontSize: 11, fontWeight: 600, color: C.mint,
+                          background: C.seafoamFaint, padding: "4px 10px", borderRadius: 6,
+                        }}>
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+
+                    {/* Top Episodes */}
+                    <div style={{ fontFamily: font, fontSize: 12, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>
+                      Top Episodes
+                    </div>
+                    {cat.topEpisodes.map((ep, i) => (
+                      <div key={ep.ep} style={{
+                        display: "flex", gap: 12, alignItems: "flex-start",
+                        padding: "12px 0",
+                        borderTop: i > 0 ? `1px solid ${C.borderLight}` : "none",
+                      }}>
+                        <span style={{
+                          fontFamily: font, fontSize: 11, fontWeight: 700, color: C.ocean,
+                          background: C.oceanLight, padding: "3px 8px", borderRadius: 6, flexShrink: 0,
+                        }}>
+                          EP {ep.ep}
+                        </span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontFamily: font, fontSize: 13, fontWeight: 600, color: C.charcoal, marginBottom: 3 }}>
+                            {ep.title}
+                          </div>
+                          <div style={{ fontFamily: font, fontSize: 12, color: C.textSecondary, lineHeight: 1.5 }}>
+                            {ep.keyInsight}
+                          </div>
+                        </div>
+                        <a
+                          href={`https://thanksforvisiting.com/podcasts/${ep.ep}/`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            fontFamily: font, fontSize: 11, color: C.mint, textDecoration: "none",
+                            fontWeight: 600, flexShrink: 0, marginTop: 2,
+                          }}
+                        >
+                          Listen
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Recommended Tools & Software */}
+      <div style={{
+        background: C.white, border: `1px solid ${C.border}`, borderRadius: 14,
+        padding: 28, marginBottom: 28, boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+      }}>
+        <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: "0 0 6px 0" }}>
+          Recommended Tools & Software
+        </h3>
+        <p style={{ fontFamily: font, fontSize: 12, color: C.textMuted, margin: "0 0 20px 0" }}>
+          Industry tools referenced across {data.nonGimmickCount} episodes — grouped by function
+        </p>
+        {(() => {
+          const tools = TOOLS_DATA.tools.filter(t => t.name !== "Airbnb"); // Airbnb is obvious
+          const grouped = {};
+          tools.forEach(t => {
+            if (!grouped[t.category]) grouped[t.category] = [];
+            grouped[t.category].push(t);
+          });
+          const catOrder = Object.keys(grouped).sort((a, b) => {
+            const aMax = Math.max(...grouped[a].map(t => t.episodeCount));
+            const bMax = Math.max(...grouped[b].map(t => t.episodeCount));
+            return bMax - aMax;
+          });
+          const catIcons = {
+            "Dynamic Pricing": "📊", "Operations & Cleaning": "🧹", "Insurance": "🛡️",
+            "Property Management (PMS)": "🏠", "Smart Home & Security": "🔐",
+            "Booking Platform": "🌐", "Guest Experience": "🎁", "AI Tools": "🤖",
+            "Accounting & Finance": "📒", "Social Media & Marketing": "📱",
+            "Direct Booking & Marketing": "🔗", "Automation": "⚡",
+            "Communication & Productivity": "💬", "Payment Processing": "💳",
+          };
+          return (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
+              {catOrder.map(cat => (
+                <div key={cat} style={{
+                  border: `1px solid ${C.borderLight}`, borderRadius: 12, padding: "16px 20px",
+                }}>
+                  <div style={{
+                    fontFamily: font, fontSize: 13, fontWeight: 700, color: C.charcoal, marginBottom: 12,
+                    display: "flex", alignItems: "center", gap: 8,
+                  }}>
+                    <span>{catIcons[cat] || "📋"}</span> {cat}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {grouped[cat].sort((a, b) => b.episodeCount - a.episodeCount).map(tool => (
+                      <div key={tool.name} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                        <div style={{
+                          minWidth: 28, height: 28, borderRadius: 7,
+                          background: C.seafoamFaint, color: C.mint,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontFamily: font, fontSize: 10, fontWeight: 700, flexShrink: 0,
+                        }}>
+                          {tool.episodeCount}
+                        </div>
+                        <div>
+                          <div style={{ fontFamily: font, fontSize: 13, fontWeight: 600, color: C.charcoal }}>
+                            {tool.name}
+                          </div>
+                          <div style={{ fontFamily: font, fontSize: 11, color: C.textMuted, lineHeight: 1.4, marginTop: 2 }}>
+                            {tool.description}
+                          </div>
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
+                            {tool.episodes.slice(0, 3).map(ep => (
+                              <a
+                                key={ep}
+                                href={`https://thanksforvisiting.com/podcasts/${ep}/`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{
+                                  fontFamily: font, fontSize: 10, color: C.ocean, textDecoration: "none",
+                                  background: C.oceanLight, padding: "2px 6px", borderRadius: 4, fontWeight: 600,
+                                }}
+                              >
+                                EP {ep}
+                              </a>
+                            ))}
+                            {tool.episodes.length > 3 && (
+                              <span style={{ fontFamily: font, fontSize: 10, color: C.textMuted, padding: "2px 4px" }}>
+                                +{tool.episodes.length - 3} more
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+        <div style={{
+          marginTop: 20, padding: "14px 18px", background: C.seafoamFaint,
+          borderRadius: 10, fontFamily: font, fontSize: 12, color: C.textSecondary, lineHeight: 1.6,
+        }}>
+          <strong style={{ color: C.charcoal }}>Discount codes & affiliate links:</strong> Annette and Sarah frequently partner with these tools. Visit{" "}
+          <a href="https://thanksforvisiting.com" target="_blank" rel="noopener noreferrer" style={{ color: C.mint, fontWeight: 600 }}>
+            thanksforvisiting.com
+          </a>{" "}
+          for their current partner links and promo codes — they often offer exclusive discounts for PriceLabs, Breezeway, Proper Insurance, StayFi, and other recommended tools.
+        </div>
+      </div>
+
+      {/* Tag Cloud */}
+      <div style={{
+        background: C.white, border: `1px solid ${C.border}`, borderRadius: 14,
+        padding: 28, boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+      }}>
+        <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: "0 0 6px 0" }}>
+          Most Discussed Topics
+        </h3>
+        <p style={{ fontFamily: font, fontSize: 12, color: C.textMuted, margin: "0 0 18px 0" }}>
+          Top 30 tags across all {data.nonGimmickCount} episodes — sized by frequency
+        </p>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
+          {data.tagCloud.map((t, i) => {
+            const maxCount = data.tagCloud[0].count;
+            const minSize = 11;
+            const maxSize = 20;
+            const size = minSize + ((t.count / maxCount) * (maxSize - minSize));
+            const opacity = 0.5 + (t.count / maxCount) * 0.5;
+            return (
+              <span key={t.tag} style={{
+                fontFamily: font,
+                fontSize: size,
+                fontWeight: t.count > maxCount * 0.6 ? 700 : 500,
+                color: C.charcoal,
+                opacity,
+                padding: "4px 10px",
+                cursor: "default",
+              }}>
+                {t.tag}
+                <span style={{ fontSize: 10, color: C.textMuted, marginLeft: 3, fontWeight: 500 }}>
+                  {t.count}
+                </span>
+              </span>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{
+        textAlign: "center", marginTop: 32, fontFamily: font, fontSize: 11, color: C.textMuted,
+      }}>
+        Generated from {data.totalEpisodes} episodes · {data.nonGimmickCount} analyzed · {data.totalEpisodes - data.nonGimmickCount} gimmicks excluded · Updated {data.generatedDate}
+      </div>
+    </div>
+  );
+}
+
 // ─── MAIN APP ──────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -1003,6 +1473,7 @@ export default function App() {
       <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
       <Header activeView={activeView} setActiveView={setActiveView} />
       {activeView === "dashboard" && <Dashboard tasks={tasks} podcastData={PODCAST_DATABASE} />}
+      {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} />}
     </div>

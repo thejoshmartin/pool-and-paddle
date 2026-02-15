@@ -1,0 +1,703 @@
+{
+  "generatedDate": "2026-02-15",
+  "totalEpisodes": 517,
+  "nonGimmickCount": 514,
+  "categories": [
+    {
+      "name": "Operations",
+      "count": 140,
+      "criticalHighCount": 73,
+      "topEpisodes": [
+        {
+          "ep": 6,
+          "title": "Essential Tips for Cleaning Your Airbnb Property",
+          "keyInsight": "Cleanliness is the easiest differentiator to control and the most common complaint—make it non-negotiable to protect your reputation and reviews.",
+          "priority": "critical"
+        },
+        {
+          "ep": 63,
+          "title": "Justin Ford",
+          "keyInsight": "In the post-COVID world, cleaning is no longer just about appearance—it's a fundamental safety requirement that directly impacts guest booking decisions.",
+          "priority": "critical"
+        },
+        {
+          "ep": 84,
+          "title": "Annette + Sarah",
+          "keyInsight": "Frame feedback to your turnover team around guest experience rather than personal demands, remembering they run their own business and want you as a satisfied client.",
+          "priority": "critical"
+        },
+        {
+          "ep": 107,
+          "title": "Focusing on Preventative Maintenance, with Andrew Kaiser",
+          "keyInsight": "Preventative maintenance is essential for luxury properties with pools and amenities—proactively addressing the top maintenance issues prevents guest disappointments and expensive emergency repairs.",
+          "priority": "critical"
+        },
+        {
+          "ep": 118,
+          "title": "The Hidden Expense of Your Airbnb",
+          "keyInsight": "The cost of your time is the most overlooked expense in STR hosting and must be factored into profitability calculations to make informed business decisions about growth and delegation.",
+          "priority": "critical"
+        }
+      ],
+      "topTags": [
+        "property management",
+        "scaling",
+        "co-hosting",
+        "insurance",
+        "operations",
+        "maintenance",
+        "delegation",
+        "systems"
+      ],
+      "luxuryRelevance": "Operational excellence is the backbone of luxury hospitality. Guests paying premium rates expect flawless execution — from spotless turnovers to proactive maintenance."
+    },
+    {
+      "name": "Industry Trends",
+      "count": 77,
+      "criticalHighCount": 12,
+      "topEpisodes": [
+        {
+          "ep": 208,
+          "title": "BIG Airbnb Updates For 2023",
+          "keyInsight": "Airbnb's shift to prioritizing total price over nightly rate in search results fundamentally changes how hosts should structure their pricing and fee strategy.",
+          "priority": "critical"
+        },
+        {
+          "ep": 454,
+          "title": "Are your Airbnb bookings down?",
+          "keyInsight": "Don't rely on feelings or social chatter—use your own performance data, market pacing, and tools like PriceLabs to diagnose booking slowdowns and take strategic action.",
+          "priority": "critical"
+        },
+        {
+          "ep": 168,
+          "title": "Annette + Sarah",
+          "keyInsight": "Strategic additions like compelling design, EV charging stations, and leveraging tentpole events for direct bookings can significantly increase revenue without major capital investment.",
+          "priority": "high"
+        },
+        {
+          "ep": 210,
+          "title": "How To Become Recession-Proof with Real Estate with Kathy Fettke",
+          "keyInsight": "Recession-proofing your STR portfolio requires treating it as a true business with strategic positioning, not just passive property ownership.",
+          "priority": "high"
+        },
+        {
+          "ep": 279,
+          "title": "Make More Money, Honey: Hacking the STR Business Model",
+          "keyInsight": "Building passive income through creative real estate strategies like boarding houses and leveraging professional licenses can accelerate financial freedom, but requires careful attention to mental health during intense growth periods.",
+          "priority": "high"
+        }
+      ],
+      "topTags": [
+        "real estate investing",
+        "networking",
+        "scaling",
+        "property management",
+        "community",
+        "diversification",
+        "industry insights",
+        "portfolio growth"
+      ],
+      "luxuryRelevance": "Staying ahead of platform changes, regulatory shifts, and market trends protects your investment and reveals opportunities your competitors miss."
+    },
+    {
+      "name": "Pricing & Revenue",
+      "count": 53,
+      "criticalHighCount": 40,
+      "topEpisodes": [
+        {
+          "ep": 3,
+          "title": "Pricing Your Airbnb: What You Need to Know",
+          "keyInsight": "Pricing requires constant attention and adjustment—it's not a one-time decision but an ongoing revenue optimization practice.",
+          "priority": "critical"
+        },
+        {
+          "ep": 55,
+          "title": "Tactical Things You Can Do Tomorrow To Raise Revenue",
+          "keyInsight": "Hosts often undercharge by not accounting for all services they provide, leading to burnout and unsustainable business models that can be corrected with immediate tactical pricing adjustments.",
+          "priority": "critical"
+        },
+        {
+          "ep": 80,
+          "title": "How to Price Your Properties for Success with Meg Park",
+          "keyInsight": "Strategic pricing that balances short-term and long-term stay optimization, with appropriate booking window management, is fundamental to maximizing revenue and occupancy rates.",
+          "priority": "critical"
+        },
+        {
+          "ep": 135,
+          "title": "Revenue Management for the Rest of Us with Heather Richer",
+          "keyInsight": "Understanding revenue management fundamentals is critical for any STR host to optimize pricing, beat competition, and maximize profitability.",
+          "priority": "critical"
+        },
+        {
+          "ep": 155,
+          "title": "Kylan Pimley",
+          "keyInsight": "The critical shift from treating your STR as a job to running it as a business requires mastering revenue management and adopting a fundamentally different mindset than traditional property management.",
+          "priority": "critical"
+        }
+      ],
+      "topTags": [
+        "pricing strategy",
+        "revenue management",
+        "dynamic pricing",
+        "pricelabs",
+        "revenue optimization",
+        "occupancy",
+        "profitability",
+        "data analysis"
+      ],
+      "luxuryRelevance": "Premium positioning demands data-driven pricing strategy. Dynamic pricing tools and competitor analysis ensure your luxury property captures maximum revenue without undercutting your brand."
+    },
+    {
+      "name": "Marketing",
+      "count": 51,
+      "criticalHighCount": 34,
+      "topEpisodes": [
+        {
+          "ep": 5,
+          "title": "The Importance of Getting Professional Photos for Your Airbnb Property",
+          "keyInsight": "Professional photography is the single most important marketing investment for an STR—it's the primary driver of booking decisions.",
+          "priority": "critical"
+        },
+        {
+          "ep": 53,
+          "title": "Matthew Garsky",
+          "keyInsight": "Professional photography is a non-negotiable investment for luxury STR properties, as listing images are the primary driver of booking decisions and justify premium pricing.",
+          "priority": "critical"
+        },
+        {
+          "ep": 117,
+          "title": "Start Boosting Your Direct Bookings Today with Mark Simpson",
+          "keyInsight": "Building a direct booking strategy is essential for long-term STR profitability and business control, reducing the 15-20% fees paid to OTAs while building owned guest relationships.",
+          "priority": "critical"
+        },
+        {
+          "ep": 132,
+          "title": "Take Your Property from Overlooked to Overbooked with Brian and Kati Green",
+          "keyInsight": "Professional, strategic photography is the single most powerful tool for converting potential guests into bookings and directly impacts your property's revenue performance.",
+          "priority": "critical"
+        },
+        {
+          "ep": 150,
+          "title": "Breaking Down Our Sales Blitz Strategy",
+          "keyInsight": "Proactive sales efforts and community engagement during slow seasons are essential for maintaining occupancy rates rather than passively waiting for OTA bookings.",
+          "priority": "critical"
+        }
+      ],
+      "topTags": [
+        "marketing",
+        "social media",
+        "marketing strategy",
+        "direct bookings",
+        "direct booking",
+        "branding",
+        "website",
+        "photography"
+      ],
+      "luxuryRelevance": "Your listing is your storefront. Professional photography, compelling descriptions, and a strong direct booking presence establish the luxury brand identity that Pool & Paddle demands."
+    },
+    {
+      "name": "Getting Started",
+      "count": 49,
+      "criticalHighCount": 20,
+      "topEpisodes": [
+        {
+          "ep": 1,
+          "title": "Considering What to Invest When Starting an Airbnb",
+          "keyInsight": "Success in STR hosting requires emotional investment and differentiation, not just capital—your personal commitment is what will set you apart in a crowded market.",
+          "priority": "critical"
+        },
+        {
+          "ep": 29,
+          "title": "Funding Your Airbnb Investment Property",
+          "keyInsight": "Understanding specialized lending options for investment properties is critical for hosts looking to acquire dedicated STR properties rather than renting their primary residence.",
+          "priority": "critical"
+        },
+        {
+          "ep": 32,
+          "title": "Best & Worst Cities for Airbnb: Making Money & Paying Your Mortgage with Short-Term Rentals",
+          "keyInsight": "Data-driven location selection based on STR profitability metrics is the most critical decision for new hosts looking to cover mortgages or generate significant income.",
+          "priority": "critical"
+        },
+        {
+          "ep": 105,
+          "title": "Following the Journey from Idea to Income Property (Part 1)- with Shannon Leyh",
+          "keyInsight": "Following a real host's complete journey from idea to launch provides invaluable transparent insights into the actual financial and operational requirements of starting an STR business.",
+          "priority": "critical"
+        },
+        {
+          "ep": 106,
+          "title": "Following the Journey from Idea to Income Property (Part 2), with Shannon Leyh",
+          "keyInsight": "Hearing the complete outcome of a new host's journey—not just the optimistic beginning—provides realistic expectations for launching your first STR property.",
+          "priority": "critical"
+        }
+      ],
+      "topTags": [
+        "getting started",
+        "property acquisition",
+        "financing",
+        "investment",
+        "first property",
+        "market research",
+        "career transition",
+        "superhost"
+      ],
+      "luxuryRelevance": "A strong foundation prevents costly pivots. Define your guest avatar, research your market, and build your business infrastructure before your first booking."
+    },
+    {
+      "name": "Legal & Compliance",
+      "count": 48,
+      "criticalHighCount": 42,
+      "topEpisodes": [
+        {
+          "ep": 2,
+          "title": "The Ins and Outs of Market Research When Starting an Airbnb",
+          "keyInsight": "Area regulations are one of the biggest obstacles to STR success—verify legal compliance before making any property investments.",
+          "priority": "critical"
+        },
+        {
+          "ep": 38,
+          "title": "Annette + Sarah",
+          "keyInsight": "All bookings must go through the platform to maintain insurance coverage, liability protection, and avoid serious legal and financial risks.",
+          "priority": "critical"
+        },
+        {
+          "ep": 46,
+          "title": "How to Make Your Airbnb as Safe as Possible",
+          "keyInsight": "Property safety is a non-negotiable host responsibility that requires proactive maintenance systems, proper insurance, and documented safety protocols to protect both guests and your business.",
+          "priority": "critical"
+        },
+        {
+          "ep": 49,
+          "title": "8 Danger Zones in a Short Term Rental and How to Avoid Them- with Justin Ford",
+          "keyInsight": "Identifying and systematically addressing the eight most common danger zones in STRs prevents guest injuries and protects hosts from catastrophic liability—especially critical for properties with pools and recreational features.",
+          "priority": "critical"
+        },
+        {
+          "ep": 57,
+          "title": "How to Properly Insure your Short-Term Rental or Business",
+          "keyInsight": "Standard homeowner insurance does not cover short-term rental activity, making specialized STR insurance essential to avoid catastrophic financial exposure from guest injuries or property damage.",
+          "priority": "critical"
+        }
+      ],
+      "topTags": [
+        "liability",
+        "risk management",
+        "compliance",
+        "regulations",
+        "insurance",
+        "safety",
+        "guest safety",
+        "advocacy"
+      ],
+      "luxuryRelevance": "Protecting your investment starts with proper entity structure, insurance, and regulatory compliance. For luxury properties, the stakes — and potential liabilities — are higher."
+    },
+    {
+      "name": "Guest Experience",
+      "count": 47,
+      "criticalHighCount": 27,
+      "topEpisodes": [
+        {
+          "ep": 28,
+          "title": "Coffee, Robes, Phone Chargers, Flowers, & Other Details That Will Make Your Airbnb Stand Out",
+          "keyInsight": "Attention to small luxury details like quality coffee, robes, and chargers differentiates your property and drives positive reviews and Instagram marketing success.",
+          "priority": "critical"
+        },
+        {
+          "ep": 45,
+          "title": "How to Bounce Back When You Let Your Guests Down",
+          "keyInsight": "Your response to mistakes matters more than the mistakes themselves—swift, empathetic problem resolution can turn disappointed guests into loyal advocates.",
+          "priority": "critical"
+        },
+        {
+          "ep": 86,
+          "title": "Annette + Sarah",
+          "keyInsight": "Clear house rules aren't about control—they're about setting expectations that protect your property while ensuring guests know exactly what to expect for a better experience.",
+          "priority": "critical"
+        },
+        {
+          "ep": 147,
+          "title": "Back to the Basics: Refocusing on Guest Experience",
+          "keyInsight": "The best guest experience improvements are often simple, affordable details that show thoughtfulness rather than expensive or complex additions.",
+          "priority": "critical"
+        },
+        {
+          "ep": 177,
+          "title": "Deborah Labi",
+          "keyInsight": "Experiencing your property as a guest reveals critical friction points in the booking and stay journey that significantly impact guest satisfaction and reviews.",
+          "priority": "critical"
+        }
+      ],
+      "topTags": [
+        "guest experience",
+        "amenities",
+        "communication",
+        "guest service",
+        "hospitality",
+        "differentiation",
+        "guest communication",
+        "guest expectations"
+      ],
+      "luxuryRelevance": "The guest experience IS the product. Every touchpoint from booking to checkout should reinforce Pool & Paddle's luxury positioning and create shareable moments."
+    },
+    {
+      "name": "Furnishing & Design",
+      "count": 29,
+      "criticalHighCount": 19,
+      "topEpisodes": [
+        {
+          "ep": 130,
+          "title": "Elevating Your STR with High-Vibe Design with Moira Sedgwick",
+          "keyInsight": "Creating a distinctive, high-vibe design experience is critical for luxury STRs to command premium rates and stand out in competitive markets.",
+          "priority": "critical"
+        },
+        {
+          "ep": 169,
+          "title": "Annette + Sarah",
+          "keyInsight": "In today's competitive STR landscape, professional design and strategic staging are no longer optional—they're essential for standing out and driving bookings and revenue.",
+          "priority": "critical"
+        },
+        {
+          "ep": 241,
+          "title": "How to Design A Scroll-Stopping Listing with Bridgette Whitney",
+          "keyInsight": "Create intentional photo opportunity moments and truly unique design elements in your space to make listings scroll-stopping and bookable in competitive markets.",
+          "priority": "critical"
+        },
+        {
+          "ep": 270,
+          "title": "Hosting Hotline: Don't Skimp On Your Space! Tips for Large Airbnb Groups",
+          "keyInsight": "When designing for large groups, the main gathering and dining areas must accommodate ALL guests simultaneously—not just provide enough beds—since this is what guests actively search for and what creates the experience.",
+          "priority": "critical"
+        },
+        {
+          "ep": 376,
+          "title": "Should I Add a Hot Tub to My Airbnb Listing?",
+          "keyInsight": "For luxury retreat properties targeting couples, a hot tub is not optional—it's a baseline amenity that guests expect, similar to quality bedding.",
+          "priority": "critical"
+        }
+      ],
+      "topTags": [
+        "furnishing",
+        "guest experience",
+        "bedding",
+        "staging",
+        "interior design",
+        "differentiation",
+        "design",
+        "guest comfort"
+      ],
+      "luxuryRelevance": "In luxury STR, design is not decoration — it's brand expression. Invest where guests feel it (sleep, seating, kitchen) and create one unforgettable visual moment."
+    },
+    {
+      "name": "Technology",
+      "count": 20,
+      "criticalHighCount": 13,
+      "topEpisodes": [
+        {
+          "ep": 180,
+          "title": "Hosting Hotline",
+          "keyInsight": "Investing in reliable smart locks eliminates key exchange hassles, saves money on lock changes between guests, and provides better security and access control for STR operations.",
+          "priority": "critical"
+        },
+        {
+          "ep": 289,
+          "title": "Our Favorite Short-Term Rental Host Tools",
+          "keyInsight": "Building a successful STR business requires a strategic tech stack covering channel management, dynamic pricing, operations automation, guest screening, and specialized insurance—not just listing on Airbnb.",
+          "priority": "critical"
+        },
+        {
+          "ep": 437,
+          "title": "Why Your PMS is the Heartbeat of Your STR Business—A Conversation with Hostfully's CEO",
+          "keyInsight": "PMS hopping wastes time and money; success comes from selecting a platform aligned with your business model and fully utilizing its features rather than constantly searching for the perfect solution.",
+          "priority": "critical"
+        },
+        {
+          "ep": 446,
+          "title": "What's the Best Smart Lock for Your Airbnb?",
+          "keyInsight": "A quality smart lock with backup key capability is essential infrastructure for seamless guest check-in, and the backup key option is non-negotiable for preventing costly lockout emergencies.",
+          "priority": "critical"
+        },
+        {
+          "ep": 30,
+          "title": "How to Automate Your Airbnb & What it's Like to Airbnb Your Home When You Travel",
+          "keyInsight": "Free automation tools like Zapier can streamline STR operations, making it feasible to rent your personal home while traveling with minimal manual management.",
+          "priority": "high"
+        }
+      ],
+      "topTags": [
+        "automation",
+        "pms",
+        "property management software",
+        "efficiency",
+        "breezeway",
+        "scalability",
+        "operations",
+        "smart locks"
+      ],
+      "luxuryRelevance": "Smart technology enables the seamless, frictionless experience luxury guests expect. PMS, dynamic pricing, and smart access are non-negotiable at this tier."
+    }
+  ],
+  "topInsights": [
+    {
+      "ep": 1,
+      "title": "Considering What to Invest When Starting an Airbnb",
+      "keyInsight": "Success in STR hosting requires emotional investment and differentiation, not just capital—your personal commitment is what will set you apart in a crowded market.",
+      "category": "Getting Started",
+      "priority": "critical"
+    },
+    {
+      "ep": 2,
+      "title": "The Ins and Outs of Market Research When Starting an Airbnb",
+      "keyInsight": "Area regulations are one of the biggest obstacles to STR success—verify legal compliance before making any property investments.",
+      "category": "Legal & Compliance",
+      "priority": "critical"
+    },
+    {
+      "ep": 3,
+      "title": "Pricing Your Airbnb: What You Need to Know",
+      "keyInsight": "Pricing requires constant attention and adjustment—it's not a one-time decision but an ongoing revenue optimization practice.",
+      "category": "Pricing & Revenue",
+      "priority": "critical"
+    },
+    {
+      "ep": 5,
+      "title": "The Importance of Getting Professional Photos for Your Airbnb Property",
+      "keyInsight": "Professional photography is the single most important marketing investment for an STR—it's the primary driver of booking decisions.",
+      "category": "Marketing",
+      "priority": "critical"
+    },
+    {
+      "ep": 6,
+      "title": "Essential Tips for Cleaning Your Airbnb Property",
+      "keyInsight": "Cleanliness is the easiest differentiator to control and the most common complaint—make it non-negotiable to protect your reputation and reviews.",
+      "category": "Operations",
+      "priority": "critical"
+    },
+    {
+      "ep": 28,
+      "title": "Coffee, Robes, Phone Chargers, Flowers, & Other Details That Will Make Your Airbnb Stand Out",
+      "keyInsight": "Attention to small luxury details like quality coffee, robes, and chargers differentiates your property and drives positive reviews and Instagram marketing success.",
+      "category": "Guest Experience",
+      "priority": "critical"
+    },
+    {
+      "ep": 29,
+      "title": "Funding Your Airbnb Investment Property",
+      "keyInsight": "Understanding specialized lending options for investment properties is critical for hosts looking to acquire dedicated STR properties rather than renting their primary residence.",
+      "category": "Getting Started",
+      "priority": "critical"
+    },
+    {
+      "ep": 32,
+      "title": "Best & Worst Cities for Airbnb: Making Money & Paying Your Mortgage with Short-Term Rentals",
+      "keyInsight": "Data-driven location selection based on STR profitability metrics is the most critical decision for new hosts looking to cover mortgages or generate significant income.",
+      "category": "Getting Started",
+      "priority": "critical"
+    },
+    {
+      "ep": 38,
+      "title": "Annette + Sarah",
+      "keyInsight": "All bookings must go through the platform to maintain insurance coverage, liability protection, and avoid serious legal and financial risks.",
+      "category": "Legal & Compliance",
+      "priority": "critical"
+    },
+    {
+      "ep": 45,
+      "title": "How to Bounce Back When You Let Your Guests Down",
+      "keyInsight": "Your response to mistakes matters more than the mistakes themselves—swift, empathetic problem resolution can turn disappointed guests into loyal advocates.",
+      "category": "Guest Experience",
+      "priority": "critical"
+    },
+    {
+      "ep": 46,
+      "title": "How to Make Your Airbnb as Safe as Possible",
+      "keyInsight": "Property safety is a non-negotiable host responsibility that requires proactive maintenance systems, proper insurance, and documented safety protocols to protect both guests and your business.",
+      "category": "Legal & Compliance",
+      "priority": "critical"
+    },
+    {
+      "ep": 49,
+      "title": "8 Danger Zones in a Short Term Rental and How to Avoid Them- with Justin Ford",
+      "keyInsight": "Identifying and systematically addressing the eight most common danger zones in STRs prevents guest injuries and protects hosts from catastrophic liability—especially critical for properties with pools and recreational features.",
+      "category": "Legal & Compliance",
+      "priority": "critical"
+    },
+    {
+      "ep": 53,
+      "title": "Matthew Garsky",
+      "keyInsight": "Professional photography is a non-negotiable investment for luxury STR properties, as listing images are the primary driver of booking decisions and justify premium pricing.",
+      "category": "Marketing",
+      "priority": "critical"
+    },
+    {
+      "ep": 55,
+      "title": "Tactical Things You Can Do Tomorrow To Raise Revenue",
+      "keyInsight": "Hosts often undercharge by not accounting for all services they provide, leading to burnout and unsustainable business models that can be corrected with immediate tactical pricing adjustments.",
+      "category": "Pricing & Revenue",
+      "priority": "critical"
+    },
+    {
+      "ep": 57,
+      "title": "How to Properly Insure your Short-Term Rental or Business",
+      "keyInsight": "Standard homeowner insurance does not cover short-term rental activity, making specialized STR insurance essential to avoid catastrophic financial exposure from guest injuries or property damage.",
+      "category": "Legal & Compliance",
+      "priority": "critical"
+    },
+    {
+      "ep": 63,
+      "title": "Justin Ford",
+      "keyInsight": "In the post-COVID world, cleaning is no longer just about appearance—it's a fundamental safety requirement that directly impacts guest booking decisions.",
+      "category": "Operations",
+      "priority": "critical"
+    },
+    {
+      "ep": 80,
+      "title": "How to Price Your Properties for Success with Meg Park",
+      "keyInsight": "Strategic pricing that balances short-term and long-term stay optimization, with appropriate booking window management, is fundamental to maximizing revenue and occupancy rates.",
+      "category": "Pricing & Revenue",
+      "priority": "critical"
+    },
+    {
+      "ep": 84,
+      "title": "Annette + Sarah",
+      "keyInsight": "Frame feedback to your turnover team around guest experience rather than personal demands, remembering they run their own business and want you as a satisfied client.",
+      "category": "Operations",
+      "priority": "critical"
+    },
+    {
+      "ep": 86,
+      "title": "Annette + Sarah",
+      "keyInsight": "Clear house rules aren't about control—they're about setting expectations that protect your property while ensuring guests know exactly what to expect for a better experience.",
+      "category": "Guest Experience",
+      "priority": "critical"
+    },
+    {
+      "ep": 94,
+      "title": "Justin Ford - How to Make Your Short-Term Rental Safe: Top 5 Preventable STR Accidents from 2020",
+      "keyInsight": "Proactive safety measures including CO alarms, pool safety protocols, and structural inspections are non-negotiable for preventing liability and protecting guest lives.",
+      "category": "Legal & Compliance",
+      "priority": "critical"
+    }
+  ],
+  "tagCloud": [
+    {
+      "tag": "property management",
+      "count": 43
+    },
+    {
+      "tag": "pricing strategy",
+      "count": 33
+    },
+    {
+      "tag": "guest experience",
+      "count": 31
+    },
+    {
+      "tag": "scaling",
+      "count": 30
+    },
+    {
+      "tag": "revenue management",
+      "count": 28
+    },
+    {
+      "tag": "insurance",
+      "count": 26
+    },
+    {
+      "tag": "direct bookings",
+      "count": 25
+    },
+    {
+      "tag": "pricelabs",
+      "count": 22
+    },
+    {
+      "tag": "dynamic pricing",
+      "count": 21
+    },
+    {
+      "tag": "co-hosting",
+      "count": 21
+    },
+    {
+      "tag": "revenue optimization",
+      "count": 21
+    },
+    {
+      "tag": "risk management",
+      "count": 20
+    },
+    {
+      "tag": "liability",
+      "count": 20
+    },
+    {
+      "tag": "operations",
+      "count": 19
+    },
+    {
+      "tag": "amenities",
+      "count": 19
+    },
+    {
+      "tag": "guest communication",
+      "count": 19
+    },
+    {
+      "tag": "real estate investing",
+      "count": 18
+    },
+    {
+      "tag": "direct booking",
+      "count": 18
+    },
+    {
+      "tag": "safety",
+      "count": 17
+    },
+    {
+      "tag": "marketing",
+      "count": 16
+    },
+    {
+      "tag": "compliance",
+      "count": 16
+    },
+    {
+      "tag": "maintenance",
+      "count": 16
+    },
+    {
+      "tag": "photography",
+      "count": 15
+    },
+    {
+      "tag": "profitability",
+      "count": 15
+    },
+    {
+      "tag": "communication",
+      "count": 15
+    },
+    {
+      "tag": "differentiation",
+      "count": 14
+    },
+    {
+      "tag": "branding",
+      "count": 14
+    },
+    {
+      "tag": "occupancy",
+      "count": 14
+    },
+    {
+      "tag": "regulations",
+      "count": 13
+    },
+    {
+      "tag": "social media",
+      "count": 13
+    }
+  ]
+}

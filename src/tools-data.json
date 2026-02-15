@@ -1,0 +1,899 @@
+{
+  "tools": [
+    {
+      "name": "ChatGPT",
+      "category": "AI Tools",
+      "description": "AI chatbot for content and assistance",
+      "episodes": [
+        295,
+        361,
+        523,
+        527
+      ],
+      "episodeCount": 4,
+      "mentionContext": "Ep 295 (title): \"ChatGPT X Airbnb? Learn How To Utilize AI in Your STR Business\" | Ep 361 (title): \"We Bought Land (Part 2): Use ChatGPT in Your STR Competitive Analysis\" | Ep 523 (title): \"How to Shop Your Competition Using ChatGPT and Boost Bookings Fast\""
+    },
+    {
+      "name": "QuickBooks",
+      "category": "Accounting & Finance",
+      "description": "Accounting software for businesses",
+      "episodes": [
+        209,
+        404
+      ],
+      "episodeCount": 2,
+      "mentionContext": "Ep 209 (summary): \"...g whether industry-specific tools or general platforms like QuickBooks are better. They review options including Stessa, Xero, Wav...\" | Ep 404 (summary): \"...tion. Sarah and Annette prioritize accounting software like QuickBooks first, then safety tech like NoiseAware, followed by growth...\""
+    },
+    {
+      "name": "Stessa",
+      "category": "Accounting & Finance",
+      "description": "Real estate financial management tool",
+      "episodes": [
+        209
+      ],
+      "episodeCount": 1,
+      "mentionContext": "Ep 209 (summary): \"...s like QuickBooks are better. They review options including Stessa, Xero, Wave, and QuickBooks Online.\""
+    },
+    {
+      "name": "Host Tools",
+      "category": "Automation",
+      "description": "Automated messaging and reviews for Airbnb",
+      "episodes": [
+        140,
+        289
+      ],
+      "episodeCount": 2,
+      "mentionContext": "Ep 140 (tags): \"...bnb updates platform changes policy updates airbnb features host tools compliance platform management\" | Ep 289 (title): \"Our Favorite Short-Term Rental Host Tools\""
+    },
+    {
+      "name": "Zapier",
+      "category": "Automation",
+      "description": "Workflow automation platform",
+      "episodes": [
+        30
+      ],
+      "episodeCount": 1,
+      "mentionContext": "Ep 30 (summary): \"...e shares how he automated his STR operations for free using Zapier while renting his personal home during business travel. The...\""
+    },
+    {
+      "name": "Airbnb",
+      "category": "Booking Platform",
+      "description": "Leading short-term rental marketplace",
+      "episodes": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        20,
+        22,
+        23,
+        25,
+        27,
+        28,
+        29,
+        30,
+        32,
+        33,
+        35,
+        36,
+        37,
+        38,
+        40,
+        43,
+        46,
+        47,
+        53,
+        58,
+        62,
+        64,
+        75,
+        76,
+        85,
+        87,
+        88,
+        92,
+        93,
+        95,
+        98,
+        99,
+        100,
+        103,
+        118,
+        131,
+        140,
+        153,
+        171,
+        181,
+        184,
+        190,
+        195,
+        208,
+        215,
+        218,
+        219,
+        220,
+        221,
+        222,
+        223,
+        224,
+        226,
+        229,
+        230,
+        232,
+        234,
+        235,
+        236,
+        238,
+        239,
+        240,
+        241,
+        242,
+        244,
+        246,
+        247,
+        249,
+        250,
+        252,
+        256,
+        258,
+        264,
+        265,
+        266,
+        268,
+        270,
+        272,
+        274,
+        284,
+        288,
+        289,
+        290,
+        295,
+        296,
+        307,
+        309,
+        316,
+        321,
+        324,
+        325,
+        330,
+        332,
+        335,
+        347,
+        353,
+        354,
+        356,
+        357,
+        358,
+        359,
+        360,
+        362,
+        363,
+        375,
+        376,
+        378,
+        380,
+        381,
+        382,
+        390,
+        396,
+        402,
+        403,
+        405,
+        408,
+        409,
+        411,
+        412,
+        414,
+        416,
+        419,
+        420,
+        423,
+        424,
+        425,
+        426,
+        429,
+        431,
+        432,
+        438,
+        439,
+        440,
+        442,
+        444,
+        445,
+        446,
+        447,
+        450,
+        451,
+        452,
+        454,
+        456,
+        458,
+        460,
+        465,
+        471,
+        472,
+        475,
+        479,
+        481,
+        484,
+        487,
+        488,
+        490,
+        491,
+        492,
+        496,
+        504,
+        508,
+        510,
+        513,
+        514,
+        516,
+        519,
+        524,
+        530,
+        532,
+        537
+      ],
+      "episodeCount": 176,
+      "mentionContext": "Ep 1 (title): \"Considering What to Invest When Starting an Airbnb\" | Ep 2 (title): \"The Ins and Outs of Market Research When Starting an Airbnb\" | Ep 3 (title): \"Pricing Your Airbnb: What You Need to Know\""
+    },
+    {
+      "name": "VRBO",
+      "category": "Booking Platform",
+      "description": "Vacation rental marketplace by Expedia",
+      "episodes": [
+        171,
+        181,
+        318,
+        452,
+        514
+      ],
+      "episodeCount": 5,
+      "mentionContext": "Ep 171 (summary): \"...king platforms and diversifying beyond OTAs like Airbnb and Vrbo. They discuss the rental market bubble, industry consolidat...\" | Ep 181 (summary): \"...dvocates for diversifying beyond single OTAs like Airbnb or VRBO to reduce dependency and risk.\" | Ep 318 (summary): \"...est them months before their stay. The hosts discuss recent VRBO booking concerns, recommend honoring your comfort level, an...\""
+    },
+    {
+      "name": "Furnished Finder",
+      "category": "Booking Platform",
+      "description": "Mid-term rental marketplace for traveling professionals",
+      "episodes": [
+        332,
+        390,
+        466,
+        490,
+        505
+      ],
+      "episodeCount": 5,
+      "mentionContext": "Ep 332 (tags): \"...entals tenant screening lease agreements 28-day rule zillow furnished finder rent collection legal protection\" | Ep 390 (summary): \"...ah and Annette share their experience finding leads through Furnished Finder, Airbnb, Zillow, and corporate housing sites, when to start...\" | Ep 466 (summary): \"...d screenings, and signed leases. Hosts can check demand via FurnishedFinder.com/stats and PriceLabs dashboards. Midterm guests still ex...\""
+    },
+    {
+      "name": "Asana",
+      "category": "Communication & Productivity",
+      "description": "Project management and task tracking",
+      "episodes": [
+        312,
+        338,
+        430,
+        440
+      ],
+      "episodeCount": 4,
+      "mentionContext": "Ep 312 (summary): \"...eusable amenity ideas that provide ongoing value, recommend Asana for organization, and mention keeping a 'forgot-something b...\" | Ep 338 (summary): \"...and managing STR staff, including Loom for video training, Asana for task management, and Breezeway for maintenance and clea...\" | Ep 430 (summary): \"Asana is recommended as a free, cross-platform task management to...\""
+    },
+    {
+      "name": "Boostly",
+      "category": "Direct Booking & Marketing",
+      "description": "Direct booking website and marketing for STRs",
+      "episodes": [
+        117,
+        315,
+        467
+      ],
+      "episodeCount": 3,
+      "mentionContext": "Ep 117 (summary): \"Mark Simpson of Boostly, who has coached over 1,000 hospitality businesses, shares...\" | Ep 315 (summary): \"Mark Simpson from Boostly discusses strategies for reducing dependence on OTAs by bui...\" | Ep 467 (summary): \"...should focus and 'kill their darlings' to avoid overwhelm (Boostly).\""
+    },
+    {
+      "name": "PriceLabs",
+      "category": "Dynamic Pricing",
+      "description": "AI-powered dynamic pricing tool for short-term rentals",
+      "episodes": [
+        213,
+        230,
+        254,
+        256,
+        264,
+        289,
+        298,
+        321,
+        352,
+        356,
+        359,
+        360,
+        376,
+        404,
+        418,
+        420,
+        454,
+        459,
+        466,
+        476,
+        507,
+        509,
+        512,
+        530
+      ],
+      "episodeCount": 24,
+      "mentionContext": "Ep 213 (summary): \"...scuss strategies beyond standard dynamic pricing tools like PriceLabs to optimize revenue during off-peak periods through extende...\" | Ep 230 (tags): \"...lgorithm listing visibility search ranking booking strategy pricelabs policies\" | Ep 254 (tags): \"...g strategy dynamic pricing multi-unit properties wheelhouse pricelabs flat pricing\""
+    },
+    {
+      "name": "Wheelhouse",
+      "category": "Dynamic Pricing",
+      "description": "Data-driven pricing tool for vacation rentals",
+      "episodes": [
+        249,
+        254,
+        256,
+        289
+      ],
+      "episodeCount": 4,
+      "mentionContext": "Ep 249 (summary): \"Andrew Kitchell, CEO of Wheelhouse and founder of Beyond Pricing, shares his journey from host...\" | Ep 254 (tags): \"...ings pricing strategy dynamic pricing multi-unit properties wheelhouse pricelabs flat pricing\" | Ep 256 (tags): \"dynamic pricing booking modifications guest communication wheelhouse pricelabs rate changes guest satisfaction\""
+    },
+    {
+      "name": "Beyond Pricing",
+      "category": "Dynamic Pricing",
+      "description": "Automated dynamic pricing for short-term rentals",
+      "episodes": [
+        3,
+        80,
+        249
+      ],
+      "episodeCount": 3,
+      "mentionContext": "Ep 3 (summary): \"...Use Airbnb's pricing calculator and third-party tools like Beyond Pricing to optimize rates. Successful hosts treat pricing as a dyna...\" | Ep 80 (tags): \"...oking windows length of stay market positioning seasonality beyond pricing\" | Ep 249 (summary): \"Andrew Kitchell, CEO of Wheelhouse and founder of Beyond Pricing, shares his journey from hosting his first Airbnb in San Fr...\""
+    },
+    {
+      "name": "RankBreeze",
+      "category": "Dynamic Pricing",
+      "description": "Airbnb SEO and ranking tool",
+      "episodes": [
+        95,
+        272
+      ],
+      "episodeCount": 2,
+      "mentionContext": "Ep 95 (summary): \"Kelvin Mah, founder of RankBreeze, explains how to optimize Airbnb listings for better search...\" | Ep 272 (summary): \"...r bouncing back, including using tools like IntelliHost and Rankbreeze for search optimization.\""
+    },
+    {
+      "name": "AirDNA",
+      "category": "Dynamic Pricing",
+      "description": "Short-term rental data and analytics platform",
+      "episodes": [
+        174
+      ],
+      "episodeCount": 1,
+      "mentionContext": "Ep 174 (summary): \"...during a recession, how to filter and use market data like AirDNA for acquisitions, and the best approach for listing a three...\""
+    },
+    {
+      "name": "StayFi",
+      "category": "Guest Experience",
+      "description": "WiFi marketing and guest data capture",
+      "episodes": [
+        114,
+        316,
+        404,
+        458,
+        482
+      ],
+      "episodeCount": 5,
+      "mentionContext": "Ep 114 (summary): \"Arthur Colker of StayFi demonstrates how WiFi portals can be used to brand your pro...\" | Ep 316 (title): \"Hosting Hotline: Using StayFi To Build Your Email List\" | Ep 404 (summary): \"...riceLabs for dynamic pricing, Breezeway for operations, and StayFi for guest data collection.\""
+    },
+    {
+      "name": "Minoan",
+      "category": "Guest Experience",
+      "description": "Shoppable stays and furnishing for STRs",
+      "episodes": [
+        161,
+        275,
+        522
+      ],
+      "episodeCount": 3,
+      "mentionContext": "Ep 161 (title): \"Simplify Ordering & Save on Furnishing Your STR with Minoan\" | Ep 275 (title): \"Mastering Short-Term Rental Furnishings with Minoan\" | Ep 522 (tags): \"...m essentials shampoo guest expectations professionalization minoan brand consistency\""
+    },
+    {
+      "name": "Autohost",
+      "category": "Guest Experience",
+      "description": "Guest screening and verification",
+      "episodes": [
+        131,
+        467
+      ],
+      "episodeCount": 2,
+      "mentionContext": "Ep 131 (summary): \"...ss additional screening tools like Safely, InsuraGuest, and Autohost, and provide dos and don'ts for maintaining safety. The pra...\" | Ep 467 (summary): \"...y takeaways: constantly reassess ROI on tools and expenses (Autohost), optimize OTA rankings by opening calendars and updating l...\""
+    },
+    {
+      "name": "Superhog",
+      "category": "Guest Experience",
+      "description": "Guest screening and protection",
+      "episodes": [
+        289,
+        388
+      ],
+      "episodeCount": 2,
+      "mentionContext": "Ep 289 (summary): \"...operations, NoiseAware for monitoring, Proper Insurance and Superhog for protection, and HostGPO for bulk purchasing. Each tool...\" | Ep 388 (summary): \"...reshold for claims, considering damage waiver programs like Superhog, and weighing the marketing/time investment costs against r...\""
+    },
+    {
+      "name": "Proper Insurance",
+      "category": "Insurance",
+      "description": "Comprehensive STR insurance provider",
+      "episodes": [
+        46,
+        57,
+        184,
+        243,
+        289,
+        357,
+        415,
+        435,
+        484
+      ],
+      "episodeCount": 9,
+      "mentionContext": "Ep 46 (keyInsight): \"...responsibility that requires proactive maintenance systems, proper insurance, and documented safety protocols to protect both guests and...\" | Ep 57 (summary): \"Darren Pettyjohn from Proper Insurance explains specialized insurance products designed for vacati...\" | Ep 184 (summary): \"...that hosts cannot rely on Airbnb's coverage and must secure proper insurance regardless of booking channel. Proper insurance is a non-ne...\""
+    },
+    {
+      "name": "Waivo",
+      "category": "Insurance",
+      "description": "Damage waiver and guest fee solutions",
+      "episodes": [
+        374
+      ],
+      "episodeCount": 1,
+      "mentionContext": "Ep 374 (summary): \"Betsy encounters challenges with Waivo damage waiver coverage, particularly for linen stains from...\""
+    },
+    {
+      "name": "Breezeway",
+      "category": "Operations & Cleaning",
+      "description": "Property operations and maintenance platform",
+      "episodes": [
+        46,
+        94,
+        119,
+        134,
+        166,
+        201,
+        202,
+        268,
+        289,
+        305,
+        311,
+        338,
+        372,
+        404,
+        441
+      ],
+      "episodeCount": 15,
+      "mentionContext": "Ep 46 (summary): \"Justin Ford, Director of Safety at Breezeway, discusses the critical importance of property safety and h...\" | Ep 94 (summary): \"Justin Ford from Breezeway reviews the top preventable accidents in STRs from 2020, in...\" | Ep 119 (summary): \"...specific products like Bar Keepers Friend and systems like Breezeway. Smart cleaning protocols save time and maintain property c...\""
+    },
+    {
+      "name": "Stripe",
+      "category": "Payment Processing",
+      "description": "Online payment processing platform",
+      "episodes": [
+        360,
+        428
+      ],
+      "episodeCount": 2,
+      "mentionContext": "Ep 360 (summary): \"...0% direct booking rate when both Airbnb (3% commission) and Stripe (3% fees) cost the same. The hosts reframe the question aro...\" | Ep 428 (summary): \"...cure, guest-friendly payment solutions for direct bookings. Stripe is recommended as a global, multi-currency credit card paym...\""
+    },
+    {
+      "name": "Hostfully",
+      "category": "Property Management (PMS)",
+      "description": "PMS and digital guidebook platform",
+      "episodes": [
+        70,
+        288,
+        289,
+        437
+      ],
+      "episodeCount": 4,
+      "mentionContext": "Ep 70 (title): \"How Hostfully Can Help You Reach More Customers & Guarantee a Great Guest...\" | Ep 288 (summary): \"...lities, key tools include property management software like Hostfully or Hospitable for payment processing and digital contract s...\" | Ep 289 (summary): \"...ehensive overview of essential STR tools across categories: Hostfully and Hospitable for channel management, PriceLabs and Wheelh...\""
+    },
+    {
+      "name": "Hospitable",
+      "category": "Property Management (PMS)",
+      "description": "All-in-one PMS with automated messaging and direct booking",
+      "episodes": [
+        288,
+        289
+      ],
+      "episodeCount": 2,
+      "mentionContext": "Ep 288 (summary): \"...ools include property management software like Hostfully or Hospitable for payment processing and digital contract signing. A dedi...\" | Ep 289 (summary): \"...iew of essential STR tools across categories: Hostfully and Hospitable for channel management, PriceLabs and Wheelhouse for dynami...\""
+    },
+    {
+      "name": "Hostaway",
+      "category": "Property Management (PMS)",
+      "description": "Vacation rental software with channel management",
+      "episodes": [
+        450
+      ],
+      "episodeCount": 1,
+      "mentionContext": "Ep 450 (summary): \"Host Leslie asks whether her PMS (HostAway) is preventing her from using Airbnb features like promotio...\""
+    },
+    {
+      "name": "Lodgify",
+      "category": "Property Management (PMS)",
+      "description": "Vacation rental software with website builder",
+      "episodes": [
+        503
+      ],
+      "episodeCount": 1,
+      "mentionContext": "Ep 503 (summary): \"...to elevate their listing, built a direct booking site with Lodgify, and stayed true to their brand vision rather than chasing...\""
+    },
+    {
+      "name": "NoiseAware",
+      "category": "Smart Home & Security",
+      "description": "Noise monitoring solution for rentals",
+      "episodes": [
+        266,
+        289,
+        320,
+        354,
+        404
+      ],
+      "episodeCount": 5,
+      "mentionContext": "Ep 266 (summary): \"...osting dogs at their STR. Annette and Sarah recommend using NoiseAware to monitor for excessive barking and preventing neighbor co...\" | Ep 289 (summary): \"...d Wheelhouse for dynamic pricing, Breezeway for operations, NoiseAware for monitoring, Proper Insurance and Superhog for protectio...\" | Ep 320 (summary): \"...y's unique metropolitan lakefront positioning, implementing NoiseAware and Know Your Guest technology for safety, and establishing...\""
+    },
+    {
+      "name": "Schlage",
+      "category": "Smart Home & Security",
+      "description": "Smart lock and security products",
+      "episodes": [
+        180,
+        446
+      ],
+      "episodeCount": 2,
+      "mentionContext": "Ep 180 (summary): \"...specific models including Yale Assure Lock Touchscreen and Schlage BE365/FE695, addressing whether the same lock can be used i...\" | Ep 446 (summary): \"Yale Assure and Schlage Encode are the most reliable smart locks for STRs, both fea...\""
+    },
+    {
+      "name": "Nest",
+      "category": "Smart Home & Security",
+      "description": "Smart thermostats and cameras",
+      "episodes": [
+        189
+      ],
+      "episodeCount": 1,
+      "mentionContext": "Ep 189 (tags): \"fire safety smoke detectors fire extinguisher kidde google nest prevention guest safety\""
+    },
+    {
+      "name": "Minut",
+      "category": "Smart Home & Security",
+      "description": "Noise and occupancy monitoring sensor",
+      "episodes": [
+        370
+      ],
+      "episodeCount": 1,
+      "mentionContext": "Ep 370 (summary): \"...ng, using neutral framing, and implementing technology like Minut for crowd control to prevent violations before they escalat...\""
+    },
+    {
+      "name": "Ring",
+      "category": "Smart Home & Security",
+      "description": "Video doorbells and security cameras",
+      "episodes": [
+        468
+      ],
+      "episodeCount": 1,
+      "mentionContext": "Ep 468 (summary): \"...insurance provider to understand requirements and coverage. Ring doorbell cams are generally well-received by guests if disclosed. Fo...\""
+    },
+    {
+      "name": "Instagram",
+      "category": "Social Media & Marketing",
+      "description": "Social media platform for visual marketing",
+      "episodes": [
+        28,
+        33,
+        74,
+        149,
+        219,
+        237,
+        241,
+        252,
+        283,
+        333,
+        406,
+        419,
+        461
+      ],
+      "episodeCount": 13,
+      "mentionContext": "Ep 28 (summary): \"...s. She discusses transforming a run-down property and using Instagram for marketing. The episode emphasizes that small, thoughtfu...\" | Ep 33 (summary): \"...eased repeat bookings. She shares strategies for using free Instagram and Facebook tools to build a rental brand and boost occupa...\" | Ep 74 (tags): \"...a hashtags photography visual consistency unique properties instagram\""
+    },
+    {
+      "name": "Facebook",
+      "category": "Social Media & Marketing",
+      "description": "Social media and advertising platform",
+      "episodes": [
+        33,
+        77,
+        216,
+        333,
+        421,
+        461,
+        490
+      ],
+      "episodeCount": 7,
+      "mentionContext": "Ep 33 (summary): \"...ookings. She shares strategies for using free Instagram and Facebook tools to build a rental brand and boost occupancy. Examples...\" | Ep 77 (summary): \"...ate events. With over 800 bookings and clients like Google, Facebook, Amazon, and Netflix, they explain how to prep spaces and p...\" | Ep 216 (summary): \"...les. Features Lucky Bend Lookout's direct booking site with Facebook messenger integration and email capture popup.\""
+    },
+    {
+      "name": "Mailchimp",
+      "category": "Social Media & Marketing",
+      "description": "Email marketing platform",
+      "episodes": [
+        41
+      ],
+      "episodeCount": 1,
+      "mentionContext": "Ep 41 (tags): \"...keting guest retention occupancy rates marketing automation mailchimp direct bookings\""
+    }
+  ],
+  "categories": [
+    "AI Tools",
+    "Accounting & Finance",
+    "Automation",
+    "Booking Platform",
+    "Communication & Productivity",
+    "Direct Booking & Marketing",
+    "Dynamic Pricing",
+    "Guest Experience",
+    "Insurance",
+    "Operations & Cleaning",
+    "Payment Processing",
+    "Property Management (PMS)",
+    "Smart Home & Security",
+    "Social Media & Marketing"
+  ],
+  "promoMentions": [
+    {
+      "ep": 148,
+      "title": "Behind the Scenes on Our First Real Estate Deal",
+      "field": "keyInsight",
+      "matchedTerms": [
+        "deal"
+      ],
+      "snippet": "Transparent communication about deal structure and investment contributions is essential when entering partnership-based real estate ventures.",
+      "relatedTools": []
+    },
+    {
+      "ep": 148,
+      "title": "Behind the Scenes on Our First Real Estate Deal",
+      "field": "tags",
+      "matchedTerms": [
+        "deal"
+      ],
+      "snippet": "partnership real estate deal investment structure first property joint venture deal structure transparency",
+      "relatedTools": []
+    },
+    {
+      "ep": 176,
+      "title": "Hosting Hotline",
+      "field": "summary",
+      "matchedTerms": [
+        "code"
+      ],
+      "snippet": "AMA episode addressing unique property challenges including building code restrictions for non-traditional structures and converting old summer camp cabins with shared bathhouses into STR experiences. Hosts discuss how to frame unconventional feature",
+      "relatedTools": []
+    },
+    {
+      "ep": 247,
+      "title": "The Ultimate Airbnb Spring Safety Guide",
+      "field": "keyInsight",
+      "matchedTerms": [
+        "code"
+      ],
+      "snippet": "Being legally up to code with proper safety equipment, technology, and guest instructions is non-negotiable—it protects guests, owners, and the entire industry from preventable accidents and liability.",
+      "relatedTools": [
+        "Airbnb"
+      ]
+    },
+    {
+      "ep": 264,
+      "title": "Hosting Hotline: Finding the Best Market For Your Airbnb",
+      "field": "summary",
+      "matchedTerms": [
+        "deal"
+      ],
+      "snippet": "Zach asks about tools for researching potential STR properties before purchasing. Sarah and Annette discuss using STR Insights and PriceLabs to build proformas and evaluate whether a property is a good deal based on investor goals (lifestyle asset vs",
+      "relatedTools": [
+        "Airbnb",
+        "PriceLabs"
+      ]
+    },
+    {
+      "ep": 264,
+      "title": "Hosting Hotline: Finding the Best Market For Your Airbnb",
+      "field": "tags",
+      "matchedTerms": [
+        "deal"
+      ],
+      "snippet": "market research property acquisition str insights pricelabs proforma investing deal analysis",
+      "relatedTools": [
+        "Airbnb",
+        "PriceLabs"
+      ]
+    },
+    {
+      "ep": 282,
+      "title": "Hosting Hotline: Creating Trust With Your Property Manager",
+      "field": "summary",
+      "matchedTerms": [
+        "discount"
+      ],
+      "snippet": "When a property management company applies discounts without clear communication, it erodes trust. Hosts should establish upfront agreements about pricing authority, discount strategies, and communication protocols. Regular check-ins and transparent ",
+      "relatedTools": []
+    },
+    {
+      "ep": 285,
+      "title": "How to Make Real Money in Real Estate Investing",
+      "field": "summary",
+      "matchedTerms": [
+        "deal"
+      ],
+      "snippet": "Real estate investor David Richter discusses implementing the Profit First methodology for STR businesses to ensure actual profitability rather than deal-to-deal cash flow cycling. He covers fundamentals of P&L statements, balance sheets, and financi",
+      "relatedTools": []
+    },
+    {
+      "ep": 285,
+      "title": "How to Make Real Money in Real Estate Investing",
+      "field": "keyInsight",
+      "matchedTerms": [
+        "deal"
+      ],
+      "snippet": "Many real estate investors generate significant revenue but lose profits through poor financial systems—implementing structured profit allocation prevents the endless deal-to-deal cash trap.",
+      "relatedTools": []
+    },
+    {
+      "ep": 286,
+      "title": "How to Deal With Your HOA as a Short-Term Rental Host",
+      "field": "title",
+      "matchedTerms": [
+        "deal"
+      ],
+      "snippet": "How to Deal With Your HOA as a Short-Term Rental Host",
+      "relatedTools": []
+    },
+    {
+      "ep": 337,
+      "title": "Broken Motel Dreams: Behind the Scenes of a Failed Real Estate Deal",
+      "field": "tags",
+      "matchedTerms": [
+        "deal"
+      ],
+      "snippet": "motel acquisition due diligence underwriting inspections mid-term rentals deal analysis masterminds",
+      "relatedTools": []
+    },
+    {
+      "ep": 349,
+      "title": "We Bought Land (Part 1): Laying a Foundation for Long-Term Partnership",
+      "field": "keyInsight",
+      "matchedTerms": [
+        "deal"
+      ],
+      "snippet": "Successful partnerships require transparent communication about thought processes before, during, and after deal closure, plus alignment on scalability vision and operational responsibilities.",
+      "relatedTools": []
+    },
+    {
+      "ep": 446,
+      "title": "What's the Best Smart Lock for Your Airbnb?",
+      "field": "summary",
+      "matchedTerms": [
+        "code"
+      ],
+      "snippet": "Yale Assure and Schlage Encode are the most reliable smart locks for STRs, both featuring PMS integration, auto-generated codes, and crucial backup key options. Always choose smart locks with physical key backups to prevent guest lockouts. Verify PMS",
+      "relatedTools": [
+        "Airbnb",
+        "Schlage"
+      ]
+    },
+    {
+      "ep": 468,
+      "title": "Should You Add a Security Camera to Your STR?",
+      "field": "keyInsight",
+      "matchedTerms": [
+        "code"
+      ],
+      "snippet": "Consult your insurance provider before installing security cameras, and automate keypad code rotation to balance guest experience with property protection.",
+      "relatedTools": [
+        "Ring"
+      ]
+    },
+    {
+      "ep": 468,
+      "title": "Should You Add a Security Camera to Your STR?",
+      "field": "tags",
+      "matchedTerms": [
+        "code"
+      ],
+      "snippet": "security ring camera smart lock keypad code insurance guest privacy rural property new host",
+      "relatedTools": [
+        "Ring"
+      ]
+    },
+    {
+      "ep": 472,
+      "title": "Hosting Hotline: Can You Ask Guests to Book Direct After Their Stay?",
+      "field": "summary",
+      "matchedTerms": [
+        "discount"
+      ],
+      "snippet": "Airbnb now actively monitors and enforces rules against promoting off-platform transactions through its messaging system, even post-checkout. Hosts can no longer include direct booking links, discount codes, or promotional language in Airbnb messages",
+      "relatedTools": [
+        "Airbnb"
+      ]
+    },
+    {
+      "ep": 490,
+      "title": "Hosting Hotline: Are You Doing Enough to Market Your Midterm Rental?",
+      "field": "summary",
+      "matchedTerms": [
+        "referral"
+      ],
+      "snippet": "Listing on Airbnb or Furnished Finder is the bare minimum for midterm rentals—successful hosts take daily marketing actions including building referral systems with past guests, making strategic connections with insurance companies and relocation age",
+      "relatedTools": [
+        "Airbnb",
+        "Furnished Finder",
+        "Facebook"
+      ]
+    },
+    {
+      "ep": 490,
+      "title": "Hosting Hotline: Are You Doing Enough to Market Your Midterm Rental?",
+      "field": "keyInsight",
+      "matchedTerms": [
+        "referral"
+      ],
+      "snippet": "Simply listing your midterm rental on platforms is passive hosting, not marketing—treat your MTR like a business by taking daily action to build referral systems, forge relationships with corporate relocation contacts, and actively engage in communit",
+      "relatedTools": [
+        "Airbnb",
+        "Furnished Finder",
+        "Facebook"
+      ]
+    },
+    {
+      "ep": 490,
+      "title": "Hosting Hotline: Are You Doing Enough to Market Your Midterm Rental?",
+      "field": "tags",
+      "matchedTerms": [
+        "referral"
+      ],
+      "snippet": "midterm rental marketing strategy referral system local partnerships furnished finder travel nurses community outreach daily marketing actions",
+      "relatedTools": [
+        "Airbnb",
+        "Furnished Finder",
+        "Facebook"
+      ]
+    },
+    {
+      "ep": 495,
+      "title": "Stop Slashing Your Rates: Why Lower Prices Don't Create Demand",
+      "field": "summary",
+      "matchedTerms": [
+        "referral"
+      ],
+      "snippet": "Lowering nightly rates doesn't create travel demand—if guests aren't searching your market, cheaper pricing won't attract them. Instead of discounting, hosts should audit their listing quality, amenities, messaging, and calendar settings while buildi",
+      "relatedTools": []
+    },
+    {
+      "ep": 516,
+      "title": "Hosting Hotline: Airbnb Promotions: Visibility Tool or Discount Trap?",
+      "field": "title",
+      "matchedTerms": [
+        "discount"
+      ],
+      "snippet": "Hosting Hotline: Airbnb Promotions: Visibility Tool or Discount Trap?",
+      "relatedTools": [
+        "Airbnb"
+      ]
+    }
+  ],
+  "meta": {
+    "totalEpisodesScanned": 517,
+    "totalToolsFound": 35,
+    "totalPromoMentions": 21,
+    "generatedAt": "2026-02-15T17:47:38.585Z"
+  }
+}
