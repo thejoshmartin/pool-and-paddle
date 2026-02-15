@@ -119,8 +119,8 @@ function Header({ activeView, setActiveView }) {
       zIndex: 100,
       boxShadow: "0 1px 8px rgba(0,112,60,0.06)",
     }}>
-      <div style={{ maxWidth: 1400, margin: "0 auto", padding: "16px 32px" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
+      <div style={{ maxWidth: 1400, margin: "0 auto", padding: "12px 16px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <div style={{
               width: 44, height: 44,
@@ -181,19 +181,19 @@ function Header({ activeView, setActiveView }) {
               }}>Luxury STR Command Center · Beach Side</p>
             </div>
           </div>
-          <nav style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          <nav style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
             {[
               { key: "dashboard", label: "Dashboard" },
-              { key: "summary", label: "Executive Brief" },
-              { key: "podcast", label: "Podcast Intel" },
-              { key: "tasks", label: "Task Tracker" },
+              { key: "summary", label: "Brief" },
+              { key: "podcast", label: "Podcast" },
+              { key: "tasks", label: "Tasks" },
               { key: "design", label: "Design" },
             ].map(v => (
               <button
                 key={v.key}
                 onClick={() => setActiveView(v.key)}
                 style={{
-                  padding: "9px 20px",
+                  padding: "8px 14px",
                   borderRadius: 8,
                   border: "none",
                   background: activeView === v.key ? C.mint : "transparent",
@@ -223,13 +223,13 @@ function StatCard({ label, value, sub, accent }) {
       background: C.white,
       border: `1px solid ${C.border}`,
       borderRadius: 14,
-      padding: "24px 26px",
-      flex: "1 1 200px",
+      padding: "18px 16px",
+      flex: "1 1 140px",
       boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
     }}>
       <div style={{
         fontFamily: font,
-        fontSize: 36,
+        fontSize: "clamp(22px, 5vw, 36px)",
         fontWeight: 800,
         color: color,
         lineHeight: 1,
@@ -1461,6 +1461,12 @@ function mergeFinishes(saved) {
 }
 
 function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const [groupBy, setGroupBy] = useState("trade");
   const [filterCat, setFilterCat] = useState("all");
   const [filterRoom, setFilterRoom] = useState("all");
@@ -1578,11 +1584,11 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
   };
 
   return (
-    <div style={{ padding: "36px 32px", maxWidth: 1400, margin: "0 auto" }}>
+    <div style={{ padding: isMobile ? "20px 14px" : "36px 32px", maxWidth: 1400, margin: "0 auto" }}>
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28, flexWrap: "wrap", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: isMobile ? 20 : 28, flexWrap: "wrap", gap: 12 }}>
         <div>
-          <h2 style={{ fontFamily: font, fontSize: 26, fontWeight: 800, color: C.charcoal, margin: "0 0 6px 0", letterSpacing: "-0.02em" }}>
+          <h2 style={{ fontFamily: font, fontSize: isMobile ? 22 : 26, fontWeight: 800, color: C.charcoal, margin: "0 0 6px 0", letterSpacing: "-0.02em" }}>
             Finish Selections
           </h2>
           <p style={{ fontFamily: font, fontSize: 14, color: C.textMuted, margin: 0, fontWeight: 500 }}>
@@ -1648,7 +1654,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
       </div>
 
       {/* Budget Summary Bar */}
-      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
+      <div style={{ display: "flex", gap: isMobile ? 10 : 16, flexWrap: "wrap", marginBottom: isMobile ? 16 : 24 }}>
         <StatCard label="Grand Total" value={fmtMoney(grandTotal)} sub={grandTotal === 0 ? "No items priced yet" : "Materials & finishes"} accent={C.mint} />
         <StatCard label="Items Priced" value={`${pricedCount} of ${finishes.length}`} sub={`${finishes.length - pricedCount} still need pricing`} accent={C.ocean} />
         <div style={{
@@ -1855,11 +1861,11 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                   <div key={item.id}>
                     <div
                       onClick={() => setExpandedId(isExpanded ? null : item.id)}
-                      onMouseEnter={() => setHoveredRow(item.id)}
+                      onMouseEnter={() => !isMobile && setHoveredRow(item.id)}
                       onMouseLeave={() => { setHoveredRow(null); if (confirmDelete === item.id) setConfirmDelete(null); }}
                       style={{
-                        display: "flex", alignItems: "center", gap: 10,
-                        padding: "10px 16px",
+                        display: "flex", alignItems: "center", gap: isMobile ? 8 : 10,
+                        padding: isMobile ? "10px 12px" : "10px 16px",
                         borderBottom: (i < arr.length - 1 || isExpanded) ? `1px solid ${C.borderLight}` : "none",
                         background: isExpanded ? C.offWhite : (hoveredRow === item.id ? C.offWhite : C.white),
                         cursor: "pointer",
@@ -1902,32 +1908,34 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                         )}
                       </div>
 
-                      {/* Cross-reference badge */}
-                      <span style={{
-                        fontFamily: font, fontSize: 10, fontWeight: 600,
-                        color: C.textMuted, background: C.pageBg,
-                        padding: "2px 8px", borderRadius: 4, flexShrink: 0,
-                        whiteSpace: "nowrap",
-                      }}>{crossRef}</span>
+                      {/* Cross-reference badge — hide on mobile */}
+                      {!isMobile && (
+                        <span style={{
+                          fontFamily: font, fontSize: 10, fontWeight: 600,
+                          color: C.textMuted, background: C.pageBg,
+                          padding: "2px 8px", borderRadius: 4, flexShrink: 0,
+                          whiteSpace: "nowrap",
+                        }}>{crossRef}</span>
+                      )}
 
                       {/* Price summary */}
                       <span style={{
                         fontFamily: font, fontSize: 12, fontWeight: 600,
                         color: lineTotal != null ? C.charcoal : C.textMuted,
-                        flexShrink: 0, minWidth: 80, textAlign: "right",
+                        flexShrink: 0, minWidth: isMobile ? 50 : 80, textAlign: "right",
                       }}>
                         {lineTotal != null ? fmtMoney(lineTotal) : "—"}
                       </span>
 
-                      {/* Link icon */}
-                      {resolved.url && (
+                      {/* Link icon — hide on mobile to save space (visible in expanded panel) */}
+                      {!isMobile && resolved.url && (
                         <a href={resolved.url} target="_blank" rel="noopener noreferrer"
                           onClick={e => e.stopPropagation()}
                           style={{ color: C.mint, fontSize: 14, flexShrink: 0, textDecoration: "none", lineHeight: 1 }}
                         >🔗</a>
                       )}
 
-                      {/* Delete button */}
+                      {/* Delete button — always show on mobile, hover on desktop */}
                       <div style={{ width: 28, flexShrink: 0, display: "flex", justifyContent: "center" }}>
                         {confirmDelete === item.id ? (
                           <button onClick={e => { e.stopPropagation(); deleteItem(item.id); }} style={{
@@ -1935,7 +1943,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                             background: "#D94444", color: C.white,
                             fontFamily: font, fontSize: 11, fontWeight: 700, cursor: "pointer",
                           }}>Yes</button>
-                        ) : hoveredRow === item.id ? (
+                        ) : (isMobile || hoveredRow === item.id) ? (
                           <button onClick={e => {
                             e.stopPropagation();
                             if (item.userCreated) { deleteItem(item.id); }
@@ -1958,11 +1966,17 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                     {/* Expanded edit panel */}
                     {isExpanded && (
                       <div style={{
-                        padding: "16px 20px 18px 38px",
+                        padding: isMobile ? "14px 12px 16px 12px" : "16px 20px 18px 38px",
                         background: C.white,
                         borderBottom: i < arr.length - 1 ? `1px solid ${C.borderLight}` : "none",
                         borderTop: `1px solid ${C.borderLight}`,
                       }}>
+                        {/* Cross-reference on mobile (hidden from row) */}
+                        {isMobile && (
+                          <div style={{ fontFamily: font, fontSize: 11, color: C.textMuted, marginBottom: 10 }}>
+                            {groupBy === "trade" ? "Room" : "Trade"}: <strong style={{ color: C.textSecondary }}>{crossRef}</strong>
+                          </div>
+                        )}
                         {(() => {
                           const inputStyle = {
                             width: "100%", padding: "10px 12px", borderRadius: 8,
@@ -2072,7 +2086,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                         {/* Inherited values display (when linked) */}
                         {item.linkedTo && parentItem && (
                           <div style={{
-                            display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12,
+                            display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 10, marginBottom: 12,
                             padding: "10px 14px", borderRadius: 8, background: C.pageBg,
                           }}>
                             <div>
@@ -2090,7 +2104,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget }) {
                           </div>
                         )}
 
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
                           {/* Selection (only when not linked) */}
                           {!item.linkedTo && (
                             <div style={{ gridColumn: "1 / -1" }}>
