@@ -2,6 +2,7 @@
   "name": "pool-and-paddle",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "Pool & Paddle — Luxury STR Command Center",
   "scripts": {
     "dev": "vite",
