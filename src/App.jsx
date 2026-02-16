@@ -184,10 +184,10 @@ function Header({ activeView, setActiveView }) {
           <nav style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
             {[
               { key: "dashboard", label: "Dashboard" },
-              { key: "summary", label: "Brief" },
-              { key: "podcast", label: "Podcast" },
               { key: "tasks", label: "Tasks" },
               { key: "design", label: "Design" },
+              { key: "summary", label: "Brief" },
+              { key: "podcast", label: "Podcast" },
             ].map(v => (
               <button
                 key={v.key}
@@ -1523,7 +1523,7 @@ function mergeFinishes(saved) {
   const defaultIds = new Set(DEFAULT_FINISH_ITEMS.map(i => i.id));
   const merged = DEFAULT_FINISH_ITEMS.map(item => {
     const s = saved.find(s => s.id === item.id);
-    return s ? { ...item, selection: s.selection ?? "", unitPrice: s.unitPrice ?? null, quantity: s.quantity ?? null, unit: s.unit ?? item.unit, url: s.url ?? "", notes: s.notes ?? "", linkedTo: s.linkedTo ?? null } : item;
+    return s ? { ...item, selection: s.selection ?? "", unitPrice: s.unitPrice ?? null, quantity: s.quantity ?? null, unit: s.unit ?? item.unit, url: s.url ?? "", notes: s.notes ?? "", linkedTo: s.linkedTo ?? null, assignee: s.assignee ?? null, dueDate: s.dueDate ?? null } : item;
   });
   const userItems = saved.filter(s => s.userCreated && !defaultIds.has(s.id))
     .map(item => ({ ...item, room: migrateRoom(item.room) }));
@@ -1548,6 +1548,8 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
   const [budgetInput, setBudgetInput] = useState("");
   const [hoveredRow, setHoveredRow] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [filterAssignee, setFilterAssignee] = useState("all");
+  const dateRefs = useRef({});
 
   const selectStyle = {
     padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.border}`,
@@ -1562,9 +1564,11 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
         (filterStatus === "priced" ? (item.unitPrice != null && item.quantity != null) :
          filterStatus === "selected" ? (item.selection && item.selection.trim() !== "") :
          filterStatus === "needs-selection" ? (!item.selection || item.selection.trim() === "") : true);
-      return matchCat && matchRoom && matchStatus;
+      const matchAssignee = filterAssignee === "all" ||
+        (filterAssignee === "unassigned" ? !item.assignee : item.assignee === filterAssignee);
+      return matchCat && matchRoom && matchStatus && matchAssignee;
     });
-  }, [finishes, filterCat, filterRoom, filterStatus]);
+  }, [finishes, filterCat, filterRoom, filterStatus, filterAssignee]);
 
   const grouped = useMemo(() => {
     const g = {};
@@ -1634,6 +1638,32 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
     setConfirmDelete(null);
   };
 
+  const cycleAssignee = (id) => {
+    const cycle = [null, "JM", "KM"];
+    setFinishes(prev => prev.map(item => {
+      if (item.id !== id) return item;
+      const idx = cycle.indexOf(item.assignee);
+      return { ...item, assignee: cycle[(idx + 1) % cycle.length] };
+    }));
+  };
+
+  const setItemDueDate = (id, date) => {
+    setFinishes(prev => prev.map(item => item.id === id ? { ...item, dueDate: date || null } : item));
+  };
+
+  const fmtDate = (dateStr) => {
+    if (!dateStr) return null;
+    const d = new Date(dateStr + "T00:00:00");
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  };
+
+  const isItemOverdue = (item) => {
+    if (!item.dueDate) return false;
+    const hasSelection = item.selection && item.selection.trim() !== "";
+    if (hasSelection) return false;
+    return item.dueDate < new Date().toISOString().split("T")[0];
+  };
+
   const addItem = () => {
     if (!newItem.item.trim()) return;
     setFinishes(prev => [...prev, {
@@ -1648,6 +1678,8 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
       unit: "ea",
       url: "",
       notes: "",
+      assignee: null,
+      dueDate: null,
       userCreated: true,
     }]);
     setNewItem({ item: "", category: FINISH_CATEGORIES[0].id, room: FINISH_ROOMS[0].id });
@@ -1728,7 +1760,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
         <div style={{ display: "flex", gap: 8 }}>
           <button
             onClick={() => {
-              const headers = ["Trade", "Room", "Item", "Contractor Options", "Selection", "Unit Price", "Quantity", "Unit", "Line Total", "Product Link", "Notes", "Linked To"];
+              const headers = ["Trade", "Room", "Item", "Contractor Options", "Selection", "Unit Price", "Quantity", "Unit", "Line Total", "Product Link", "Notes", "Linked To", "Assignee", "Decision Date"];
               const csvRows = [headers.join(",")];
               finishes.forEach(item => {
                 const r = resolveItem(item);
@@ -1742,6 +1774,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                   esc((item.contractorOptions || []).join("; ")),
                   esc(r.selection), r.unitPrice ?? "", item.quantity ?? "",
                   esc(r.unit), lineTotal, esc(r.url), esc(item.notes), esc(parentName),
+                  esc(item.assignee || ""), esc(item.dueDate || ""),
                 ].join(","));
               });
               // Furniture items per room
@@ -1943,6 +1976,12 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
           <option value="selected">Has Selection</option>
           <option value="needs-selection">Needs Selection</option>
           <option value="priced">Priced</option>
+        </select>
+        <select value={filterAssignee} onChange={e => setFilterAssignee(e.target.value)} style={selectStyle}>
+          <option value="all">All Owners</option>
+          <option value="JM">JM</option>
+          <option value="KM">KM</option>
+          <option value="unassigned">Unassigned</option>
         </select>
         <span style={{ fontFamily: font, fontSize: 12, color: C.textMuted, marginLeft: "auto", fontWeight: 600 }}>
           {filtered.length} item{filtered.length !== 1 ? "s" : ""}
@@ -2276,6 +2315,41 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                         {lineTotal != null ? fmtMoney(lineTotal) : "—"}
                       </span>
 
+                      {/* Decision date */}
+                      <div
+                        style={{ flexShrink: 0 }}
+                        onMouseDown={e => e.stopPropagation()}
+                        onClick={e => e.stopPropagation()}
+                      >
+                        <input type="date" value={item.dueDate || ""}
+                          onChange={e => setItemDueDate(item.id, e.target.value)}
+                          style={{
+                            fontFamily: font, fontSize: 11, fontWeight: 500,
+                            color: item.dueDate ? (isItemOverdue(item) ? "#D94444" : C.textSecondary) : C.textMuted,
+                            border: "none", background: "transparent", outline: "none",
+                            cursor: "pointer", padding: "4px 2px", width: isMobile ? 28 : 110,
+                          }}
+                        />
+                      </div>
+
+                      {/* Assignee avatar */}
+                      <div
+                        onClick={e => { e.stopPropagation(); cycleAssignee(item.id); }}
+                        title={item.assignee ? item.assignee : "Unassigned — click to assign"}
+                        style={{
+                          width: 24, height: 24, borderRadius: "50%",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          cursor: "pointer", flexShrink: 0,
+                          ...(item.assignee ? {
+                            background: item.assignee === "JM" ? C.ocean : C.mint,
+                            color: C.white, fontSize: 10, fontWeight: 700, fontFamily: font,
+                          } : {
+                            border: `1.5px dashed ${C.textMuted}`,
+                            color: C.textMuted, fontSize: 12,
+                          }),
+                        }}
+                      >{item.assignee || "+"}</div>
+
                       {/* Link icon — hide on mobile to save space (visible in expanded panel) */}
                       {!isMobile && resolved.url && (
                         <a href={resolved.url} target="_blank" rel="noopener noreferrer"
@@ -2566,6 +2640,59 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                               placeholder="Any notes about this selection..."
                               style={inputStyle} {...focusHandlers}
                             />
+                          </div>
+
+                          {/* Assignee + Decision Date */}
+                          <div>
+                            <label style={labelStyle}>Decision Owner</label>
+                            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                              {[{ key: "JM", label: "Josh", color: C.ocean }, { key: "KM", label: "Kerry", color: C.mint }].map(opt => (
+                                <button
+                                  key={opt.key}
+                                  onClick={e => { e.stopPropagation(); updateItem(item.id, { assignee: item.assignee === opt.key ? null : opt.key }); }}
+                                  style={{
+                                    padding: "7px 16px", borderRadius: 8, border: "none",
+                                    background: item.assignee === opt.key ? opt.color : C.pageBg,
+                                    color: item.assignee === opt.key ? C.white : C.textSecondary,
+                                    fontFamily: font, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                                    transition: "all 0.15s",
+                                  }}
+                                >{opt.label}</button>
+                              ))}
+                              {item.assignee && (
+                                <button
+                                  onClick={e => { e.stopPropagation(); updateItem(item.id, { assignee: null }); }}
+                                  style={{
+                                    background: "none", border: "none", color: C.textMuted,
+                                    fontFamily: font, fontSize: 11, cursor: "pointer", padding: "4px 8px",
+                                  }}
+                                >Clear</button>
+                              )}
+                            </div>
+                          </div>
+                          <div>
+                            <label style={labelStyle}>Decision Date</label>
+                            <div style={{ position: "relative" }}>
+                              <input
+                                type="date" value={item.dueDate || ""}
+                                onChange={e => { e.stopPropagation(); setItemDueDate(item.id, e.target.value); }}
+                                onClick={e => e.stopPropagation()}
+                                style={{
+                                  ...inputStyle,
+                                  color: item.dueDate ? (isItemOverdue(item) ? "#D94444" : C.charcoal) : C.textMuted,
+                                }}
+                              />
+                              {item.dueDate && (
+                                <button
+                                  onClick={e => { e.stopPropagation(); setItemDueDate(item.id, ""); }}
+                                  style={{
+                                    position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+                                    background: "none", border: "none", color: C.textMuted,
+                                    fontSize: 14, cursor: "pointer", padding: 0, lineHeight: 1,
+                                  }}
+                                >×</button>
+                              )}
+                            </div>
                           </div>
                         </div>
 
