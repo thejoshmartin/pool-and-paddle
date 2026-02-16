@@ -2515,11 +2515,15 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                                   }}
                                 >
                                   <option value="">Pick a parent item...</option>
-                                  {FINISH_CATEGORIES.map(cat => {
+                                  {[...FINISH_CATEGORIES].sort((a, b) => {
+                                    if (a.id === item.category) return -1;
+                                    if (b.id === item.category) return 1;
+                                    return 0;
+                                  }).map(cat => {
                                     const catItems = linkableItems.filter(li => li.id !== item.id && li.category === cat.id);
                                     if (catItems.length === 0) return null;
                                     return (
-                                      <optgroup key={cat.id} label={`${cat.icon} ${cat.label}`}>
+                                      <optgroup key={cat.id} label={`${cat.icon} ${cat.label}${cat.id === item.category ? ' ★' : ''}`}>
                                         {catItems.map(li => {
                                           const roomLabel = FINISH_ROOMS.find(r => r.id === li.room)?.label || li.room;
                                           return <option key={li.id} value={li.id}>{li.item} ({roomLabel}) — {li.selection}</option>;
