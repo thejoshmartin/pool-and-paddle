@@ -1449,6 +1449,20 @@ const FINISH_CATEGORIES = FINISHES_DATA.categories;
 const FINISH_ROOMS = FINISHES_DATA.rooms;
 const DEFAULT_FINISH_ITEMS = FINISHES_DATA.items.map(item => ({ ...item, userCreated: false }));
 
+// Migrate old room IDs → new room IDs (2026-02-16 room restructure)
+const ROOM_MIGRATION = {
+  "bed1-bath": "ground-floor-king",
+  "bed2": "downstairs-full-bed",
+  "bed3-bath": "second-master",
+  "bunk-bath": "bunk-room",
+  "upper-half-bath": "3rd-floor-bath",
+  "kitchen": "kitchen-upstairs",
+};
+
+function migrateRoom(roomId) {
+  return ROOM_MIGRATION[roomId] || roomId;
+}
+
 function mergeFinishes(saved) {
   if (!saved || !Array.isArray(saved)) return DEFAULT_FINISH_ITEMS;
   const defaultIds = new Set(DEFAULT_FINISH_ITEMS.map(i => i.id));
@@ -1456,7 +1470,8 @@ function mergeFinishes(saved) {
     const s = saved.find(s => s.id === item.id);
     return s ? { ...item, selection: s.selection ?? "", unitPrice: s.unitPrice ?? null, quantity: s.quantity ?? null, unit: s.unit ?? item.unit, url: s.url ?? "", notes: s.notes ?? "", linkedTo: s.linkedTo ?? null } : item;
   });
-  const userItems = saved.filter(s => s.userCreated && !defaultIds.has(s.id));
+  const userItems = saved.filter(s => s.userCreated && !defaultIds.has(s.id))
+    .map(item => ({ ...item, room: migrateRoom(item.room) }));
   return [...merged, ...userItems];
 }
 
@@ -1502,6 +1517,20 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
       const key = groupBy === "trade" ? item.category : item.room;
       if (!g[key]) g[key] = [];
       g[key].push(item);
+    });
+    // Sort items within each group by the cross-reference dimension
+    // so all items for the same room cluster together (when grouped by trade) and vice versa
+    const roomOrder = FINISH_ROOMS.map(r => r.id);
+    const catOrder = FINISH_CATEGORIES.map(c => c.id);
+    Object.values(g).forEach(items => {
+      items.sort((a, b) => {
+        const orderList = groupBy === "trade" ? roomOrder : catOrder;
+        const aKey = groupBy === "trade" ? a.room : a.category;
+        const bKey = groupBy === "trade" ? b.room : b.category;
+        const aIdx = orderList.indexOf(aKey);
+        const bIdx = orderList.indexOf(bKey);
+        return (aIdx === -1 ? 999 : aIdx) - (bIdx === -1 ? 999 : bIdx);
+      });
     });
     return g;
   }, [filtered, groupBy]);
