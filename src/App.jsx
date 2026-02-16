@@ -506,7 +506,7 @@ function Dashboard({ tasks, podcastData, finishes }) {
           style={{ border: 0, display: "block" }}
           loading="lazy"
           referrerPolicy="no-referrer-when-downgrade"
-          src="https://www.google.com/maps/embed/v1/place?key=AIzaSyBFw0Qbyq9zTFTd-tUY6dZWTgaQzuU17R8&q=6401+Broward+Street,+St+Augustine,+FL+32080&zoom=16&maptype=roadmap"
+          src={`https://www.google.com/maps/embed/v1/place?key=${import.meta.env.VITE_GOOGLE_MAPS_KEY}&q=6401+Broward+Street,+St+Augustine,+FL+32080&zoom=16&maptype=roadmap`}
         />
       </div>
     </div>
