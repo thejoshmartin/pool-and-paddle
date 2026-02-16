@@ -1,7 +1,18 @@
 # Pool & Paddle — Development Guide
 
 ## Project Overview
-Luxury STR (short-term rental) command center for Josh & KM's beach house at 6401 Broward Street, St. Augustine, FL 32080. Single-page React app with 5 tabs: Dashboard, Executive Brief, Podcast Intel, Task Tracker, and Design (finish selections). Deployed on Vercel with Upstash Redis for shared state.
+Luxury STR (short-term rental) command center for Josh & Kerry's beach house at 6401 Broward Street, St. Augustine, FL 32080. Single-page React app with 5 tabs: Dashboard, Executive Brief, Podcast Intel, Task Tracker, and Design (finish selections). Deployed on Vercel with Upstash Redis for shared state.
+
+## URL Structure & Auth
+- **Root** (`poolandpaddle.com/`) — branded "Coming Soon" placeholder (`public/coming-soon.html`)
+- **Admin app** (`poolandpaddle.com/admin`) — the SPA, requires login
+- **Login** (`/admin/login`) — user selector (Josh/Kerry) + password
+- **Logout** (`/admin/logout`) — clears session, redirects to login
+- **API** (`/api/*`) — protected, returns 401 JSON if unauthenticated
+- **Auth cookies**: `pp_session` (HttpOnly, `USERNAME:hash`) + `pp_user` (JS-readable, `JM` or `KM`)
+- **Env vars**: `JM_PASSWORD`, `KM_PASSWORD` (per-user passwords in Vercel)
+- **Domain**: `poolandpaddle.com` → DNS A record to Vercel, `www.poolandpaddle.com` is primary
+- **Local dev**: auth bypassed when no password env vars are set
 
 ## Architecture
 - **Single file app**: Everything lives in `src/App.jsx` (~2800 lines). All components, state, and styling are inline.
@@ -21,7 +32,8 @@ Luxury STR (short-term rental) command center for Josh & KM's beach house at 640
 ## API Routes (Vercel Serverless)
 - `api/tasks.js` — GET/PUT, Redis key: `tasks`, stores array of task objects
 - `api/finishes.js` — GET/PUT, Redis key: `finishes`, stores `{ items: [...], targetBudget: number|null, roomData: {...} }`
-- `middleware.js` — Password protection via Vercel Edge Middleware
+- `middleware.js` — Per-user auth (JM/KM), protects `/admin/*` and `/api/*`, serves login page, redirects `/` to coming-soon
+- Matcher: `['/', '/admin', '/admin/:path*', '/api/:path*']`
 
 ## Dashboard
 - Task Progress by Category — progress bars per task category
@@ -53,6 +65,7 @@ git push             # Auto-deploys to Vercel
 - Commit messages: imperative mood, 1-2 sentence description of what and why
 - Co-author tag: `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`
 - Assignees: JM = Josh Martin, KM = his wife
-- iOS compatibility: avoid `showPicker()` on date inputs — use full-size transparent native inputs instead
+- Date inputs: use visible native `<input type="date">` elements — do NOT use invisible overlay pattern (`opacity: 0`), it breaks in Safari
+- Clickable controls: use `<button>` not `<div>` for click targets (assignee circles, etc.) — divs with onClick can silently fail
 - Mobile: always provide touch alternatives for hover-dependent UI (delete buttons, etc.)
 - No external CSS or UI libraries — keep everything in the single App.jsx file
