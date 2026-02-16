@@ -10,7 +10,7 @@ Luxury STR (short-term rental) command center for Josh & Kerry's beach house at 
 - **Logout** (`/admin/logout`) — clears session, redirects to login
 - **API** (`/api/*`) — protected, returns 401 JSON if unauthenticated
 - **Auth cookies**: `pp_session` (HttpOnly, `USERNAME:hash`) + `pp_user` (JS-readable, `JM` or `KM`)
-- **Env vars**: `JM_PASSWORD`, `KM_PASSWORD` (per-user passwords in Vercel)
+- **Env vars**: `JM_PASSWORD`, `KM_PASSWORD`, `VITE_GOOGLE_MAPS_KEY` (all in Vercel)
 - **Domain**: `poolandpaddle.com` → DNS A record to Vercel, `www.poolandpaddle.com` is primary
 - **Local dev**: auth bypassed when no password env vars are set
 
@@ -38,7 +38,7 @@ Luxury STR (short-term rental) command center for Josh & Kerry's beach house at 
 ## Dashboard
 - Task Progress by Category — progress bars per task category
 - Design Decisions — stat card + room-by-room progress bars (mint/seafoam theme)
-- Google Maps embed — roadmap view of property location
+- Google Maps embed — roadmap view of property location (API key via `VITE_GOOGLE_MAPS_KEY` env var)
 - Executive summary was removed from dashboard (still accessible via Executive Brief tab)
 
 ## Design Tab Data Model
