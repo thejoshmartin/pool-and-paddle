@@ -253,7 +253,7 @@ function StatCard({ label, value, sub, accent }) {
   );
 }
 
-function Dashboard({ tasks, podcastData }) {
+function Dashboard({ tasks, podcastData, finishes }) {
   const completed = tasks.filter(t => t.done).length;
   const total = tasks.length;
   const critical = tasks.filter(t => t.priority === "critical");
@@ -267,6 +267,16 @@ function Dashboard({ tasks, podcastData }) {
     return { ...cat, total: catTasks.length, done: catDone, pct: catTasks.length > 0 ? Math.round((catDone / catTasks.length) * 100) : 0 };
   });
 
+  // Design progress — count items with a selection made per room
+  const designRooms = FINISHES_DATA.rooms.map(room => {
+    const roomItems = finishes.filter(f => f.room === room.id);
+    const decided = roomItems.filter(f => f.selection && f.selection.trim() !== "");
+    return { ...room, total: roomItems.length, decided: decided.length, pct: roomItems.length > 0 ? Math.round((decided.length / roomItems.length) * 100) : 0 };
+  });
+  const totalDesignItems = finishes.length;
+  const totalDecided = finishes.filter(f => f.selection && f.selection.trim() !== "").length;
+  const designPct = totalDesignItems > 0 ? Math.round((totalDecided / totalDesignItems) * 100) : 0;
+
   return (
     <div style={{ padding: "36px 32px", maxWidth: 1400, margin: "0 auto" }}>
       <div style={{ marginBottom: 32 }}>
@@ -274,15 +284,15 @@ function Dashboard({ tasks, podcastData }) {
           Mission Control
         </h2>
         <p style={{ fontFamily: font, fontSize: 14, color: C.textMuted, margin: 0, fontWeight: 500 }}>
-          Your path to becoming a top luxury Airbnb property
+          Pool & Paddle — 6401 Broward Street, St. Augustine, FL 32080
         </p>
       </div>
 
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 32 }}>
-        <StatCard label="Overall Progress" value={`${pct}%`} sub={`${completed} of ${total} tasks complete`} accent={C.mint} />
+        <StatCard label="Task Progress" value={`${pct}%`} sub={`${completed} of ${total} tasks complete`} accent={C.mint} />
         <StatCard label="Critical Tasks" value={`${critPct}%`} sub={`${criticalDone} of ${critical.length} must-haves done`} accent={C.ocean} />
-        <StatCard label="Podcast Insights" value={podcastData.length} sub="Episodes cataloged" accent={C.mint} />
-        <StatCard label="Gimmicks Flagged" value={tasks.filter(t => t.isGimmick).length} sub="Items to skip or deprioritize" accent={C.textMuted} />
+        <StatCard label="Design Decisions" value={`${designPct}%`} sub={`${totalDecided} of ${totalDesignItems} selections made`} accent={C.mint} />
+        <StatCard label="Podcast Insights" value={podcastData.length} sub="Episodes cataloged" accent={C.textMuted} />
       </div>
 
       {/* Category Progress */}
@@ -295,7 +305,7 @@ function Dashboard({ tasks, podcastData }) {
         boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
       }}>
         <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: "0 0 20px 0" }}>
-          Category Progress
+          Task Progress by Category
         </h3>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {catProgress.map(cat => (
@@ -317,6 +327,51 @@ function Dashboard({ tasks, podcastData }) {
               </div>
               <span style={{ fontFamily: font, fontSize: 12, color: C.textMuted, width: 50, textAlign: "right", fontWeight: 600 }}>
                 {cat.done}/{cat.total}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Design Decisions by Room */}
+      <div style={{
+        background: C.white,
+        border: `1px solid ${C.border}`,
+        borderRadius: 14,
+        padding: 28,
+        marginBottom: 32,
+        boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+      }}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 20 }}>
+          <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: 0 }}>
+            Design Selections by Room
+          </h3>
+          <span style={{ fontFamily: font, fontSize: 13, fontWeight: 600, color: C.textMuted }}>
+            {totalDecided}/{totalDesignItems} decisions made
+          </span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {designRooms.map(room => (
+            <div key={room.id} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{ fontFamily: font, fontSize: 13, fontWeight: 600, color: C.charcoal, width: 220, flexShrink: 0 }}>
+                {room.label}
+              </span>
+              <div style={{
+                flex: 1, height: 8,
+                background: C.seafoamFaint,
+                borderRadius: 4, overflow: "hidden",
+              }}>
+                <div style={{
+                  width: `${room.pct}%`, height: "100%",
+                  background: room.pct === 100 ? C.mint : `linear-gradient(90deg, ${C.seafoam}, ${C.mint})`,
+                  borderRadius: 4, transition: "width 0.5s ease",
+                }} />
+              </div>
+              <span style={{ fontFamily: font, fontSize: 12, color: C.textMuted, width: 70, textAlign: "right", fontWeight: 600 }}>
+                {room.decided}/{room.total}
+              </span>
+              <span style={{ fontFamily: font, fontSize: 11, color: room.pct === 100 ? C.mint : room.pct > 0 ? C.mint : C.textMuted, width: 36, textAlign: "right", fontWeight: 700 }}>
+                {room.pct}%
               </span>
             </div>
           ))}
@@ -388,31 +443,31 @@ function Dashboard({ tasks, podcastData }) {
         );
       })()}
 
-      {/* Executive Summary */}
+      {/* Property Location Map */}
       <div style={{
         background: C.white,
         border: `1px solid ${C.border}`,
         borderRadius: 14,
-        padding: 28,
+        overflow: "hidden",
         boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
       }}>
-        <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: "0 0 16px 0" }}>
-          Executive Summary — Thanks for Visiting Podcast
-        </h3>
-        <div style={{ fontFamily: font, fontSize: 14, color: C.textSecondary, lineHeight: 1.8 }}>
-          <p style={{ margin: "0 0 14px 0" }}>
-            <strong style={{ color: C.charcoal }}>The Podcast:</strong> Thanks for Visiting is hosted by Annette Grant and Sarah Karakaian — two seasoned STR operators with 538+ episodes and over 2.4 million downloads. The show consistently ranks in the top 10% on Apple Podcasts. They cover every aspect of short-term rental hosting from pre-launch strategy through scaling a portfolio, with a strong emphasis on treating hosting as a real business rather than a side hustle.
-          </p>
-          <p style={{ margin: "0 0 14px 0" }}>
-            <strong style={{ color: C.charcoal }}>Core Philosophy:</strong> Build your business foundation before your first guest arrives. Define your guest avatar early and let it drive every decision. Rely on data over feelings — use dynamic pricing tools, track Airbnb's built-in metrics, and analyze competitor reviews systematically. Invest where guests notice (sleep, seating, kitchen) and save where they don't (decorative clutter, fancy barware).
-          </p>
-          <p style={{ margin: "0 0 14px 0" }}>
-            <strong style={{ color: C.charcoal }}>For Pool & Paddle (Luxury Positioning):</strong> Your pool and paddle sports focus gives you a clear guest avatar and differentiator — lean into it hard. The podcast emphasizes that confused positioning loses bookings. Every design choice, amenity, photo, and listing word should reinforce your luxury pool & paddle identity. Create one unforgettable "wow" moment that guests photograph and share.
-          </p>
-          <p style={{ margin: 0 }}>
-            <strong style={{ color: C.charcoal }}>What to Skip:</strong> Annette and Sarah consistently warn against over-investing in decorative items guests don't notice, cheap furniture that wears out fast, and chasing every new tool or trend. Focus on the fundamentals that drive reviews and revenue: sleep quality, cleanliness systems, strategic pricing, and a clear brand identity.
+        <div style={{ padding: "20px 28px 12px" }}>
+          <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: "0 0 4px 0" }}>
+            Property Location
+          </h3>
+          <p style={{ fontFamily: font, fontSize: 13, color: C.textMuted, margin: 0, fontWeight: 500 }}>
+            6401 Broward Street, St. Augustine, FL 32080
           </p>
         </div>
+        <iframe
+          title="Pool & Paddle Property Location"
+          width="100%"
+          height="400"
+          style={{ border: 0, display: "block" }}
+          loading="lazy"
+          referrerPolicy="no-referrer-when-downgrade"
+          src="https://www.google.com/maps/embed/v1/place?key=AIzaSyBFw0Qbyq9zTFTd-tUY6dZWTgaQzuU17R8&q=6401+Broward+Street,+St+Augustine,+FL+32080&zoom=16&maptype=roadmap"
+        />
       </div>
     </div>
   );
@@ -2688,7 +2743,7 @@ export default function App() {
     <div style={{ minHeight: "100vh", background: C.pageBg, fontFamily: font }}>
       <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
       <Header activeView={activeView} setActiveView={setActiveView} />
-      {activeView === "dashboard" && <Dashboard tasks={tasks} podcastData={PODCAST_DATABASE} />}
+      {activeView === "dashboard" && <Dashboard tasks={tasks} podcastData={PODCAST_DATABASE} finishes={finishes} />}
       {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} />}
