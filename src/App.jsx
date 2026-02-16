@@ -108,7 +108,20 @@ const priorityColors = {
 
 // ─── COMPONENTS ────────────────────────────────────────────────────────────
 
+function getCurrentUser() {
+  try {
+    const match = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('pp_user='));
+    if (match) {
+      const code = match.substring(8);
+      if (code === 'JM') return { code: 'JM', name: 'Josh' };
+      if (code === 'KM') return { code: 'KM', name: 'Kerry' };
+    }
+  } catch (e) { /* local dev or no cookie */ }
+  return null;
+}
+
 function Header({ activeView, setActiveView }) {
+  const user = getCurrentUser();
   return (
     <header style={{
       background: C.white,
@@ -210,6 +223,33 @@ function Header({ activeView, setActiveView }) {
               </button>
             ))}
           </nav>
+          {user && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{
+                fontFamily: font,
+                fontSize: 12,
+                fontWeight: 600,
+                color: C.mint,
+                background: C.seafoamFaint,
+                padding: "5px 12px",
+                borderRadius: 20,
+                letterSpacing: "0.02em",
+              }}>{user.name}</span>
+              <a
+                href="/admin/logout"
+                style={{
+                  fontFamily: font,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  color: C.textMuted,
+                  textDecoration: "none",
+                  transition: "color 0.2s",
+                }}
+                onMouseEnter={e => e.target.style.color = C.charcoal}
+                onMouseLeave={e => e.target.style.color = C.textMuted}
+              >Sign Out</a>
+            </div>
+          )}
         </div>
       </div>
     </header>

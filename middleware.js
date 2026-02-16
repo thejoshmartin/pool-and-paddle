@@ -1,8 +1,14 @@
-const COOKIE_NAME = 'pp_session';
+const SESSION_COOKIE = 'pp_session';
+const USER_COOKIE = 'pp_user';
 const COOKIE_MAX_AGE = 30 * 24 * 60 * 60; // 30 days
 
-async function hashToken(password) {
-  const data = new TextEncoder().encode('pool-and-paddle:' + password);
+const USERS = {
+  JM: { label: 'Josh', envVar: 'JM_PASSWORD' },
+  KM: { label: 'Kerry', envVar: 'KM_PASSWORD' },
+};
+
+async function hashToken(username, password) {
+  const data = new TextEncoder().encode('pool-and-paddle:' + username + ':' + password);
   const hash = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(hash))
     .map((b) => b.toString(16).padStart(2, '0'))
@@ -16,6 +22,28 @@ function getCookie(request, name) {
     .map((c) => c.trim())
     .find((c) => c.startsWith(name + '='));
   return match ? match.substring(name.length + 1) : null;
+}
+
+function getPasswordForUser(username) {
+  const user = USERS[username];
+  if (!user) return null;
+  return process.env[user.envVar] || null;
+}
+
+async function validateSession(request) {
+  const session = getCookie(request, SESSION_COOKIE);
+  if (!session) return null;
+
+  const sep = session.indexOf(':');
+  if (sep === -1) return null;
+
+  const username = session.substring(0, sep);
+  const token = session.substring(sep + 1);
+  const password = getPasswordForUser(username);
+  if (!password) return null;
+
+  const expected = await hashToken(username, password);
+  return token === expected ? username : null;
 }
 
 function loginPage(error = false) {
@@ -67,6 +95,34 @@ function loginPage(error = false) {
       color:#333;
       margin-bottom:8px;
     }
+    .user-toggle{
+      display:flex;
+      gap:8px;
+      margin-bottom:20px;
+    }
+    .user-btn{
+      flex:1;
+      padding:12px;
+      border:1.5px solid #E2E8E5;
+      border-radius:10px;
+      background:#F7FAF8;
+      font-family:inherit;
+      font-size:14px;
+      font-weight:600;
+      color:#666;
+      cursor:pointer;
+      transition:all 0.2s;
+      text-align:center;
+    }
+    .user-btn:hover{
+      border-color:#2EAF7B;
+      color:#2EAF7B;
+    }
+    .user-btn.active{
+      border-color:#2EAF7B;
+      background:#EDF9F3;
+      color:#2EAF7B;
+    }
     input[type="password"]{
       width:100%;
       padding:12px 16px;
@@ -90,7 +146,7 @@ function loginPage(error = false) {
       margin-top:8px;
       ${error ? '' : 'display:none;'}
     }
-    button{
+    button[type="submit"]{
       width:100%;
       margin-top:20px;
       padding:13px;
@@ -105,8 +161,8 @@ function loginPage(error = false) {
       transition:background 0.2s;
       letter-spacing:0.3px;
     }
-    button:hover{background:#238C62}
-    button:active{transform:scale(0.98)}
+    button[type="submit"]:hover{background:#238C62}
+    button[type="submit"]:active{transform:scale(0.98)}
   </style>
 </head>
 <body>
@@ -136,70 +192,83 @@ function loginPage(error = false) {
         <text x="110" y="186" text-anchor="middle" font-family="'Plus Jakarta Sans',sans-serif" font-weight="600" font-size="10.5" fill="#2EAF7B" letter-spacing="4">BEACH SIDE</text>
       </svg>
     </div>
-    <p class="subtitle">Enter password to continue</p>
-    <form method="POST" action="/login">
+    <p class="subtitle">Sign in to continue</p>
+    <form method="POST" action="/admin/login">
+      <label>Who's signing in?</label>
+      <div class="user-toggle">
+        <button type="button" class="user-btn active" data-user="JM" onclick="selectUser(this)">Josh</button>
+        <button type="button" class="user-btn" data-user="KM" onclick="selectUser(this)">Kerry</button>
+      </div>
+      <input type="hidden" name="user" id="userField" value="JM">
       <label for="password">Password</label>
       <input type="password" id="password" name="password" placeholder="Enter your password" required autofocus>
       <p class="error">Incorrect password. Please try again.</p>
       <button type="submit">Sign In</button>
     </form>
   </div>
+  <script>
+    function selectUser(btn) {
+      document.querySelectorAll('.user-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('userField').value = btn.dataset.user;
+    }
+  </script>
 </body>
 </html>`;
 }
 
 export default async function middleware(request) {
   const url = new URL(request.url);
-  const password = process.env.SITE_PASSWORD;
 
-  // No password configured — allow everything through (local dev / misconfigured)
-  if (!password) return;
+  // ── Only handle /admin/* and /api/* ────────────────────────
+  // Everything else (/, /coming-soon.html, /assets/*) passes through
 
-  // ── Logout ──────────────────────────────────────────────
-  if (url.pathname === '/logout') {
+  // ── Logout ─────────────────────────────────────────────────
+  if (url.pathname === '/admin/logout') {
     return new Response(null, {
       status: 302,
-      headers: {
-        Location: '/login',
-        'Set-Cookie': `${COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`,
-      },
+      headers: new Headers([
+        ['Location', '/admin/login'],
+        ['Set-Cookie', `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`],
+        ['Set-Cookie', `${USER_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`],
+      ]),
     });
   }
 
-  // ── Login page ──────────────────────────────────────────
-  if (url.pathname === '/login') {
+  // ── Login page ─────────────────────────────────────────────
+  if (url.pathname === '/admin/login') {
     if (request.method === 'POST') {
       const body = await request.formData();
+      const username = body.get('user');
       const submitted = body.get('password');
+      const password = getPasswordForUser(username);
 
-      if (submitted === password) {
-        const token = await hashToken(password);
+      if (password && submitted === password) {
+        const token = await hashToken(username, password);
         return new Response(null, {
           status: 302,
-          headers: {
-            Location: '/',
-            'Set-Cookie': `${COOKIE_NAME}=${token}; Path=/; Max-Age=${COOKIE_MAX_AGE}; HttpOnly; Secure; SameSite=Lax`,
-          },
+          headers: new Headers([
+            ['Location', '/admin'],
+            ['Set-Cookie', `${SESSION_COOKIE}=${username}:${token}; Path=/; Max-Age=${COOKIE_MAX_AGE}; HttpOnly; Secure; SameSite=Lax`],
+            ['Set-Cookie', `${USER_COOKIE}=${username}; Path=/; Max-Age=${COOKIE_MAX_AGE}; SameSite=Lax`],
+          ]),
         });
       }
 
-      // Wrong password
+      // Wrong password or invalid user
       return new Response(loginPage(true), {
         status: 200,
         headers: { 'Content-Type': 'text/html; charset=utf-8' },
       });
     }
 
-    // GET /login — if already authenticated, redirect home
-    const existing = getCookie(request, COOKIE_NAME);
-    if (existing) {
-      const expected = await hashToken(password);
-      if (existing === expected) {
-        return new Response(null, {
-          status: 302,
-          headers: { Location: '/' },
-        });
-      }
+    // GET /admin/login — if already authenticated, redirect to /admin
+    const validUser = await validateSession(request);
+    if (validUser) {
+      return new Response(null, {
+        status: 302,
+        headers: { Location: '/admin' },
+      });
     }
 
     return new Response(loginPage(false), {
@@ -208,20 +277,38 @@ export default async function middleware(request) {
     });
   }
 
-  // ── Auth check for all other routes ─────────────────────
-  const token = getCookie(request, COOKIE_NAME);
-  if (token) {
-    const expected = await hashToken(password);
-    if (token === expected) return; // authenticated — continue to origin
+  // ── API protection ─────────────────────────────────────────
+  if (url.pathname.startsWith('/api/')) {
+    // No passwords configured — allow through (local dev)
+    if (!process.env.JM_PASSWORD && !process.env.KM_PASSWORD) return;
+
+    const validUser = await validateSession(request);
+    if (validUser) return; // authenticated
+
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
-  // Not authenticated — redirect to login
-  return new Response(null, {
-    status: 302,
-    headers: { Location: '/login' },
-  });
+  // ── Admin auth check ───────────────────────────────────────
+  if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
+    // No passwords configured — allow through (local dev)
+    if (!process.env.JM_PASSWORD && !process.env.KM_PASSWORD) return;
+
+    const validUser = await validateSession(request);
+    if (validUser) return; // authenticated — continue to origin
+
+    // Not authenticated — redirect to login
+    return new Response(null, {
+      status: 302,
+      headers: { Location: '/admin/login' },
+    });
+  }
+
+  // Everything else passes through (/, /coming-soon.html, etc.)
 }
 
 export const config = {
-  matcher: ['/((?!_vercel).*)'],
+  matcher: ['/admin', '/admin/:path*', '/api/:path*'],
 };
