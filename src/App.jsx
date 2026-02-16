@@ -2375,22 +2375,23 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                       </div>
 
                       {/* Assignee avatar */}
-                      <div
+                      <button
                         onClick={e => { e.stopPropagation(); cycleAssignee(item.id); }}
                         title={item.assignee ? item.assignee : "Unassigned — click to assign"}
                         style={{
-                          width: 24, height: 24, borderRadius: "50%",
+                          width: 28, height: 28, borderRadius: "50%",
                           display: "flex", alignItems: "center", justifyContent: "center",
-                          cursor: "pointer", flexShrink: 0,
+                          cursor: "pointer", flexShrink: 0, border: "none",
                           ...(item.assignee ? {
                             background: item.assignee === "JM" ? C.ocean : C.mint,
                             color: C.white, fontSize: 10, fontWeight: 700, fontFamily: font,
                           } : {
+                            background: "transparent",
                             border: `1.5px dashed ${C.textMuted}`,
-                            color: C.textMuted, fontSize: 12,
+                            color: C.textMuted, fontSize: 14, fontFamily: font,
                           }),
                         }}
-                      >{item.assignee || "+"}</div>
+                      >{item.assignee || "+"}</button>
 
                       {/* Link icon — hide on mobile to save space (visible in expanded panel) */}
                       {!isMobile && resolved.url && (
