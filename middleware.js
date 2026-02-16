@@ -306,9 +306,18 @@ export default async function middleware(request) {
     });
   }
 
-  // Everything else passes through (/, /coming-soon.html, etc.)
+  // ── Root → Coming Soon page ─────────────────────────────
+  // Vercel auto-serves index.html for /, so we redirect to the static file
+  if (url.pathname === '/') {
+    return new Response(null, {
+      status: 302,
+      headers: { Location: '/coming-soon.html' },
+    });
+  }
+
+  // Everything else passes through
 }
 
 export const config = {
-  matcher: ['/admin', '/admin/:path*', '/api/:path*'],
+  matcher: ['/', '/admin', '/admin/:path*', '/api/:path*'],
 };
