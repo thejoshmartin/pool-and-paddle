@@ -1,25 +1,33 @@
 # Pool & Paddle — Development Guide
 
 ## Project Overview
-Luxury STR (short-term rental) command center for Josh & KM's beach house. Single-page React app with 5 tabs: Dashboard, Executive Brief, Podcast Intel, Task Tracker, and Design (finish selections). Deployed on Vercel with Upstash Redis for shared state.
+Luxury STR (short-term rental) command center for Josh & KM's beach house at 6401 Broward Street, St. Augustine, FL 32080. Single-page React app with 5 tabs: Dashboard, Executive Brief, Podcast Intel, Task Tracker, and Design (finish selections). Deployed on Vercel with Upstash Redis for shared state.
 
 ## Architecture
-- **Single file app**: Everything lives in `src/App.jsx` (~2700 lines). All components, state, and styling are inline.
+- **Single file app**: Everything lives in `src/App.jsx` (~2800 lines). All components, state, and styling are inline.
 - **No routing**: Tab switching via `activeView` state in the App component.
-- **Design tokens**: All colors/fonts in `C` object and `font` variable at top of file. Use these — never hardcode colors.
+- **Design tokens**: All colors/fonts in `C` object and `font` variable at top of file. Use these — never hardcode colors. Primary accent: `C.mint`/`C.seafoam`. Background: `C.seafoamFaint`.
 - **Inline styles only**: No CSS files. All styling is React inline `style={{}}` objects.
 - **Data files**: JSON files in `src/` imported statically (podcast-data, executive-summary, tools-data, finishes-data).
 
 ## Key Patterns
 - **State persistence**: localStorage as fast cache + Upstash Redis as source of truth. Pattern: load from localStorage on mount, fetch from server, merge, then debounced save (500ms) to both on changes.
 - **Merge functions**: `mergeTasks()` and `mergeFinishes()` reconcile saved data with defaults — preserves user edits while allowing new default items to appear. User-created items (with `userCreated: true`) are appended after defaults.
+- **Room migration**: `ROOM_MIGRATION` map + `migrateRoom()` function migrates user-created items from old room IDs to new ones during merge.
 - **Shared state**: Both JM and KM access the same Redis data. The merge pattern handles concurrent edits gracefully.
 - **Mobile detection**: DesignView uses `useState`/`useEffect` with `window.innerWidth < 768` to adapt layout. StatCard uses CSS `clamp()` for responsive font sizing.
+- **Auto-sort**: Items within each trade/room group are sorted by the cross-reference dimension (room order when grouped by trade, category order when grouped by room).
 
 ## API Routes (Vercel Serverless)
 - `api/tasks.js` — GET/PUT, Redis key: `tasks`, stores array of task objects
 - `api/finishes.js` — GET/PUT, Redis key: `finishes`, stores `{ items: [...], targetBudget: number|null, roomData: {...} }`
 - `middleware.js` — Password protection via Vercel Edge Middleware
+
+## Dashboard
+- Task Progress by Category — progress bars per task category
+- Design Decisions — stat card + room-by-room progress bars (mint/seafoam theme)
+- Google Maps embed — roadmap view of property location
+- Executive summary was removed from dashboard (still accessible via Executive Brief tab)
 
 ## Design Tab Data Model
 Items have: `id, category, room, item, contractorOptions[], selection, unitPrice, quantity, unit, url, notes, userCreated, linkedTo`
@@ -28,7 +36,9 @@ Items have: `id, category, room, item, contractorOptions[], selection, unitPrice
 
 Categories (11 trades): flooring, shower-bath-tile, kitchens, countertops, paint, decking, doors, plumbing, appliances, electrical, drywall
 
-Rooms (14): whole-house, master-suite, bed1-bath, bed2, bed3-bath, bunk-bath, pool-bath, upper-half-bath, kitchen, wet-bar, summer-kitchen, laundry, garage, exterior
+Rooms (20): whole-house, kitchen-upstairs, wet-bar, 3rd-floor-bath, 3rd-story-porch, master-suite, master-bath, second-master, second-master-bath, bunk-room, bunk-bathroom, ground-floor-king, ground-floor-king-bath, downstairs-full-bed, pool-bath, laundry, garage, summer-kitchen, backyard, exterior
+
+**161 default finish items** across 11 trades and 20 rooms.
 
 **Room data** (`roomData` state): Per-room metadata stored as `{ [roomId]: { miroUrl: string, furniture: [...] } }`. Each furniture item has: `id, name, price, url, notes, purchased`. Persisted alongside finishes in the same Redis payload. Miro URLs are simple link-outs (no API integration).
 
