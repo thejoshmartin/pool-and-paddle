@@ -1035,21 +1035,22 @@ function TaskView({ tasks, setTasks }) {
                     </div>
 
                     {/* Due date */}
-                    <div
-                      style={{ flexShrink: 0, minWidth: 70, textAlign: "center", cursor: "pointer", position: "relative" }}
-                    >
-                      <span style={{
-                        fontFamily: font, fontSize: 12, fontWeight: 500,
-                        color: task.dueDate ? (isOverdue(task) ? "#D94444" : C.textSecondary) : C.textMuted,
-                        pointerEvents: "none",
-                      }}>
-                        {fmtDate(task.dueDate) || "Set date"}
-                      </span>
+                    <div style={{ flexShrink: 0, display: "flex", alignItems: "center" }} onClick={e => e.stopPropagation()}>
                       <input type="date" value={task.dueDate || ""}
                         ref={el => { dateRefs.current[task.id] = el; }}
                         onChange={e => setDueDate(task.id, e.target.value)}
-                        onClick={e => e.stopPropagation()}
-                        style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer" }} />
+                        style={{
+                          fontFamily: font, fontSize: 12, fontWeight: 500,
+                          color: task.dueDate ? (isOverdue(task) ? "#D94444" : C.textSecondary) : C.textMuted,
+                          border: "none", background: "transparent", cursor: "pointer",
+                          outline: "none", padding: "2px 4px", minWidth: 80,
+                        }} />
+                      {task.dueDate && (
+                        <button onClick={() => setDueDate(task.id, "")} style={{
+                          background: "none", border: "none", cursor: "pointer",
+                          color: C.textMuted, fontSize: 14, padding: "0 2px", lineHeight: 1,
+                        }}>&times;</button>
+                      )}
                     </div>
 
                     {/* Episode links */}
@@ -1069,22 +1070,23 @@ function TaskView({ tasks, setTasks }) {
                     </div>
 
                     {/* Assignee avatar */}
-                    <div
+                    <button
                       onClick={e => { e.stopPropagation(); cycleAssignee(task.id); }}
                       title={task.assignee ? task.assignee : "Unassigned — click to assign"}
                       style={{
-                        width: 24, height: 24, borderRadius: "50%",
+                        width: 28, height: 28, borderRadius: "50%",
                         display: "flex", alignItems: "center", justifyContent: "center",
-                        cursor: "pointer", flexShrink: 0,
+                        cursor: "pointer", flexShrink: 0, border: "none",
                         ...(task.assignee ? {
                           background: task.assignee === "JM" ? C.ocean : C.mint,
                           color: C.white, fontSize: 10, fontWeight: 700, fontFamily: font,
                         } : {
+                          background: "transparent",
                           border: `1.5px dashed ${C.textMuted}`,
-                          color: C.textMuted, fontSize: 12,
+                          color: C.textMuted, fontSize: 14, fontFamily: font,
                         }),
                       }}
-                    >{task.assignee || "+"}</div>
+                    >{task.assignee || "+"}</button>
 
                     {/* Delete button */}
                     <div style={{ width: 36, flexShrink: 0, display: "flex", justifyContent: "center" }}>
