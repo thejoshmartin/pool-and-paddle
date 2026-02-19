@@ -112,7 +112,7 @@ function getCurrentUser() {
   try {
     const match = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('pp_user='));
     if (match) {
-      const code = match.substring(8);
+      const code = match.split('=')[1]?.trim();
       if (code === 'JM') return { code: 'JM', name: 'Josh' };
       if (code === 'KM') return { code: 'KM', name: 'Kerry' };
     }
@@ -1676,7 +1676,12 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
   };
 
   const deleteItem = (id) => {
-    setFinishes(prev => prev.filter(item => item.id !== id));
+    setFinishes(prev => {
+      // Also unlink any children that reference this parent
+      return prev
+        .filter(item => item.id !== id)
+        .map(item => item.linkedTo === id ? { ...item, linkedTo: null } : item);
+    });
     setConfirmDelete(null);
   };
 
@@ -2798,7 +2803,7 @@ export default function App() {
     try {
       const raw = localStorage.getItem("pool-paddle-tasks-v2");
       if (raw) return mergeTasks(JSON.parse(raw));
-    } catch (e) {}
+    } catch (e) { console.warn('localStorage save failed:', e.name); }
     return DEFAULT_TASKS;
   });
   const [finishes, setFinishes] = useState(() => {
@@ -2808,7 +2813,7 @@ export default function App() {
         const parsed = JSON.parse(raw);
         return mergeFinishes(parsed.items || parsed);
       }
-    } catch (e) {}
+    } catch (e) { console.warn('localStorage save failed:', e.name); }
     return DEFAULT_FINISH_ITEMS;
   });
   const [targetBudget, setTargetBudget] = useState(() => {
@@ -2818,7 +2823,7 @@ export default function App() {
         const parsed = JSON.parse(raw);
         return parsed.targetBudget ?? null;
       }
-    } catch (e) {}
+    } catch (e) { console.warn('localStorage save failed:', e.name); }
     return null;
   });
   const [roomData, setRoomData] = useState(() => {
@@ -2828,9 +2833,10 @@ export default function App() {
         const parsed = JSON.parse(raw);
         return parsed.roomData ?? {};
       }
-    } catch (e) {}
+    } catch (e) { console.warn('localStorage save failed:', e.name); }
     return {};
   });
+  const [syncError, setSyncError] = useState(null);
   const serverLoaded = useRef(false);
   const finishesServerLoaded = useRef(false);
 
@@ -2843,11 +2849,7 @@ export default function App() {
         if (data && Array.isArray(data) && data.length > 0) {
           setTasks(mergeTasks(data));
         } else {
-          fetch('/api/tasks', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(tasks),
-          }).catch(() => {});
+          // Server empty — save effect will push current state on next change
         }
       })
       .catch(() => { serverLoaded.current = true; });
@@ -2864,11 +2866,7 @@ export default function App() {
           if (data.targetBudget != null) setTargetBudget(data.targetBudget);
           if (data.roomData) setRoomData(data.roomData);
         } else {
-          fetch('/api/finishes', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items: finishes, targetBudget, roomData }),
-          }).catch(() => {});
+          // Server empty — save effect will push current state on next change
         }
       })
       .catch(() => { finishesServerLoaded.current = true; });
@@ -2878,7 +2876,7 @@ export default function App() {
   useEffect(() => {
     try {
       localStorage.setItem("pool-paddle-tasks-v2", JSON.stringify(tasks));
-    } catch (e) {}
+    } catch (e) { console.warn('localStorage save failed:', e.name); }
 
     if (!serverLoaded.current) return;
 
@@ -2887,7 +2885,10 @@ export default function App() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tasks),
-      }).catch(() => {});
+      }).then(r => {
+        if (!r.ok) setSyncError('Failed to save tasks');
+        else setSyncError(null);
+      }).catch(() => setSyncError('Unable to reach server'));
     }, 500);
 
     return () => clearTimeout(timer);
@@ -2898,7 +2899,7 @@ export default function App() {
     const payload = { items: finishes, targetBudget, roomData };
     try {
       localStorage.setItem("pool-paddle-finishes-v1", JSON.stringify(payload));
-    } catch (e) {}
+    } catch (e) { console.warn('localStorage save failed:', e.name); }
 
     if (!finishesServerLoaded.current) return;
 
@@ -2907,7 +2908,10 @@ export default function App() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      }).catch(() => {});
+      }).then(r => {
+        if (!r.ok) setSyncError('Failed to save finishes');
+        else setSyncError(null);
+      }).catch(() => setSyncError('Unable to reach server'));
     }, 500);
 
     return () => clearTimeout(timer);
@@ -2917,6 +2921,18 @@ export default function App() {
     <div style={{ minHeight: "100vh", background: C.pageBg, fontFamily: font }}>
       <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
       <Header activeView={activeView} setActiveView={setActiveView} />
+      {syncError && (
+        <div style={{
+          background: '#fee2e2',
+          color: '#991b1b',
+          padding: '8px 16px',
+          textAlign: 'center',
+          fontSize: '14px',
+          borderBottom: '1px solid #fecaca',
+        }}>
+          {syncError} — changes saved locally only
+        </div>
+      )}
       {activeView === "dashboard" && <Dashboard tasks={tasks} podcastData={PODCAST_DATABASE} finishes={finishes} />}
       {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
