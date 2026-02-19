@@ -61,6 +61,13 @@ npm run build        # Production build → dist/
 git push             # Auto-deploys to Vercel
 ```
 
+## Known Issues — FIXED (2026-02-19)
+- **Stale closures**: Both fetch `useEffect`s had `else` branches that captured stale state — removed
+- **Orphaned linked items**: Deleting a parent item left children with dangling `linkedTo` reference — now converts children to standalone
+- **Silent save failures**: Server save errors were invisible to user — now shows red sync error banner
+- **Cookie parsing**: `getCurrentUser()` could fail on some cookie formats — fixed to use `.split('=')[1]?.trim()`
+- **Silent localStorage errors**: 6 `catch` blocks around localStorage were empty — now log with `console.warn`
+
 ## Conventions
 - Commit messages: imperative mood, 1-2 sentence description of what and why
 - Co-author tag: `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`
