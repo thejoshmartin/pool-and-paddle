@@ -335,6 +335,88 @@ function Dashboard({ tasks, podcastData, finishes }) {
         <StatCard label="Podcast Insights" value={podcastData.length} sub="Episodes cataloged" accent={C.textMuted} />
       </div>
 
+      {/* Action Items — Overdue + Assigned Tasks with Due Dates */}
+      {(() => {
+        const today = new Date().toISOString().split("T")[0];
+        const overdue = tasks
+          .filter(t => !t.done && t.dueDate && t.dueDate < today)
+          .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+        const assignedUpcoming = tasks
+          .filter(t => !t.done && t.dueDate && t.assignee && t.dueDate >= today)
+          .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+        const actionItems = [...overdue, ...assignedUpcoming];
+        if (actionItems.length === 0) return null;
+        return (
+          <div style={{
+            background: C.white, border: `1px solid ${overdue.length > 0 ? "#FEB2B2" : C.border}`, borderRadius: 14,
+            padding: 28, marginBottom: 32, boxShadow: overdue.length > 0 ? "0 2px 12px rgba(229,62,62,0.08)" : "0 1px 4px rgba(0,0,0,0.04)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+              <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: 0 }}>
+                {overdue.length > 0 ? "⚠️ " : ""}Action Items
+              </h3>
+              {overdue.length > 0 && (
+                <span style={{
+                  fontFamily: font, fontSize: 12, fontWeight: 700,
+                  color: "#E53E3E", background: "#FED7D7",
+                  padding: "4px 12px", borderRadius: 20,
+                }}>
+                  {overdue.length} overdue
+                </span>
+              )}
+            </div>
+            <p style={{ fontFamily: font, fontSize: 12, color: C.textMuted, margin: "0 0 16px 0" }}>
+              {overdue.length > 0 && assignedUpcoming.length > 0
+                ? `${overdue.length} overdue · ${assignedUpcoming.length} upcoming assigned`
+                : overdue.length > 0
+                ? `${overdue.length} task${overdue.length !== 1 ? "s" : ""} past due date`
+                : `${assignedUpcoming.length} assigned task${assignedUpcoming.length !== 1 ? "s" : ""} coming up`}
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+              {actionItems.map((t, i) => {
+                const isOverdue = t.dueDate < today;
+                const isSoon = !isOverdue && t.dueDate <= new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0];
+                const catInfo = TASK_CATEGORIES.find(c => c.id === t.category);
+                return (
+                  <div key={t.id} style={{
+                    display: "flex", alignItems: "center", gap: 12, padding: "12px 0",
+                    borderTop: i > 0 ? `1px solid ${C.borderLight}` : "none",
+                  }}>
+                    <div style={{
+                      width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+                      background: isOverdue ? "#E53E3E" : (priorityColors[t.priority] || C.textMuted),
+                    }} />
+                    <span style={{ fontSize: 16, width: 24, flexShrink: 0 }}>{catInfo?.icon || "📋"}</span>
+                    <div style={{ flex: 1, fontFamily: font, fontSize: 13, fontWeight: 500, color: C.charcoal }}>
+                      {t.task}
+                    </div>
+                    {t.assignee && (
+                      <span style={{
+                        fontFamily: font, fontSize: 10, fontWeight: 700,
+                        width: 24, height: 24, borderRadius: "50%",
+                        background: t.assignee === "JM" ? C.ocean : C.mint,
+                        color: C.white, display: "flex", alignItems: "center", justifyContent: "center",
+                        flexShrink: 0,
+                      }}>
+                        {t.assignee}
+                      </span>
+                    )}
+                    <span style={{
+                      fontFamily: font, fontSize: 12, fontWeight: 600, flexShrink: 0,
+                      color: isOverdue ? "#E53E3E" : isSoon ? "#D69E2E" : C.textMuted,
+                      background: isOverdue ? "#FED7D7" : isSoon ? "#FEFCBF" : C.pageBg,
+                      padding: "3px 10px", borderRadius: 6,
+                    }}>
+                      {isOverdue ? "Overdue · " : ""}{new Date(t.dueDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Category Progress */}
       <div style={{
         background: C.white,
@@ -417,71 +499,6 @@ function Dashboard({ tasks, podcastData, finishes }) {
           ))}
         </div>
       </div>
-
-      {/* Upcoming Tasks */}
-      {(() => {
-        const today = new Date().toISOString().split("T")[0];
-        const upcoming = tasks
-          .filter(t => !t.done && t.dueDate)
-          .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
-          .slice(0, 8);
-        const overdue = upcoming.filter(t => t.dueDate < today);
-        if (upcoming.length === 0) return null;
-        return (
-          <div style={{
-            background: C.white, border: `1px solid ${C.border}`, borderRadius: 14,
-            padding: 28, marginBottom: 32, boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
-          }}>
-            <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: "0 0 4px 0" }}>
-              Upcoming Tasks
-            </h3>
-            <p style={{ fontFamily: font, fontSize: 12, color: C.textMuted, margin: "0 0 16px 0" }}>
-              {overdue.length > 0 ? `${overdue.length} overdue · ` : ""}{upcoming.length} tasks with due dates
-            </p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-              {upcoming.map((t, i) => {
-                const isOverdue = t.dueDate < today;
-                const isSoon = !isOverdue && t.dueDate <= new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0];
-                const catInfo = TASK_CATEGORIES.find(c => c.id === t.category);
-                return (
-                  <div key={t.id} style={{
-                    display: "flex", alignItems: "center", gap: 12, padding: "12px 0",
-                    borderTop: i > 0 ? `1px solid ${C.borderLight}` : "none",
-                  }}>
-                    <div style={{
-                      width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                      background: priorityColors[t.priority] || C.textMuted,
-                    }} />
-                    <span style={{ fontSize: 16, width: 24, flexShrink: 0 }}>{catInfo?.icon || "📋"}</span>
-                    <div style={{ flex: 1, fontFamily: font, fontSize: 13, fontWeight: 500, color: C.charcoal }}>
-                      {t.task}
-                    </div>
-                    {t.assignee && (
-                      <span style={{
-                        fontFamily: font, fontSize: 10, fontWeight: 700,
-                        width: 24, height: 24, borderRadius: "50%",
-                        background: t.assignee === "JM" ? C.ocean : C.mint,
-                        color: C.white, display: "flex", alignItems: "center", justifyContent: "center",
-                        flexShrink: 0,
-                      }}>
-                        {t.assignee}
-                      </span>
-                    )}
-                    <span style={{
-                      fontFamily: font, fontSize: 12, fontWeight: 600, flexShrink: 0,
-                      color: isOverdue ? "#E53E3E" : isSoon ? "#D69E2E" : C.textMuted,
-                      background: isOverdue ? "#FED7D7" : isSoon ? "#FEFCBF" : C.pageBg,
-                      padding: "3px 10px", borderRadius: 6,
-                    }}>
-                      {new Date(t.dueDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })()}
 
       {/* Property Location Map */}
       <div style={{
