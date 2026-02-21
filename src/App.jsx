@@ -335,16 +335,29 @@ function Dashboard({ tasks, podcastData, finishes }) {
         <StatCard label="Podcast Insights" value={podcastData.length} sub="Episodes cataloged" accent={C.textMuted} />
       </div>
 
-      {/* Action Items — Overdue + Assigned Tasks with Due Dates */}
+      {/* Action Items — Overdue + Assigned items from Tasks AND Design */}
       {(() => {
         const today = new Date().toISOString().split("T")[0];
-        const overdue = tasks
-          .filter(t => !t.done && t.dueDate && t.dueDate < today)
-          .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-        const assignedUpcoming = tasks
-          .filter(t => !t.done && t.dueDate && t.assignee && t.dueDate >= today)
-          .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-        const actionItems = [...overdue, ...assignedUpcoming];
+        // Normalize tasks into action items
+        const taskItems = tasks
+          .filter(t => !t.done && t.dueDate && (t.dueDate < today || t.assignee))
+          .map(t => {
+            const catInfo = TASK_CATEGORIES.find(c => c.id === t.category);
+            return { id: t.id, label: t.task, icon: catInfo?.icon || "📋", dueDate: t.dueDate, assignee: t.assignee, priority: t.priority, source: "task" };
+          });
+        // Normalize design items into action items
+        const designItems = finishes
+          .filter(f => f.dueDate && (f.dueDate < today || f.assignee))
+          .map(f => {
+            const catInfo = FINISHES_DATA.categories.find(c => c.id === f.category);
+            const roomInfo = FINISHES_DATA.rooms.find(r => r.id === f.room);
+            return { id: `d-${f.id}`, label: f.item, icon: catInfo?.icon || "🔨", dueDate: f.dueDate, assignee: f.assignee, priority: null, source: "design", room: roomInfo?.label || f.room };
+          });
+        // Combine, overdue first then by date
+        const all = [...taskItems, ...designItems];
+        const overdue = all.filter(a => a.dueDate < today).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+        const upcoming = all.filter(a => a.dueDate >= today).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+        const actionItems = [...overdue, ...upcoming];
         if (actionItems.length === 0) return null;
         return (
           <div style={{
@@ -366,39 +379,45 @@ function Dashboard({ tasks, podcastData, finishes }) {
               )}
             </div>
             <p style={{ fontFamily: font, fontSize: 12, color: C.textMuted, margin: "0 0 16px 0" }}>
-              {overdue.length > 0 && assignedUpcoming.length > 0
-                ? `${overdue.length} overdue · ${assignedUpcoming.length} upcoming assigned`
+              {overdue.length > 0 && upcoming.length > 0
+                ? `${overdue.length} overdue · ${upcoming.length} upcoming`
                 : overdue.length > 0
-                ? `${overdue.length} task${overdue.length !== 1 ? "s" : ""} past due date`
-                : `${assignedUpcoming.length} assigned task${assignedUpcoming.length !== 1 ? "s" : ""} coming up`}
+                ? `${overdue.length} item${overdue.length !== 1 ? "s" : ""} past due`
+                : `${upcoming.length} assigned item${upcoming.length !== 1 ? "s" : ""} coming up`}
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-              {actionItems.map((t, i) => {
-                const isOverdue = t.dueDate < today;
-                const isSoon = !isOverdue && t.dueDate <= new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0];
-                const catInfo = TASK_CATEGORIES.find(c => c.id === t.category);
+              {actionItems.map((a, i) => {
+                const isOverdue = a.dueDate < today;
+                const isSoon = !isOverdue && a.dueDate <= new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0];
                 return (
-                  <div key={t.id} style={{
+                  <div key={a.id} style={{
                     display: "flex", alignItems: "center", gap: 12, padding: "12px 0",
                     borderTop: i > 0 ? `1px solid ${C.borderLight}` : "none",
                   }}>
                     <div style={{
                       width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                      background: isOverdue ? "#E53E3E" : (priorityColors[t.priority] || C.textMuted),
+                      background: isOverdue ? "#E53E3E" : (priorityColors[a.priority] || C.mint),
                     }} />
-                    <span style={{ fontSize: 16, width: 24, flexShrink: 0 }}>{catInfo?.icon || "📋"}</span>
-                    <div style={{ flex: 1, fontFamily: font, fontSize: 13, fontWeight: 500, color: C.charcoal }}>
-                      {t.task}
+                    <span style={{ fontSize: 16, width: 24, flexShrink: 0 }}>{a.icon}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontFamily: font, fontSize: 13, fontWeight: 500, color: C.charcoal }}>
+                        {a.label}
+                      </div>
+                      {a.source === "design" && a.room && (
+                        <div style={{ fontFamily: font, fontSize: 11, color: C.textMuted, marginTop: 2 }}>
+                          Design · {a.room}
+                        </div>
+                      )}
                     </div>
-                    {t.assignee && (
+                    {a.assignee && (
                       <span style={{
                         fontFamily: font, fontSize: 10, fontWeight: 700,
                         width: 24, height: 24, borderRadius: "50%",
-                        background: t.assignee === "JM" ? C.ocean : C.mint,
+                        background: a.assignee === "JM" ? C.ocean : C.mint,
                         color: C.white, display: "flex", alignItems: "center", justifyContent: "center",
                         flexShrink: 0,
                       }}>
-                        {t.assignee}
+                        {a.assignee}
                       </span>
                     )}
                     <span style={{
@@ -407,7 +426,7 @@ function Dashboard({ tasks, podcastData, finishes }) {
                       background: isOverdue ? "#FED7D7" : isSoon ? "#FEFCBF" : C.pageBg,
                       padding: "3px 10px", borderRadius: 6,
                     }}>
-                      {isOverdue ? "Overdue · " : ""}{new Date(t.dueDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}
+                      {isOverdue ? "Overdue · " : ""}{new Date(a.dueDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}
                     </span>
                   </div>
                 );
