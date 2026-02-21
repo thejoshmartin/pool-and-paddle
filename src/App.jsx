@@ -293,7 +293,7 @@ function StatCard({ label, value, sub, accent }) {
   );
 }
 
-function Dashboard({ tasks, podcastData, finishes }) {
+function Dashboard({ tasks, podcastData, finishes, onNavigateToItem }) {
   const completed = tasks.filter(t => t.done).length;
   const total = tasks.length;
   const critical = tasks.filter(t => t.priority === "critical");
@@ -343,7 +343,7 @@ function Dashboard({ tasks, podcastData, finishes }) {
           .filter(t => !t.done && t.dueDate && (t.dueDate < today || t.assignee))
           .map(t => {
             const catInfo = TASK_CATEGORIES.find(c => c.id === t.category);
-            return { id: t.id, label: t.task, icon: catInfo?.icon || "📋", dueDate: t.dueDate, assignee: t.assignee, priority: t.priority, source: "task" };
+            return { id: t.id, sourceId: t.id, label: t.task, icon: catInfo?.icon || "📋", dueDate: t.dueDate, assignee: t.assignee, priority: t.priority, source: "task" };
           });
         // Normalize design items into action items
         const designItems = finishes
@@ -351,7 +351,7 @@ function Dashboard({ tasks, podcastData, finishes }) {
           .map(f => {
             const catInfo = FINISHES_DATA.categories.find(c => c.id === f.category);
             const roomInfo = FINISHES_DATA.rooms.find(r => r.id === f.room);
-            return { id: `d-${f.id}`, label: f.item, icon: catInfo?.icon || "🔨", dueDate: f.dueDate, assignee: f.assignee, priority: null, source: "design", room: roomInfo?.label || f.room };
+            return { id: `d-${f.id}`, sourceId: f.id, label: f.item, icon: catInfo?.icon || "🔨", dueDate: f.dueDate, assignee: f.assignee, priority: null, source: "design", room: roomInfo?.label || f.room };
           });
         // Combine, overdue first then by date
         const all = [...taskItems, ...designItems];
@@ -390,10 +390,14 @@ function Dashboard({ tasks, podcastData, finishes }) {
                 const isOverdue = a.dueDate < today;
                 const isSoon = !isOverdue && a.dueDate <= new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0];
                 return (
-                  <div key={a.id} style={{
+                  <div key={a.id} onClick={() => onNavigateToItem(a.source, a.sourceId)} style={{
                     display: "flex", alignItems: "center", gap: 12, padding: "12px 0",
                     borderTop: i > 0 ? `1px solid ${C.borderLight}` : "none",
-                  }}>
+                    cursor: "pointer", borderRadius: 6, transition: "background 0.15s",
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = C.offWhite}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                  >
                     <div style={{
                       width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
                       background: isOverdue ? "#E53E3E" : (priorityColors[a.priority] || C.mint),
@@ -760,7 +764,7 @@ function PodcastView({ podcastData }) {
   );
 }
 
-function TaskView({ tasks, setTasks }) {
+function TaskView({ tasks, setTasks, focusItemId }) {
   const [filterCat, setFilterCat] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterAssignee, setFilterAssignee] = useState("all");
@@ -772,6 +776,25 @@ function TaskView({ tasks, setTasks }) {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [hoveredRow, setHoveredRow] = useState(null);
   const dateRefs = useRef({});
+  const taskRowRefs = useRef({});
+
+  // Auto-expand and scroll to focused item from dashboard
+  useEffect(() => {
+    if (!focusItemId) return;
+    const task = tasks.find(t => t.id === focusItemId);
+    if (task) {
+      setFilterCat("all");
+      setFilterStatus("all");
+      setFilterAssignee("all");
+      setShowGimmicks(task.isGimmick || false);
+      setEditingNote(focusItemId);
+      setNoteText(task.notes || "");
+      requestAnimationFrame(() => {
+        const el = taskRowRefs.current[focusItemId];
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
+  }, [focusItemId]);
 
   const filtered = useMemo(() => {
     return tasks.filter(t => {
@@ -1008,7 +1031,7 @@ function TaskView({ tasks, setTasks }) {
               overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
             }}>
               {sortTasks(catTasks).map((task, i, arr) => (
-                <div key={task.id}>
+                <div key={task.id} ref={el => { taskRowRefs.current[task.id] = el; }}>
                   <div
                     onMouseEnter={() => setHoveredRow(task.id)}
                     onMouseLeave={() => { setHoveredRow(null); if (confirmDelete === task.id) setConfirmDelete(null); }}
@@ -1608,7 +1631,7 @@ function mergeFinishes(saved) {
   return [...merged, ...userItems];
 }
 
-function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, roomData, setRoomData }) {
+function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, roomData, setRoomData, focusItemId }) {
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -1628,6 +1651,21 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [filterAssignee, setFilterAssignee] = useState("all");
   const dateRefs = useRef({});
+  const itemRowRefs = useRef({});
+
+  // Auto-expand and scroll to focused item from dashboard
+  useEffect(() => {
+    if (!focusItemId) return;
+    setFilterCat("all");
+    setFilterRoom("all");
+    setFilterStatus("all");
+    setFilterAssignee("all");
+    setExpandedId(focusItemId);
+    requestAnimationFrame(() => {
+      const el = itemRowRefs.current[focusItemId];
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [focusItemId]);
 
   const selectStyle = {
     padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.border}`,
@@ -2329,7 +2367,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                   : FINISH_CATEGORIES.find(c => c.id === item.category)?.label;
                 const lineTotal = (resolved.unitPrice != null && item.quantity != null) ? resolved.unitPrice * item.quantity : null;
                 return (
-                  <div key={item.id}>
+                  <div key={item.id} ref={el => { itemRowRefs.current[item.id] = el; }}>
                     <div
                       onClick={() => setExpandedId(isExpanded ? null : item.id)}
                       onMouseEnter={() => !isMobile && setHoveredRow(item.id)}
@@ -2835,6 +2873,14 @@ function mergeTasks(saved) {
 
 export default function App() {
   const [activeView, setActiveView] = useState("dashboard");
+  const [focusItemId, setFocusItemId] = useState(null);
+  const [focusItemSource, setFocusItemSource] = useState(null);
+
+  const navigateToItem = (source, itemId) => {
+    setFocusItemId(itemId);
+    setFocusItemSource(source);
+    setActiveView(source === "task" ? "tasks" : "design");
+  };
   const [tasks, setTasks] = useState(() => {
     try {
       const raw = localStorage.getItem("pool-paddle-tasks-v2");
@@ -2956,7 +3002,7 @@ export default function App() {
   return (
     <div style={{ minHeight: "100vh", background: C.pageBg, fontFamily: font }}>
       <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-      <Header activeView={activeView} setActiveView={setActiveView} />
+      <Header activeView={activeView} setActiveView={(v) => { setActiveView(v); setFocusItemId(null); setFocusItemSource(null); }} />
       {syncError && (
         <div style={{
           background: '#fee2e2',
@@ -2969,11 +3015,11 @@ export default function App() {
           {syncError} — changes saved locally only
         </div>
       )}
-      {activeView === "dashboard" && <Dashboard tasks={tasks} podcastData={PODCAST_DATABASE} finishes={finishes} />}
+      {activeView === "dashboard" && <Dashboard tasks={tasks} podcastData={PODCAST_DATABASE} finishes={finishes} onNavigateToItem={navigateToItem} />}
       {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
-      {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} />}
-      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} />}
+      {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
+      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} />}
     </div>
   );
 }
