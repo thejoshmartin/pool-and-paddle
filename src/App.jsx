@@ -1896,7 +1896,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
         <div style={{ display: "flex", gap: 8 }}>
           <button
             onClick={() => {
-              const headers = ["Trade", "Room", "Item", "Contractor Options", "Selection", "Unit Price", "Quantity", "Unit", "Line Total", "Product Link", "Notes", "Linked To", "Assignee", "Decision Date"];
+              const headers = ["Trade", "Room", "Item", "Selection", "Unit Price", "Quantity", "Unit", "Line Total", "Product Link", "Notes", "Linked To", "Assignee", "Decision Date", "Contractor Options"];
               const csvRows = [headers.join(",")];
               finishes.forEach(item => {
                 const r = resolveItem(item);
@@ -1907,10 +1907,10 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                 const esc = (s) => `"${String(s || "").replace(/"/g, '""')}"`;
                 csvRows.push([
                   esc(catLabel), esc(roomLabel), esc(item.item),
-                  esc((item.contractorOptions || []).join("; ")),
                   esc(r.selection), r.unitPrice ?? "", item.quantity ?? "",
                   esc(r.unit), lineTotal, esc(r.url), esc(item.notes), esc(parentName),
                   esc(item.assignee || ""), esc(item.dueDate || ""),
+                  esc((item.contractorOptions || []).join("; ")),
                 ].join(","));
               });
               // Furniture items per room
