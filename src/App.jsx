@@ -355,9 +355,13 @@ function Dashboard({ tasks, podcastData, finishes, onNavigateToItem }) {
             const catInfo = TASK_CATEGORIES.find(c => c.id === t.category);
             return { id: t.id, sourceId: t.id, label: t.task, icon: catInfo?.icon || "📋", dueDate: t.dueDate, assignee: t.assignee, priority: t.priority, source: "task" };
           });
-        // Normalize design items into action items
+        // Normalize design items into action items (skip items that already have a selection)
         const designItems = finishes
-          .filter(f => f.dueDate && (f.dueDate < today || f.assignee))
+          .filter(f => {
+            if (!f.dueDate && !f.assignee) return false;
+            if (!hasSelection(f)) return f.dueDate && (f.dueDate < today || f.assignee);
+            return false; // decided items are done — don't show in action items
+          })
           .map(f => {
             const catInfo = FINISHES_DATA.categories.find(c => c.id === f.category);
             const roomInfo = FINISHES_DATA.rooms.find(r => r.id === f.room);
