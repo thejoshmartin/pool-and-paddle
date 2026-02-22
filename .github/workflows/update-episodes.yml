@@ -1,0 +1,40 @@
+name: Update Podcast Episodes
+
+on:
+  schedule:
+    - cron: '0 9 1 * *' # 9am UTC on the 1st of each month
+  workflow_dispatch: # Allow manual trigger from Actions tab
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm install
+
+      - name: Fetch & process new episodes
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          rm -f scripts/raw-episodes.json
+          node scripts/fetch-episodes.js
+
+      - name: Update app data
+        run: cp scripts/processed-episodes.json src/podcast-data.json
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet src/podcast-data.json && echo "No new episodes found" && exit 0
+          git add src/podcast-data.json scripts/processed-episodes.json scripts/raw-episodes.json
+          git commit -m "Auto-update: new podcast episodes $(date +%Y-%m)"
+          git push

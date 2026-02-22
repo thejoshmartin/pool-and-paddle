@@ -15,7 +15,7 @@ Luxury STR (short-term rental) command center for Josh & Kerry's beach house at 
 - **Local dev**: auth bypassed when no password env vars are set
 
 ## Architecture
-- **Single file app**: Everything lives in `src/App.jsx` (~2800 lines). All components, state, and styling are inline.
+- **Single file app**: Everything lives in `src/App.jsx` (~2950 lines). All components, state, and styling are inline.
 - **No routing**: Tab switching via `activeView` state in the App component.
 - **Design tokens**: All colors/fonts in `C` object and `font` variable at top of file. Use these — never hardcode colors. Primary accent: `C.mint`/`C.seafoam`. Background: `C.seafoamFaint`.
 - **Inline styles only**: No CSS files. All styling is React inline `style={{}}` objects.
@@ -36,13 +36,16 @@ Luxury STR (short-term rental) command center for Josh & Kerry's beach house at 
 - Matcher: `['/', '/admin', '/admin/:path*', '/api/:path*']`
 
 ## Dashboard
-- Task Progress by Category — progress bars per task category
-- Design Decisions — stat card + room-by-room progress bars (mint/seafoam theme)
-- Google Maps embed — roadmap view of property location (API key via `VITE_GOOGLE_MAPS_KEY` env var)
+Layout order: Stat Cards → Action Items → Category Progress → Design Selections → Map
+
+- **Action Items** — combined view of overdue + assigned items from both Tasks and Design tabs. Red border/badge when overdue items exist. Each row is clickable — navigates to the correct tab, clears filters, auto-expands the item, and scrolls to it. Uses `focusItemId`/`focusItemSource` state at App level, passed to TaskView and DesignView as `focusItemId` prop.
+- **Task Progress by Category** — progress bars per task category
+- **Design Decisions** — stat card + room-by-room progress bars (mint/seafoam theme)
+- **Google Maps embed** — roadmap view of property location (API key via `VITE_GOOGLE_MAPS_KEY` env var)
 - Executive summary was removed from dashboard (still accessible via Executive Brief tab)
 
 ## Design Tab Data Model
-Items have: `id, category, room, item, contractorOptions[], selection, unitPrice, quantity, unit, url, notes, userCreated, linkedTo`
+Items have: `id, category, room, item, contractorOptions[], selection, unitPrice, quantity, unit, url, notes, userCreated, linkedTo, assignee, dueDate`
 
 **Linked items**: `linkedTo` references a parent item ID. Linked items inherit selection, unitPrice, unit, and url from the parent. Quantity and notes remain local. `resolveItem()` function resolves linked values for display/budget calculation.
 
