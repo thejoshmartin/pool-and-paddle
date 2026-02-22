@@ -307,14 +307,24 @@ function Dashboard({ tasks, podcastData, finishes, onNavigateToItem }) {
     return { ...cat, total: catTasks.length, done: catDone, pct: catTasks.length > 0 ? Math.round((catDone / catTasks.length) * 100) : 0 };
   });
 
+  // Resolve linked item selection — linked items inherit parent's selection
+  const resolveSelection = (f) => {
+    if (f.linkedTo) {
+      const parent = finishes.find(p => p.id === f.linkedTo);
+      if (parent) return parent.selection;
+    }
+    return f.selection;
+  };
+  const hasSelection = (f) => { const s = resolveSelection(f); return s && s.trim() !== ""; };
+
   // Design progress — count items with a selection made per room
   const designRooms = FINISHES_DATA.rooms.map(room => {
     const roomItems = finishes.filter(f => f.room === room.id);
-    const decided = roomItems.filter(f => f.selection && f.selection.trim() !== "");
+    const decided = roomItems.filter(hasSelection);
     return { ...room, total: roomItems.length, decided: decided.length, pct: roomItems.length > 0 ? Math.round((decided.length / roomItems.length) * 100) : 0 };
   });
   const totalDesignItems = finishes.length;
-  const totalDecided = finishes.filter(f => f.selection && f.selection.trim() !== "").length;
+  const totalDecided = finishes.filter(hasSelection).length;
   const designPct = totalDesignItems > 0 ? Math.round((totalDecided / totalDesignItems) * 100) : 0;
 
   return (
@@ -1676,10 +1686,14 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
     return finishes.filter(item => {
       const matchCat = filterCat === "all" || item.category === filterCat;
       const matchRoom = filterRoom === "all" || item.room === filterRoom;
+      const resolvedSel = item.linkedTo
+        ? (finishes.find(p => p.id === item.linkedTo)?.selection || item.selection)
+        : item.selection;
+      const hasSel = resolvedSel && resolvedSel.trim() !== "";
       const matchStatus = filterStatus === "all" ||
         (filterStatus === "priced" ? (item.unitPrice != null && item.quantity != null) :
-         filterStatus === "selected" ? (item.selection && item.selection.trim() !== "") :
-         filterStatus === "needs-selection" ? (!item.selection || item.selection.trim() === "") : true);
+         filterStatus === "selected" ? hasSel :
+         filterStatus === "needs-selection" ? !hasSel : true);
       const matchAssignee = filterAssignee === "all" ||
         (filterAssignee === "unassigned" ? !item.assignee : item.assignee === filterAssignee);
       return matchCat && matchRoom && matchStatus && matchAssignee;
@@ -1780,8 +1794,9 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
 
   const isItemOverdue = (item) => {
     if (!item.dueDate) return false;
-    const hasSelection = item.selection && item.selection.trim() !== "";
-    if (hasSelection) return false;
+    const resolved = resolveItem(item);
+    const hasSel = resolved.selection && resolved.selection.trim() !== "";
+    if (hasSel) return false;
     return item.dueDate < new Date().toISOString().split("T")[0];
   };
 
