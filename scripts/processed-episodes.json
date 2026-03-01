@@ -10526,6 +10526,48 @@
   },
   {
     "id": 517,
+    "ep": 539,
+    "title": "Where You Host Matters: Navigating Short-Term Rental Regulations Without Getting Burned",
+    "category": "Legal & Compliance",
+    "priority": "critical",
+    "tags": [
+      "regulations",
+      "compliance",
+      "city council",
+      "legal",
+      "market research",
+      "risk management",
+      "local laws"
+    ],
+    "summary": "Understanding local and state STR regulations is essential before purchasing or operating a property, as listing platforms don't verify legality and hosts can unknowingly buy in banned areas. Clear regulations actually protect professional hosts by reducing illegal competition and stabilizing markets. Staying informed through city council meetings and treating hosting as a business prevents costly shutdowns.",
+    "keyInsight": "Just because a listing platform shows earning potential doesn't mean a property is legal to operate as a short-term rental.",
+    "isGimmick": false,
+    "processedDate": "2026-03-01",
+    "source": "https://thanksforvisiting.com/podcasts/539/"
+  },
+  {
+    "id": 518,
+    "ep": 540,
+    "title": "World Cup 2026 Airbnb Strategy: How Hosts Can Maximize Revenue",
+    "category": "Pricing & Revenue",
+    "priority": "low",
+    "tags": [
+      "world cup",
+      "event pricing",
+      "revenue management",
+      "sports events",
+      "demand windows",
+      "group bookings",
+      "strategic pricing"
+    ],
+    "summary": "The 2026 World Cup presents revenue opportunities beyond just match days, requiring hosts to treat it as an extended high-demand season rather than single-event pricing. Successful hosts map the full tournament calendar including group stages and travel patterns, pricing for demand waves rather than just finals. Optimize listings for group travel by highlighting capacity, parking, transportation access, and common gathering spaces.",
+    "keyInsight": "Treat the World Cup as a seasonal high-demand window spanning weeks with multiple demand waves, not as a single weekend event.",
+    "isGimmick": false,
+    "processedDate": "2026-03-01",
+    "source": "https://thanksforvisiting.com/podcasts/540/"
+  },
+  {
+    "id": 517,
     "ep": 2026,
     "title": "2026 STR Predictions: What Hosts Need to Know Before the New Year",
     "category": "Industry Trends",
