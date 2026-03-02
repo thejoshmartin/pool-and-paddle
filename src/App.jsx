@@ -2392,9 +2392,9 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                 return (
                   <div key={item.id} ref={el => { itemRowRefs.current[item.id] = el; }}>
                     <div
-                      onClick={() => setExpandedId(isExpanded ? null : item.id)}
+                      onClick={() => { setExpandedId(isExpanded ? null : item.id); setConfirmDelete(null); }}
                       onMouseEnter={() => !isMobile && setHoveredRow(item.id)}
-                      onMouseLeave={() => { setHoveredRow(null); if (confirmDelete === item.id) setConfirmDelete(null); }}
+                      onMouseLeave={() => { setHoveredRow(null); }}
                       style={{
                         display: "flex", alignItems: "center", gap: isMobile ? 8 : 10,
                         padding: isMobile ? "10px 12px" : "10px 16px",
