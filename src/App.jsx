@@ -1633,19 +1633,22 @@ function migrateRoom(roomId) {
   return ROOM_MIGRATION[roomId] || roomId;
 }
 
-function mergeFinishes(saved) {
+function mergeFinishes(saved, deletedIds = []) {
   if (!saved || !Array.isArray(saved)) return DEFAULT_FINISH_ITEMS;
+  const deletedSet = new Set(deletedIds);
   const defaultIds = new Set(DEFAULT_FINISH_ITEMS.map(i => i.id));
-  const merged = DEFAULT_FINISH_ITEMS.map(item => {
-    const s = saved.find(s => s.id === item.id);
-    return s ? { ...item, selection: s.selection ?? "", unitPrice: s.unitPrice ?? null, quantity: s.quantity ?? null, unit: s.unit ?? item.unit, url: s.url ?? "", notes: s.notes ?? "", linkedTo: s.linkedTo ?? null, assignee: s.assignee ?? null, dueDate: s.dueDate ?? null } : item;
-  });
+  const merged = DEFAULT_FINISH_ITEMS
+    .filter(item => !deletedSet.has(item.id))
+    .map(item => {
+      const s = saved.find(s => s.id === item.id);
+      return s ? { ...item, selection: s.selection ?? "", unitPrice: s.unitPrice ?? null, quantity: s.quantity ?? null, unit: s.unit ?? item.unit, url: s.url ?? "", notes: s.notes ?? "", linkedTo: s.linkedTo ?? null, assignee: s.assignee ?? null, dueDate: s.dueDate ?? null } : item;
+    });
   const userItems = saved.filter(s => s.userCreated && !defaultIds.has(s.id))
     .map(item => ({ ...item, room: migrateRoom(item.room) }));
   return [...merged, ...userItems];
 }
 
-function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, roomData, setRoomData, focusItemId }) {
+function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, roomData, setRoomData, focusItemId, deletedFinishIds, setDeletedFinishIds }) {
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -1772,6 +1775,10 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
   };
 
   const deleteItem = (id) => {
+    const item = finishes.find(i => i.id === id);
+    if (item && !item.userCreated) {
+      setDeletedFinishIds(prev => [...prev, id]);
+    }
     setFinishes(prev => {
       // Also unlink any children that reference this parent
       return prev
@@ -2911,12 +2918,22 @@ export default function App() {
     } catch (e) { console.warn('localStorage save failed:', e.name); }
     return DEFAULT_TASKS;
   });
+  const [deletedFinishIds, setDeletedFinishIds] = useState(() => {
+    try {
+      const raw = localStorage.getItem("pool-paddle-finishes-v1");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return parsed.deletedIds || [];
+      }
+    } catch (e) { console.warn('localStorage save failed:', e.name); }
+    return [];
+  });
   const [finishes, setFinishes] = useState(() => {
     try {
       const raw = localStorage.getItem("pool-paddle-finishes-v1");
       if (raw) {
         const parsed = JSON.parse(raw);
-        return mergeFinishes(parsed.items || parsed);
+        return mergeFinishes(parsed.items || parsed, parsed.deletedIds || []);
       }
     } catch (e) { console.warn('localStorage save failed:', e.name); }
     return DEFAULT_FINISH_ITEMS;
@@ -2967,7 +2984,9 @@ export default function App() {
       .then(data => {
         finishesServerLoaded.current = true;
         if (data && data.items && Array.isArray(data.items) && data.items.length > 0) {
-          setFinishes(mergeFinishes(data.items));
+          const serverDeletedIds = data.deletedIds || [];
+          setDeletedFinishIds(serverDeletedIds);
+          setFinishes(mergeFinishes(data.items, serverDeletedIds));
           if (data.targetBudget != null) setTargetBudget(data.targetBudget);
           if (data.roomData) setRoomData(data.roomData);
         } else {
@@ -3001,7 +3020,7 @@ export default function App() {
 
   // Save finishes to localStorage + server (debounced)
   useEffect(() => {
-    const payload = { items: finishes, targetBudget, roomData };
+    const payload = { items: finishes, targetBudget, roomData, deletedIds: deletedFinishIds };
     try {
       localStorage.setItem("pool-paddle-finishes-v1", JSON.stringify(payload));
     } catch (e) { console.warn('localStorage save failed:', e.name); }
@@ -3020,7 +3039,7 @@ export default function App() {
     }, 500);
 
     return () => clearTimeout(timer);
-  }, [finishes, targetBudget, roomData]);
+  }, [finishes, targetBudget, roomData, deletedFinishIds]);
 
   return (
     <div style={{ minHeight: "100vh", background: C.pageBg, fontFamily: font }}>
@@ -3042,7 +3061,7 @@ export default function App() {
       {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
-      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} />}
+      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} />}
     </div>
   );
 }
