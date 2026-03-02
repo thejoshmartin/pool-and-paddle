@@ -1761,7 +1761,11 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
     const r = resolveItem(i);
     return r.unitPrice != null && i.quantity != null;
   }).length, [finishes]);
-  const variance = targetBudget != null ? targetBudget - grandTotal : null;
+  const decidedCount = useMemo(() => finishes.filter(i => {
+    const r = resolveItem(i);
+    return r.selection && r.selection.trim() !== "";
+  }).length, [finishes]);
+  const outstandingCount = finishes.length - decidedCount;
 
   const updateItem = (id, updates) => {
     setFinishes(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
@@ -2028,10 +2032,10 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
           )}
         </div>
         <StatCard
-          label="Variance"
-          value={variance != null ? (variance >= 0 ? "+" : "") + fmtMoney(Math.abs(variance)) : "—"}
-          sub={variance != null ? (variance >= 0 ? "Under budget" : "Over budget") : "Set a budget target first"}
-          accent={variance == null ? C.textMuted : variance >= 0 ? C.mint : "#D94444"}
+          label="Items Decided"
+          value={`${decidedCount} / ${finishes.length}`}
+          sub={outstandingCount === 0 ? "All selections made!" : `${outstandingCount} still outstanding`}
+          accent={outstandingCount === 0 ? C.mint : C.ocean}
         />
       </div>
 
