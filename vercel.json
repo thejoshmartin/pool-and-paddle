@@ -3,5 +3,8 @@
     { "source": "/admin", "destination": "/index.html" },
     { "source": "/admin/:path*", "destination": "/index.html" },
     { "source": "/", "destination": "/coming-soon.html" }
+  ],
+  "crons": [
+    { "path": "/api/keepalive", "schedule": "0 9 * * 1" }
   ]
 }
