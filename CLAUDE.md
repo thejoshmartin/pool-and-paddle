@@ -10,7 +10,7 @@ Luxury STR (short-term rental) command center for Josh & Kerry's beach house at 
 - **Logout** (`/admin/logout`) — clears session, redirects to login
 - **API** (`/api/*`) — protected, returns 401 JSON if unauthenticated
 - **Auth cookies**: `pp_session` (HttpOnly, `USERNAME:hash`) + `pp_user` (JS-readable, `JM` or `KM`)
-- **Env vars**: `JM_PASSWORD`, `KM_PASSWORD`, `VITE_GOOGLE_MAPS_KEY` (all in Vercel)
+- **Env vars**: `JM_PASSWORD`, `KM_PASSWORD`, `VITE_GOOGLE_MAPS_KEY`, `PP_REDIS_URL`, `PP_REDIS_TOKEN` (all in Vercel)
 - **Domain**: `poolandpaddle.com` → DNS A record to Vercel, `www.poolandpaddle.com` is primary
 - **Local dev**: auth bypassed when no password env vars are set
 
@@ -32,8 +32,16 @@ Luxury STR (short-term rental) command center for Josh & Kerry's beach house at 
 ## API Routes (Vercel Serverless)
 - `api/tasks.js` — GET/PUT, Redis key: `tasks`, stores array of task objects
 - `api/finishes.js` — GET/PUT, Redis key: `finishes`, stores `{ items: [...], targetBudget: number|null, roomData: {...} }`
-- `middleware.js` — Per-user auth (JM/KM), protects `/admin/*` and `/api/*`, serves login page, redirects `/` to coming-soon
+- `api/keepalive.js` — Pinged weekly by Vercel cron to prevent Upstash free-tier archival (exempt from auth)
+- `middleware.js` — Per-user auth (JM/KM), protects `/admin/*` and `/api/*` (except `/api/keepalive`), serves login page, redirects `/` to coming-soon
 - Matcher: `['/', '/admin', '/admin/:path*', '/api/:path*']`
+
+## Redis / Upstash
+- **Database**: `upstash-kv-citrine-cushion` (social-buffalo-87782.upstash.io)
+- **Connection**: Uses `PP_REDIS_URL` and `PP_REDIS_TOKEN` env vars (NOT `Redis.fromEnv()`)
+- **Why**: The old Vercel KV integration env vars (`KV_REST_API_*`) still exist but point to an archived/dead database (`sky-yacht`). They are managed by the integration and can't be deleted. The `PP_*` vars bypass this.
+- **Keepalive cron**: `vercel.json` schedules `/api/keepalive` every Monday 9am UTC to prevent free-tier auto-archival (14 days inactivity = deletion)
+- **Keys**: `tasks` (array), `finishes` (`{ items, targetBudget, roomData, deletedIds }`)
 
 ## Dashboard
 Layout order: Stat Cards → Action Items → Category Progress → Design Selections → Map
@@ -63,6 +71,9 @@ npm run dev          # Local dev at localhost:5173
 npm run build        # Production build → dist/
 git push             # Auto-deploys to Vercel
 ```
+
+## Known Issues — FIXED (2026-04-15)
+- **Database archived**: Upstash free tier auto-deleted after 14 days inactivity. Data restored via migration to new database. Added keepalive cron and switched to manual `PP_REDIS_*` env vars.
 
 ## Known Issues — FIXED (2026-02-19)
 - **Stale closures**: Both fetch `useEffect`s had `else` branches that captured stale state — removed
