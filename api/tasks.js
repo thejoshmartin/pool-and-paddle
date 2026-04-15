@@ -1,6 +1,9 @@
 import { Redis } from '@upstash/redis';
 
-const redis = Redis.fromEnv();
+const redis = new Redis({
+  url: process.env.PP_REDIS_URL,
+  token: process.env.PP_REDIS_TOKEN,
+});
 
 export default async function handler(req, res) {
   if (req.method === 'GET') {
