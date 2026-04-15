@@ -279,6 +279,9 @@ export default async function middleware(request) {
 
   // ── API protection ─────────────────────────────────────────
   if (url.pathname.startsWith('/api/')) {
+    // Allow keepalive cron through — only pings Redis, no data exposed
+    if (url.pathname === '/api/keepalive') return;
+
     // No passwords configured — allow through (local dev)
     if (!process.env.JM_PASSWORD && !process.env.KM_PASSWORD) return;
 
