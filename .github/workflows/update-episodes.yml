@@ -30,11 +30,14 @@ jobs:
       - name: Update app data
         run: cp scripts/processed-episodes.json src/podcast-data.json
 
+      - name: Rebuild Executive Brief
+        run: node scripts/build-exec-summary.js
+
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git diff --quiet src/podcast-data.json && echo "No new episodes found" && exit 0
-          git add src/podcast-data.json scripts/processed-episodes.json scripts/raw-episodes.json
+          git add src/podcast-data.json scripts/processed-episodes.json scripts/raw-episodes.json src/executive-summary.json
           git commit -m "Auto-update: new podcast episodes $(date +%Y-%m)"
           git push
