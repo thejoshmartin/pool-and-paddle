@@ -1,13 +1,19 @@
 {
-  "generatedDate": "2026-02-15",
-  "totalEpisodes": 517,
-  "nonGimmickCount": 514,
+  "generatedDate": "2026-06-15",
+  "totalEpisodes": 534,
+  "nonGimmickCount": 531,
   "categories": [
     {
       "name": "Operations",
-      "count": 140,
-      "criticalHighCount": 73,
+      "count": 144,
+      "criticalHighCount": 76,
       "topEpisodes": [
+        {
+          "ep": 546,
+          "title": "The Pre-Arrival Inspection Checklist That Protects Your 5-Star Reviews",
+          "keyInsight": "Separating the cleaner and inspector roles transforms your operation from reactive to proactive, ensuring consistent five-star guest experiences.",
+          "priority": "critical"
+        },
         {
           "ep": 6,
           "title": "Essential Tips for Cleaning Your Airbnb Property",
@@ -53,8 +59,8 @@
     },
     {
       "name": "Industry Trends",
-      "count": 77,
-      "criticalHighCount": 12,
+      "count": 80,
+      "criticalHighCount": 14,
       "topEpisodes": [
         {
           "ep": 208,
@@ -101,8 +107,8 @@
     },
     {
       "name": "Pricing & Revenue",
-      "count": 53,
-      "criticalHighCount": 40,
+      "count": 59,
+      "criticalHighCount": 45,
       "topEpisodes": [
         {
           "ep": 3,
@@ -149,8 +155,8 @@
     },
     {
       "name": "Marketing",
-      "count": 51,
-      "criticalHighCount": 34,
+      "count": 54,
+      "criticalHighCount": 35,
       "topEpisodes": [
         {
           "ep": 5,
@@ -245,8 +251,8 @@
     },
     {
       "name": "Legal & Compliance",
-      "count": 48,
-      "criticalHighCount": 42,
+      "count": 49,
+      "criticalHighCount": 43,
       "topEpisodes": [
         {
           "ep": 2,
@@ -293,8 +299,8 @@
     },
     {
       "name": "Guest Experience",
-      "count": 47,
-      "criticalHighCount": 27,
+      "count": 48,
+      "criticalHighCount": 28,
       "topEpisodes": [
         {
           "ep": 28,
@@ -341,9 +347,15 @@
     },
     {
       "name": "Furnishing & Design",
-      "count": 29,
-      "criticalHighCount": 19,
+      "count": 30,
+      "criticalHighCount": 20,
       "topEpisodes": [
+        {
+          "ep": 553,
+          "title": "How to Make Your Airbnb Look Expensive Without Overspending",
+          "keyInsight": "Perceived luxury comes from intentional design choices focused on one standout visual moment and functional comfort, not budget size.",
+          "priority": "high"
+        },
         {
           "ep": 130,
           "title": "Elevating Your STR with High-Vibe Design with Moira Sedgwick",
@@ -389,8 +401,8 @@
     },
     {
       "name": "Technology",
-      "count": 20,
-      "criticalHighCount": 13,
+      "count": 21,
+      "criticalHighCount": 14,
       "topEpisodes": [
         {
           "ep": 180,
@@ -437,6 +449,20 @@
     }
   ],
   "topInsights": [
+    {
+      "ep": "546",
+      "title": "The Pre-Arrival Inspection Checklist That Protects Your 5-Star Reviews",
+      "keyInsight": "Separating the cleaner and inspector roles transforms your operation from reactive to proactive, ensuring consistent five-star guest experiences.",
+      "category": "Operations",
+      "priority": "critical"
+    },
+    {
+      "ep": "553",
+      "title": "How to Make Your Airbnb Look Expensive Without Overspending",
+      "keyInsight": "Perceived luxury comes from intentional design choices focused on one standout visual moment and functional comfort, not budget size.",
+      "category": "Furnishing & Design",
+      "priority": "high"
+    },
     {
       "ep": 1,
       "title": "Considering What to Invest When Starting an Airbnb",
@@ -699,5 +725,6 @@
       "tag": "social media",
       "count": 13
     }
-  ]
+  ],
+  "lastIndexedEpisode": 555
 }
