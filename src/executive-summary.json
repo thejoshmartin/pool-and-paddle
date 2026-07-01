@@ -1,7 +1,7 @@
 {
-  "generatedDate": "2026-06-15",
-  "totalEpisodes": 534,
-  "nonGimmickCount": 531,
+  "generatedDate": "2026-07-01",
+  "totalEpisodes": 535,
+  "nonGimmickCount": 532,
   "categories": [
     {
       "name": "Operations",
@@ -401,9 +401,15 @@
     },
     {
       "name": "Technology",
-      "count": 21,
-      "criticalHighCount": 14,
+      "count": 22,
+      "criticalHighCount": 15,
       "topEpisodes": [
+        {
+          "ep": 557,
+          "title": "How to Beat the Airbnb Algorithm Without Guessing",
+          "keyInsight": "Your listing's algorithm performance is a direct reflection of how reliably you deliver great guest experiences, not a mysterious force working against you.",
+          "priority": "critical"
+        },
         {
           "ep": 180,
           "title": "Hosting Hotline",
@@ -449,6 +455,13 @@
     }
   ],
   "topInsights": [
+    {
+      "ep": "557",
+      "title": "How to Beat the Airbnb Algorithm Without Guessing",
+      "keyInsight": "Your listing's algorithm performance is a direct reflection of how reliably you deliver great guest experiences, not a mysterious force working against you.",
+      "category": "Technology",
+      "priority": "critical"
+    },
     {
       "ep": "546",
       "title": "The Pre-Arrival Inspection Checklist That Protects Your 5-Star Reviews",
@@ -722,9 +735,9 @@
       "count": 14
     },
     {
-      "tag": "cleaning",
+      "tag": "booking strategy",
       "count": 13
     }
   ],
-  "lastIndexedEpisode": 555
+  "lastIndexedEpisode": 557
 }
