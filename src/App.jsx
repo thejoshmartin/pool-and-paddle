@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import PODCAST_DATABASE from "./podcast-data.json";
 import EXEC_SUMMARY from "./executive-summary.json";
 import TOOLS_DATA from "./tools-data.json";
@@ -1688,7 +1688,7 @@ function mergeFinishes(saved, deletedIds = []) {
   return [...merged, ...userItems];
 }
 
-function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, roomData, setRoomData, focusItemId, deletedFinishIds, setDeletedFinishIds }) {
+function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, roomData, setRoomData, focusItemId, deletedFinishIds, setDeletedFinishIds, onPromote, promotedFinishIds }) {
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -2901,6 +2901,25 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                             Line total: {fmtMoney(lineTotal)} ({item.quantity} {resolved.unit} × ${resolved.unitPrice}/{resolved.unit})
                           </div>
                         )}
+
+                        {/* Promote to a purchase (non-destructive — the design item stays as-is) */}
+                        {onPromote && (
+                          <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.borderLight}` }}>
+                            {promotedFinishIds && promotedFinishIds.has(item.id) ? (
+                              <span style={{ fontFamily: font, fontSize: 12, fontWeight: 600, color: C.mint, background: C.seafoamFaint, padding: "7px 14px", borderRadius: 8, display: "inline-block" }}>✓ Purchased — see the Purchases tab</span>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={e => { e.stopPropagation(); onPromote(item); }}
+                                  style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: C.mint, color: C.white, fontFamily: font, fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                                >Mark as purchased →</button>
+                                <div style={{ fontFamily: font, fontSize: 11, color: C.textMuted, marginTop: 8 }}>
+                                  Creates a purchase record from this selection on the Purchases tab. Your design selection stays here, unchanged.
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
                         </>
                           );
                         })()}
@@ -3135,7 +3154,7 @@ function emptyPurchase() {
   };
 }
 
-function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange }) {
+function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, focusPurchaseId, onFocusHandled }) {
   const [editingId, setEditingId] = useState(null);   // id | "new" | null
   const [expandedId, setExpandedId] = useState(null);
   const [query, setQuery] = useState("");
@@ -3148,6 +3167,17 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
       newFormRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [editingId]);
+
+  // When arriving from a Design "Mark as purchased →" promote, open that purchase in edit
+  // mode so the owner can finish the details (vendor, total, who paid, receipt).
+  useEffect(() => {
+    if (focusPurchaseId && purchases.some(p => p.id === focusPurchaseId)) {
+      setQuery("");                 // clear any active search so the promoted purchase is visible
+      setExpandedId(focusPurchaseId);
+      setEditingId(focusPurchaseId);
+      if (onFocusHandled) onFocusHandled();
+    }
+  }, [focusPurchaseId, purchases, onFocusHandled]);
 
   const stats = useMemo(() => {
     let total = 0, owner = 0, contractor = 0;
@@ -3432,6 +3462,7 @@ export default function App() {
   const [showSignoff, setShowSignoff] = useState(false);
   const [focusItemId, setFocusItemId] = useState(null);
   const [focusItemSource, setFocusItemSource] = useState(null);
+  const [focusPurchaseId, setFocusPurchaseId] = useState(null);
 
   const navigateToItem = (source, itemId) => {
     setFocusItemId(itemId);
@@ -3703,6 +3734,34 @@ export default function App() {
     if (target) savePurchase({ ...target, receipts });
   };
 
+  // Which design items already have a purchase (drives the "✓ Purchased" badge).
+  const promotedFinishIds = useMemo(
+    () => new Set(purchases.filter(p => p.finishItemId).map(p => p.finishItemId)),
+    [purchases]
+  );
+  // Promote a design item → a purchase record, non-destructively (the design item is never
+  // changed). Pre-fills from the selection, then opens it on the Purchases tab to finish.
+  const promoteFinishItem = (item) => {
+    if (promotedFinishIds.has(item.id)) return; // already promoted — don't create a duplicate
+    const catLabel = (FINISH_CATEGORIES.find(c => c.id === item.category) || {}).label || "";
+    const roomLabel = (FINISH_ROOMS.find(r => r.id === item.room) || {}).label || item.room || "";
+    const trade = PURCHASE_TRADES.includes(catLabel) ? catLabel : "Other";
+    const draft = {
+      ...emptyPurchase(),
+      finishItemId: item.id,
+      description: item.selection || item.item || "",
+      trade,
+      room: roomLabel,
+      unitPrice: item.unitPrice ?? null,
+      qty: item.quantity ?? null,
+      notes: item.url ? `Promoted from design selection · ${item.url}` : "Promoted from design selection",
+    };
+    savePurchase(draft);
+    setFocusPurchaseId(draft.id);
+    setActiveView("purchases");
+  };
+  const handlePurchaseFocusCleared = useCallback(() => setFocusPurchaseId(null), []);
+
   return (
     <div style={{ minHeight: "100vh", background: C.pageBg, fontFamily: font }}>
       <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -3730,8 +3789,8 @@ export default function App() {
       {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
-      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} />}
-      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} />}
+      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} />}
+      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} focusPurchaseId={focusPurchaseId} onFocusHandled={handlePurchaseFocusCleared} />}
 
       {showMigrationModal && migrationNeeded && (
         <div style={modalOverlayStyle}>
