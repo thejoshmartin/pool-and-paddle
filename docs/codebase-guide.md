@@ -2,6 +2,8 @@
 
 > A single-page React app that serves as a private "command center" for launching Josh & Kerry's luxury short-term rental (STR) beach house at 6401 Broward Street, St. Augustine, FL 32080. Deployed on Vercel with Upstash Redis for shared state. This document explains how the app is built so you can reason about or extend it.
 
+> ⚠️ **CURRENT ARCHITECTURE lives in `CLAUDE.md`.** Sections 1–13 below describe the *original* app and are still accurate for the parts they cover (auth, design tokens, tasks/design data model, dashboard, conventions). Since then the app added **multi-property scoping, a Purchases feature (receipts + allowance reconciliation + Design→Purchase promote), and cost-seg capture + CSV export** — summarized in "§14 — 2026-07 additions" at the bottom. Where anything here conflicts with the current code, `CLAUDE.md` + the code win.
+
 ---
 
 ## 1. What it is
@@ -283,3 +285,19 @@ Deployment is push-to-Vercel; there is no separate staging environment.
 ## 13. Quick mental model
 
 > Static JSON (podcast/exec/tools/finishes defaults) is baked into the bundle at build time. User-mutable data (tasks + finishes/design) lives in Redis, cached in localStorage, and is synced by a debounced save. A stateless cookie-hash middleware gates the whole `/admin` surface for two known users. The entire UI is one React file of inline-styled components switched by an `activeView` string.
+
+---
+
+## 14. 2026-07 additions (multi-property · purchases · cost-seg)
+
+The app is now **6 tabs** (added **Purchases**). Full current detail is in `CLAUDE.md`; this is the orientation.
+
+**Multi-property scoping.** All user data is scoped per property. A `properties` registry key (`{schemaVersion:'v2', activeId, properties:[{id,name,address,inServiceDate}]}`) plus per-property Redis keys `tasks:<id>` / `finishes:<id>` / `purchases:<id>`. Only `pp` ("Pool & Paddle") exists; there's no add-property UI yet. **Legacy global `tasks`/`finishes` are kept as backup.** `activeProperty` state (null pre-migration → reads/writes the legacy keys). Key helpers: `scopedKey` (`api/_scope.js`), `apiUrl`/`lsKey` (App). A one-time, backup-gated, server-side **migration** (`api/migrate.js`, NX-locked + write-then-stamp) copied legacy → `:pp` verbatim; already run on prod.
+
+**Persistence discipline (critical).** Fetch effects reset a `serverLoaded` ref + use a per-run `isCancelled` guard so an out-of-order resolution after a rapid property switch can't apply under the wrong key. The tasks/finishes SAVE effects **deliberately omit `activeProperty` from their deps** (else a bare switch writes the previous property's data under the new key) — do not "fix." **Purchases persist as a Redis HASH with per-record `HSET`/`HDEL`, never a whole-array write.**
+
+**Purchases** (`src/lib/purchases-logic.js` holds the pure model + constants; `PurchasesView` in `App.jsx` is the UI): log/edit/delete purchases (fields mirror the Excel tracker; see CLAUDE.md), **receipt upload** to a private Vercel Blob store (server-side, token never client-side; `api/receipts-*`), and an **Exhibit B allowance reconciliation** ($446k / 11 categories). **Promote**: a Design item or room-furniture item → a Purchase, non-destructively (linked by `finishItemId`/`furnitureId`; the source is never changed).
+
+**Cost-seg (CPA export).** Per-purchase `assetClass` (auto-suggested from trade via `suggestAssetClass`, overridable), `placedInServiceDate` (defaults from the property `inServiceDate`), `section` (blank by default — never guessed). **"Export Cost Seg CSV"** (`buildCostSegCsv`) groups by asset class with subtotals; labeled "suggested — confirm with CPA."
+
+**Testing.** `npm test` runs `scripts/verify-phase1-logic.mjs` (migration/scoping) + `scripts/verify-logic.mjs` (cost-seg CSV, asset-class map, purchase shape, receipt-path validation). Pure logic only — no DB/browser (the sandbox can't reach a local server). See `docs/known-issues.md` for consciously-deferred tradeoffs.

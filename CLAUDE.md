@@ -1,92 +1,88 @@
 # Pool & Paddle — Development Guide
 
 ## Project Overview
-Luxury STR (short-term rental) command center for Josh & Kerry's beach house at 6401 Broward Street, St. Augustine, FL 32080. Single-page React app with 5 tabs: Dashboard, Executive Brief, Podcast Intel, Task Tracker, and Design (finish selections). Deployed on Vercel with Upstash Redis for shared state.
+Luxury STR (short-term rental) command center for Josh & Kerry's beach house at 6401 Broward Street, St. Augustine, FL 32080. Single-page React app, **6 tabs**: Dashboard, Tasks, Design (finish selections), **Purchases** (what we actually bought), Executive Brief, Podcast Intel. Deployed on Vercel; Upstash Redis for shared state; private Vercel Blob for receipts.
+
+> **Architecture note (2026-07):** the app grew a **multi-property foundation**, a full **Purchases** feature (with receipts + Exhibit B allowance reconciliation + Design→Purchase promote), and **cost-seg capture + CPA export**. This guide reflects that. If something here contradicts the code, the code wins — fix this file.
 
 ## URL Structure & Auth
 - **Root** (`poolandpaddle.com/`) — branded "Coming Soon" placeholder (`public/coming-soon.html`)
 - **Admin app** (`poolandpaddle.com/admin`) — the SPA, requires login
-- **Login** (`/admin/login`) — user selector (Josh/Kerry) + password
-- **Logout** (`/admin/logout`) — clears session, redirects to login
+- **Login / Logout** (`/admin/login`, `/admin/logout`) — user selector (Josh/Kerry) + password
 - **API** (`/api/*`) — protected, returns 401 JSON if unauthenticated
-- **Auth cookies**: `pp_session` (HttpOnly, `USERNAME:hash`) + `pp_user` (JS-readable, `JM` or `KM`)
-- **Env vars**: `JM_PASSWORD`, `KM_PASSWORD`, `VITE_GOOGLE_MAPS_KEY`, `PP_REDIS_URL`, `PP_REDIS_TOKEN` (all in Vercel)
-- **Domain**: `poolandpaddle.com` → DNS A record to Vercel, `www.poolandpaddle.com` is primary
-- **Local dev**: auth bypassed when no password env vars are set
+- **Auth cookies**: `pp_session` (HttpOnly, `USERNAME:hash`) + `pp_user` (JS-readable, `JM`|`KM`)
+- **Access model**: a **2-person SHARED account** — Josh and Kerry both see *all* data. There is no per-user ownership; being logged in as JM/KM is the complete authorization model. (Don't add "property ownership" checks — there's nothing to segment.)
+- **Local dev**: auth bypassed when no password env vars are set. `vite dev` does NOT run the `/api/*` functions and can't reach Redis/Blob — so runtime persistence + receipts can only be tested on a deploy. Verify logic with `npm test` + `npm run build`.
 
 ## Architecture
-- **Single file app**: Everything lives in `src/App.jsx` (~2950 lines). All components, state, and styling are inline.
-- **No routing**: Tab switching via `activeView` state in the App component.
-- **Design tokens**: All colors/fonts in `C` object and `font` variable at top of file. Use these — never hardcode colors. Primary accent: `C.mint`/`C.seafoam`. Background: `C.seafoamFaint`.
-- **Inline styles only**: No CSS files. All styling is React inline `style={{}}` objects.
-- **Data files**: JSON files in `src/` imported statically (podcast-data, executive-summary, tools-data, finishes-data).
+- **Single-file UI**: nearly everything is `src/App.jsx` (~4,000 lines) — all components/state/styling inline. **Exception:** pure, non-UI domain logic lives in `src/lib/purchases-logic.js` (purchase/cost-seg constants, `suggestAssetClass`, `buildCostSegCsv`, `emptyPurchase`, `fmtUSD`) so it's unit-testable in node. API routes share `api/_scope.js` (`scopedKey`, `migrateData`, `parseReceiptPathname`). Keep new *pure* helpers in these libs; keep UI/browser code in `App.jsx`.
+- **No routing**: tab switching via `activeView` state.
+- **Design tokens**: colors/fonts in the `C` object + `font` var at top of `App.jsx`. Use them — never hardcode colors. Accent: `C.mint`/`C.seafoam`.
+- **Inline styles only**: no CSS files, no UI libraries.
+- **Static data files**: `src/*.json` (podcast, exec-summary, tools, finishes) imported statically.
 
-## Key Patterns
-- **State persistence**: localStorage as fast cache + Upstash Redis as source of truth. Pattern: load from localStorage on mount, fetch from server, merge, then debounced save (500ms) to both on changes.
-- **Merge functions**: `mergeTasks()` and `mergeFinishes()` reconcile saved data with defaults — preserves user edits while allowing new default items to appear. User-created items (with `userCreated: true`) are appended after defaults.
-- **Room migration**: `ROOM_MIGRATION` map + `migrateRoom()` function migrates user-created items from old room IDs to new ones during merge.
-- **Shared state**: Both JM and KM access the same Redis data. The merge pattern handles concurrent edits gracefully.
-- **Mobile detection**: DesignView uses `useState`/`useEffect` with `window.innerWidth < 768` to adapt layout. StatCard uses CSS `clamp()` for responsive font sizing.
-- **Auto-sort**: Items within each trade/room group are sorted by the cross-reference dimension (room order when grouped by trade, category order when grouped by room).
+## Multi-property (the data is scoped per property)
+- A **`properties` registry** in Redis: `{ schemaVersion:'v2', activeId, properties:[{ id, name, address, inServiceDate }] }`. Only one property exists today (`pp` = "Pool & Paddle"); the foundation supports N but there is **no "add property" UI yet**.
+- Per-property Redis keys: `tasks:<id>`, `finishes:<id>`, `purchases:<id>`. The **legacy global keys `tasks`/`finishes` are kept forever as backup** (never deleted).
+- `activeProperty` state (App). **When `activeProperty` is null (pre-migration), the app reads/writes the LEGACY global keys** — `apiUrl()`/`lsKey()`/`scopedKey()` omit the property → base key. Never emit `property=null`.
+- **Migration** (`api/migrate.js`, one-time, server-side, backup-gated): a modal makes the owner download a full backup, then `POST /api/migrate` copies legacy → `:pp` **verbatim (incl. `deletedIds`)**. NX-locked + write-then-stamp (registry written last) → idempotent, safe against interruption/concurrency. Already run on prod.
 
-## API Routes (Vercel Serverless)
-- `api/tasks.js` — GET/PUT, Redis key: `tasks`, stores array of task objects
-- `api/finishes.js` — GET/PUT, Redis key: `finishes`, stores `{ items: [...], targetBudget: number|null, roomData: {...} }`
-- `api/keepalive.js` — Pinged weekly by Vercel cron to prevent Upstash free-tier archival (exempt from auth)
-- `middleware.js` — Per-user auth (JM/KM), protects `/admin/*` and `/api/*` (except `/api/keepalive`), serves login page, redirects `/` to coming-soon
-- Matcher: `['/', '/admin', '/admin/:path*', '/api/:path*']`
+## Persistence — CRITICAL rules (don't regress these)
+- Redis is source of truth; **localStorage is a per-property cache**; server writes are gated by a `serverLoaded` ref so defaults never clobber server data on load.
+- **Tasks & finishes**: whole-payload debounced (500 ms) PUT. Their SAVE effects **deliberately OMIT `activeProperty` from the dep array** (with an eslint-disable + comment). This is intentional: firing on a bare property switch would write the *previous* property's in-memory data under the *new* key. Do **not** "fix" this by adding `activeProperty`.
+- **Fetch effects** reset the `serverLoaded` ref + use a per-run `isCancelled` guard (cleanup sets it) so an out-of-order resolution after a rapid property switch can't apply under the wrong key; on a switch they load that property's cache first.
+- **Purchases**: stored as a Redis **HASH** (`purchases:<id>`, field = purchase id). Every mutation is a **targeted single-record op** — `PUT` = `HSET` one field (add/edit), `DELETE` = `HDEL` one field (+ `del()`s its receipt blobs). **Never** whole-array PUT purchases (that reintroduces a concurrency race). The localStorage purchases cache is local-only.
+- **Merge functions**: `mergeTasks()`/`mergeFinishes()` reconcile saved data with defaults; user-created items (`userCreated:true`) appended after defaults; `ROOM_MIGRATION`/`migrateRoom()` remap old room ids.
+
+## API Routes (Vercel Serverless — `api/*.js`)
+- `tasks.js`, `finishes.js` — GET/PUT, `?property=<id>` scoped (absent → legacy global key), via `scopedKey`.
+- `properties.js` — GET/PUT the registry (validates string + unique ids).
+- `migrate.js` — POST, one-time legacy→per-property migration (see above).
+- `backup.js` — GET, full snapshot of every key (legacy + per-property + purchases hash). Wired to a **permanent "Download full backup"** button.
+- `purchases.js` — GET (`HGETALL`) / PUT (`HSET`) / DELETE (`HDEL` + receipt-blob cleanup), `?property=` scoped.
+- `receipts-upload.js` — POST, server-side upload to the **private** Blob store (base64 in, size/type capped, token stays server-side).
+- `receipts-view.js` — GET `?pathname=`, streams a private receipt after validating the pathname shape AND that it's referenced by a real purchase (defense-in-depth).
+- `receipts-delete.js` — POST, deletes one receipt blob (best-effort, on receipt removal).
+- `keepalive.js` — weekly cron ping (auth-exempt) to prevent Upstash free-tier archival.
+- `_scope.js` — shared pure helpers (not a route; `_`-prefixed).
+- `middleware.js` — per-user auth (JM/KM), gates `/admin/*` + `/api/*` (except keepalive). Matcher `['/', '/admin', '/admin/:path*', '/api/:path*']`.
 
 ## Redis / Upstash
-- **Database**: `upstash-kv-citrine-cushion` (social-buffalo-87782.upstash.io)
-- **Connection**: Uses `PP_REDIS_URL` and `PP_REDIS_TOKEN` env vars (NOT `Redis.fromEnv()`)
-- **Why**: The old Vercel KV integration env vars (`KV_REST_API_*`) still exist but point to an archived/dead database (`sky-yacht`). They are managed by the integration and can't be deleted. The `PP_*` vars bypass this.
-- **Keepalive cron**: `vercel.json` schedules `/api/keepalive` every Monday 9am UTC to prevent free-tier auto-archival (14 days inactivity = deletion)
-- **Keys**: `tasks` (array), `finishes` (`{ items, targetBudget, roomData, deletedIds }`)
+- DB `upstash-kv-citrine-cushion`. Uses `PP_REDIS_URL` + `PP_REDIS_TOKEN` (NOT `Redis.fromEnv()`; the old `KV_REST_API_*` integration vars point at a dead DB).
+- **Keys**: `properties`, `tasks`/`finishes` (legacy backup), `tasks:<id>`/`finishes:<id>`, `purchases:<id>` (hash), `migration:lock` (transient).
+- **Keepalive cron** (`vercel.json`): `/api/keepalive` Mondays 09:00 UTC — free tier deletes after 14 days idle.
 
-## Dashboard
-Layout order: Stat Cards → Action Items → Category Progress → Design Selections → Map
+## Design & Purchases data models
+- **Design item** (`finishes:<id>`): `id, category, room, item, contractorOptions[], selection, unitPrice, quantity, unit, url, notes, userCreated, linkedTo, assignee, dueDate`. Linked items (`linkedTo`) inherit selection/unitPrice/unit/url from the parent; `resolveItem()` resolves them. 11 trade categories, 20 rooms, ~161 default items. Per-room `roomData[roomId] = { miroUrl, furniture:[{ id,name,price,url,notes,purchased }] }`.
+- **Promote** (non-destructive): "Mark as purchased" on a Design item (or a room-furniture item) creates a Purchase pre-filled from it and opens it on the Purchases tab; the design/furniture entry is never changed (a `finishItemId`/`furnitureId` links them; promoted items show a ✓).
+- **Purchase** (`purchases:<id>` hash): mirrors the Excel tracker — `id, finishItemId, furnitureId, description, trade, room, vendor, invoiceNo, purchasedBy, ownerPurchased, paymentMethod, qty, unitPrice, tax, shipping, totalPaid, allowanceCategory, status, purchaseDate, receivedDate, placedInServiceDate, assetClass, section, warranty, warrantyTerm, registered, binderPocket, receipts:[{pathname,name,contentType,uploadedAt}], notes, userCreated`. Constants + `emptyPurchase()` in `src/lib/purchases-logic.js`.
+- **Allowance reconciliation**: Exhibit B allowances ($446k across 11 categories, constants in the lib) vs. spend tagged per category, on the Purchases tab.
+- **Cost-seg** (Phase 3): `assetClass` (auto-suggested from trade via `suggestAssetClass`, overridable), `placedInServiceDate` (defaults from the property's `inServiceDate`), `section` (§1245/1250, **blank by default — never guessed**). "Export Cost Seg CSV" (`buildCostSegCsv`) groups by asset class with subtotals; labeled "suggested — confirm with CPA."
 
-- **Action Items** — combined view of overdue + assigned items from both Tasks and Design tabs. Red border/badge when overdue items exist. Each row is clickable — navigates to the correct tab, clears filters, auto-expands the item, and scrolls to it. Uses `focusItemId`/`focusItemSource` state at App level, passed to TaskView and DesignView as `focusItemId` prop.
-- **Task Progress by Category** — progress bars per task category
-- **Design Decisions** — stat card + room-by-room progress bars (mint/seafoam theme)
-- **Google Maps embed** — roadmap view of property location (API key via `VITE_GOOGLE_MAPS_KEY` env var)
-- Executive summary was removed from dashboard (still accessible via Executive Brief tab)
+## Receipts (private Vercel Blob)
+- Store is **Private** (irreversible per-store) — required; `access:'private'` uploads/reads. Env: `BLOB_READ_WRITE_TOKEN` (server-side only). Upload is server-side (base64 → `put()`), so the token never reaches the client; images are compressed client-side (Vercel functions have a 4.5 MB body limit). Pathnames: `receipts/<propertyId>/<purchaseId>/<file>`. Purchases store the **pathname**, not a public URL.
 
-## Design Tab Data Model
-Items have: `id, category, room, item, contractorOptions[], selection, unitPrice, quantity, unit, url, notes, userCreated, linkedTo, assignee, dueDate`
+## Setup / infra
+Required env (all in Vercel; see `.env.example` for names): `PP_REDIS_URL`, `PP_REDIS_TOKEN`, `BLOB_READ_WRITE_TOKEN`, `VITE_GOOGLE_MAPS_KEY`, `JM_PASSWORD`, `KM_PASSWORD`. Local `.env` typically has only the Maps key. Blob store must be **Private**.
 
-**Linked items**: `linkedTo` references a parent item ID. Linked items inherit selection, unitPrice, unit, and url from the parent. Quantity and notes remain local. `resolveItem()` function resolves linked values for display/budget calculation.
-
-Categories (11 trades): flooring, shower-bath-tile, kitchens, countertops, paint, decking, doors, plumbing, appliances, electrical, drywall
-
-Rooms (20): whole-house, kitchen-upstairs, wet-bar, 3rd-floor-bath, 3rd-story-porch, master-suite, master-bath, second-master, second-master-bath, bunk-room, bunk-bathroom, ground-floor-king, ground-floor-king-bath, downstairs-full-bed, pool-bath, laundry, garage, summer-kitchen, backyard, exterior
-
-**161 default finish items** across 11 trades and 20 rooms.
-
-**Room data** (`roomData` state): Per-room metadata stored as `{ [roomId]: { miroUrl: string, furniture: [...] } }`. Each furniture item has: `id, name, price, url, notes, purchased`. Persisted alongside finishes in the same Redis payload. Miro URLs are simple link-outs (no API integration).
-
-## Build & Deploy
+## Build, test & deploy
 ```bash
-npm run dev          # Local dev at localhost:5173
-npm run build        # Production build → dist/
-git push             # Auto-deploys to Vercel
+npm run dev     # local dev at localhost:5173 (auth bypassed; no /api or Redis/Blob)
+npm run build   # production build → dist/ (the compile gate; there is no lint step)
+npm test        # node logic checks: scripts/verify-phase1-logic.mjs + verify-logic.mjs
+git push        # main auto-deploys to Vercel
 ```
-
-## Known Issues — FIXED (2026-04-15)
-- **Database archived**: Upstash free tier auto-deleted after 14 days inactivity. Data restored via migration to new database. Added keepalive cron and switched to manual `PP_REDIS_*` env vars.
-
-## Known Issues — FIXED (2026-02-19)
-- **Stale closures**: Both fetch `useEffect`s had `else` branches that captured stale state — removed
-- **Orphaned linked items**: Deleting a parent item left children with dangling `linkedTo` reference — now converts children to standalone
-- **Silent save failures**: Server save errors were invisible to user — now shows red sync error banner
-- **Cookie parsing**: `getCurrentUser()` could fail on some cookie formats — fixed to use `.split('=')[1]?.trim()`
-- **Silent localStorage errors**: 6 `catch` blocks around localStorage were empty — now log with `console.warn`
+See `docs/known-issues.md` for consciously-deferred tradeoffs, and `docs/codebase-guide.md` for the deeper architecture reference.
 
 ## Conventions
-- Commit messages: imperative mood, 1-2 sentence description of what and why
-- Co-author tag: `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`
-- Assignees: JM = Josh Martin, KM = his wife
-- Date inputs: use visible native `<input type="date">` elements — do NOT use invisible overlay pattern (`opacity: 0`), it breaks in Safari
-- Clickable controls: use `<button>` not `<div>` for click targets (assignee circles, etc.) — divs with onClick can silently fail
-- Mobile: always provide touch alternatives for hover-dependent UI (delete buttons, etc.)
-- No external CSS or UI libraries — keep everything in the single App.jsx file
+- Commit messages: imperative mood, 1–2 sentence what+why. Co-author tag on commits.
+- Assignees: JM = Josh Martin, KM = his wife Kerry.
+- Date inputs: visible native `<input type="date">` — never the invisible-overlay (`opacity:0`) pattern (breaks in Safari).
+- Clickable controls: `<button>`, not `<div onClick>` (divs can silently fail).
+- Mobile: always give touch alternatives for hover-only UI.
+- Keep UI in `App.jsx` (inline styles, `C` tokens); only *pure* non-UI helpers go in `src/lib/` or `api/_scope.js`.
+
+## Historical fixes (don't reintroduce)
+- **2026-04-15**: Upstash free tier deleted the DB after 14 days idle → keepalive cron + explicit `PP_REDIS_*` vars.
+- **2026-02-19**: stale-closure fetch effects; orphaned linked items on parent delete; silent save failures (→ red sync banner); cookie parsing; empty localStorage catch blocks.
+- **2026-07**: property-switch clobber (fetch cancellation guard + save effects omit `activeProperty`); receipt `name`/`fileName` mismatch; promote double-fire guard. See git history + `docs/known-issues.md`.

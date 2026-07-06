@@ -3,6 +3,11 @@ import PODCAST_DATABASE from "./podcast-data.json";
 import EXEC_SUMMARY from "./executive-summary.json";
 import TOOLS_DATA from "./tools-data.json";
 import FINISHES_DATA from "./finishes-data.json";
+import {
+  PURCHASE_TRADES, PURCHASED_BY_OPTIONS, CONTRACTOR_PURCHASER, PAYMENT_METHODS,
+  PURCHASE_STATUSES, NOT_IN_ALLOWANCE, ALLOWANCE_CATEGORIES, EXHIBIT_B_TOTAL,
+  ASSET_CLASSES, suggestAssetClass, buildCostSegCsv, fmtUSD, emptyPurchase,
+} from "./lib/purchases-logic.js";
 
 // ─── DATA ───────────────────────────────────────────────────────────────────
 
@@ -2976,82 +2981,11 @@ function mergeTasks(saved) {
 
 const LS_PURCHASES = "pool-paddle-purchases-v1";
 
-const PURCHASE_TRADES = [
-  "Flooring", "Shower/Bath Tile", "Kitchens", "Countertops", "Paint", "Decking",
-  "Appliances", "Electrical", "Plumbing", "Drywall", "Furniture / FF&E",
-  "Decor & Styling", "Linens & Soft Goods", "Electronics / AV", "Outdoor & Landscape",
-  "Pool & Spa", "Other",
-];
-const PURCHASED_BY_OPTIONS = ["Josh", "Kerry", "Sparrow (Contractor)", "Other"];
-const CONTRACTOR_PURCHASER = "Sparrow (Contractor)";
-const PAYMENT_METHODS = ["Credit Card", "ACH / Bank Transfer", "Minoan", "Check", "Cash", "Other"];
-const PURCHASE_STATUSES = ["Ordered", "Received", "Installed"];
-const NOT_IN_ALLOWANCE = "Not in Allowance / Owner FF&E";
-const ALLOWANCE_CATEGORIES = [
-  { name: "Plumbing Fixtures", allowance: 22000 },
-  { name: "Electrical Fixtures", allowance: 20000 },
-  { name: "Tile/Flooring Material", allowance: 34500 },
-  { name: "Cabinets", allowance: 60000 },
-  { name: "Countertops", allowance: 20000 },
-  { name: "Appliances", allowance: 25000 },
-  { name: "Interior Hardware", allowance: 9000 },
-  { name: "Shelving", allowance: 10500 },
-  { name: "Landscape", allowance: 135000 },
-  { name: "Pool & Spa", allowance: 100000 },
-  { name: "Glass Shower Enclosures", allowance: 10000 },
-];
-const EXHIBIT_B_TOTAL = 446000;
+// Purchase/cost-seg domain constants + pure helpers (PURCHASE_TRADES, ALLOWANCE_CATEGORIES,
+// suggestAssetClass, buildCostSegCsv, emptyPurchase, fmtUSD, …) live in
+// ./lib/purchases-logic.js (imported at the top of this file) so they can be unit-tested
+// in plain node. Browser-dependent receipt helpers stay below.
 
-// Cost-seg (Phase 3). Asset classes are SUGGESTIONS only — always confirmed with the CPA.
-const ASSET_CLASSES = ["5-yr", "7-yr", "15-yr", "27.5-yr"];
-const ASSET_CLASS_BY_TRADE = {
-  "Appliances": "5-yr", "Furniture / FF&E": "5-yr", "Decor & Styling": "5-yr",
-  "Linens & Soft Goods": "5-yr", "Electronics / AV": "5-yr",
-  "Decking": "15-yr", "Outdoor & Landscape": "15-yr", "Pool & Spa": "15-yr",
-  "Flooring": "27.5-yr", "Shower/Bath Tile": "27.5-yr", "Kitchens": "27.5-yr",
-  "Countertops": "27.5-yr", "Paint": "27.5-yr", "Electrical": "27.5-yr",
-  "Plumbing": "27.5-yr", "Drywall": "27.5-yr",
-};
-function suggestAssetClass(trade) { return ASSET_CLASS_BY_TRADE[trade] || ""; }
-
-// Build a per-property cost-seg CSV: every purchase with BOTH an asset class and a
-// placed-in-service date, grouped by asset class with subtotals. Section (§1245/1250)
-// is included only when set. Header carries the "confirm with CPA" disclaimer.
-function buildCostSegCsv(purchases) {
-  const order = { "5-yr": 1, "7-yr": 2, "15-yr": 3, "27.5-yr": 4 };
-  const rows = purchases
-    .filter(p => p.assetClass && p.placedInServiceDate)
-    .sort((a, b) => (order[a.assetClass] || 9) - (order[b.assetClass] || 9) || (a.description || "").localeCompare(b.description || ""));
-  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const header = ["Asset Class", "Description", "Vendor", "Invoice #", "Cost Basis (paid)", "Placed In Service", "Section", "Room", "Trade", "Purchased By", "Owner/Contractor"];
-  const lines = [];
-  lines.push(esc("Cost Segregation Export — asset classes are SUGGESTIONS; confirm all with your CPA / cost-seg engineer. Not tax advice."));
-  lines.push(header.map(esc).join(","));
-  let lastClass = null, subtotal = 0, grandTotal = 0;
-  const blanks = (label, amt) => [esc(label), "", "", "", esc(amt), "", "", "", "", "", ""].join(",");
-  const flushSubtotal = () => { if (lastClass != null) lines.push(blanks(lastClass + " subtotal", subtotal)); };
-  for (const p of rows) {
-    if (p.assetClass !== lastClass) { flushSubtotal(); lastClass = p.assetClass; subtotal = 0; }
-    const paid = Number(p.totalPaid) || 0;
-    subtotal += paid; grandTotal += paid;
-    lines.push([
-      esc(p.assetClass), esc(p.description), esc(p.vendor), esc(p.invoiceNo), esc(paid),
-      esc(p.placedInServiceDate), esc(p.section), esc(p.room), esc(p.trade),
-      esc(p.purchasedBy), esc(p.ownerPurchased ? "Owner" : "Contractor"),
-    ].join(","));
-  }
-  flushSubtotal();
-  lines.push(blanks("GRAND TOTAL", grandTotal));
-  return { csv: lines.join("\n"), count: rows.length };
-}
-
-function newPurchaseId() {
-  return `pur-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-function fmtUSD(n) {
-  const v = Number(n) || 0;
-  return v.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
-}
 function receiptViewUrl(pathname) {
   return `/api/receipts-view?pathname=${encodeURIComponent(pathname)}`;
 }
@@ -3201,18 +3135,6 @@ function PurchaseForm({ initial, onSave, onCancel }) {
       </div>
     </div>
   );
-}
-
-function emptyPurchase() {
-  return {
-    id: newPurchaseId(), finishItemId: null, furnitureId: null, description: "", trade: "", room: "",
-    vendor: "", invoiceNo: "", purchasedBy: "", ownerPurchased: true, paymentMethod: "",
-    qty: null, unitPrice: null, tax: null, shipping: null, totalPaid: null,
-    allowanceCategory: NOT_IN_ALLOWANCE, status: "Ordered", purchaseDate: "", receivedDate: "",
-    placedInServiceDate: "", assetClass: "", section: "",
-    warranty: false, warrantyTerm: "", registered: false, binderPocket: "",
-    receipts: [], notes: "", userCreated: true,
-  };
 }
 
 function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, focusPurchaseId, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {

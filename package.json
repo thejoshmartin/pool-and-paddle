@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node scripts/verify-phase1-logic.mjs && node scripts/verify-logic.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
