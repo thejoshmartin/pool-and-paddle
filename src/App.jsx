@@ -127,6 +127,12 @@ function getCurrentUser() {
 
 function Header({ activeView, setActiveView, properties = [], activeProperty, onSwitchProperty, onDownloadBackup }) {
   const user = getCurrentUser();
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   return (
     <header style={{
       background: C.white,
@@ -199,7 +205,14 @@ function Header({ activeView, setActiveView, properties = [], activeProperty, on
               }}>Luxury STR Command Center · Beach Side</p>
             </div>
           </div>
-          <nav style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+          <nav style={{
+            display: "flex", gap: 6,
+            // On a phone: one horizontally-scrollable strip instead of wrapping into 3-4
+            // rows that bloat the sticky header. On desktop: wrap as before.
+            ...(isMobile
+              ? { flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch", width: "100%", order: 3, paddingBottom: 2 }
+              : { flexWrap: "wrap" }),
+          }}>
             {[
               { key: "dashboard", label: "Dashboard" },
               { key: "tasks", label: "Tasks" },
@@ -212,10 +225,11 @@ function Header({ activeView, setActiveView, properties = [], activeProperty, on
                 key={v.key}
                 onClick={() => setActiveView(v.key)}
                 style={{
-                  padding: "8px 14px",
+                  padding: "10px 14px",
+                  minHeight: 40,
                   borderRadius: 8,
                   border: "none",
-                  background: activeView === v.key ? C.mint : "transparent",
+                  background: activeView === v.key ? C.mint : (isMobile ? C.offWhite : "transparent"),
                   color: activeView === v.key ? C.white : C.textSecondary,
                   fontFamily: font,
                   fontSize: 13,
@@ -223,6 +237,8 @@ function Header({ activeView, setActiveView, properties = [], activeProperty, on
                   cursor: "pointer",
                   transition: "all 0.2s",
                   letterSpacing: "0.01em",
+                  whiteSpace: "nowrap",
+                  flexShrink: 0,
                 }}
               >
                 {v.label}
@@ -674,7 +690,7 @@ function PodcastView({ podcastData }) {
             background: C.offWhite,
             color: C.charcoal,
             fontFamily: font,
-            fontSize: 14,
+            fontSize: 16,
             fontWeight: 500,
             outline: "none",
             boxSizing: "border-box",
@@ -834,6 +850,12 @@ function TaskView({ tasks, setTasks, focusItemId }) {
   const [newTask, setNewTask] = useState({ task: "", category: "pre-launch", priority: "high", dueDate: "" });
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [hoveredRow, setHoveredRow] = useState(null);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const dateRefs = useRef({});
   const taskRowRefs = useRef({});
 
@@ -955,8 +977,9 @@ function TaskView({ tasks, setTasks, focusItemId }) {
   };
 
   const selectStyle = {
+    // fontSize 16 avoids iOS Safari's zoom-on-focus.
     padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.border}`,
-    background: C.white, color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
+    background: C.white, color: C.charcoal, fontFamily: font, fontSize: 16, fontWeight: 500,
   };
 
   return (
@@ -1003,7 +1026,7 @@ function TaskView({ tasks, setTasks, focusItemId }) {
               style={{
                 width: "100%", padding: "8px 12px", borderRadius: 6,
                 border: `1.5px solid ${C.border}`, background: C.offWhite,
-                color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500, outline: "none", boxSizing: "border-box",
+                color: C.charcoal, fontFamily: font, fontSize: 16, fontWeight: 500, outline: "none", boxSizing: "border-box",
               }}
             />
           </div>
@@ -1026,7 +1049,7 @@ function TaskView({ tasks, setTasks, focusItemId }) {
             <label style={{ fontFamily: font, fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 4 }}>Due Date</label>
             <input type="date" value={newTask.dueDate} onChange={e => setNewTask(p => ({ ...p, dueDate: e.target.value }))} style={{
               padding: "8px 12px", borderRadius: 6, border: `1.5px solid ${C.border}`,
-              background: C.white, color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
+              background: C.white, color: C.charcoal, fontFamily: font, fontSize: 16, fontWeight: 500,
             }} />
           </div>
           <button onClick={addTask} style={{
@@ -1092,7 +1115,7 @@ function TaskView({ tasks, setTasks, focusItemId }) {
               {sortTasks(catTasks).map((task, i, arr) => (
                 <div key={task.id} ref={el => { taskRowRefs.current[task.id] = el; }}>
                   <div
-                    onMouseEnter={() => setHoveredRow(task.id)}
+                    onMouseEnter={() => !isMobile && setHoveredRow(task.id)}
                     onMouseLeave={() => { setHoveredRow(null); if (confirmDelete === task.id) setConfirmDelete(null); }}
                     style={{
                       display: "flex", alignItems: "center", gap: 10,
@@ -1158,10 +1181,11 @@ function TaskView({ tasks, setTasks, focusItemId }) {
                         ref={el => { dateRefs.current[task.id] = el; }}
                         onChange={e => setDueDate(task.id, e.target.value)}
                         style={{
-                          fontFamily: font, fontSize: 12, fontWeight: 500,
+                          // fontSize 16 avoids iOS zoom-on-focus.
+                          fontFamily: font, fontSize: 16, fontWeight: 500,
                           color: task.dueDate ? (isOverdue(task) ? "#D94444" : C.textSecondary) : C.textMuted,
                           border: "none", background: "transparent", cursor: "pointer",
-                          outline: "none", padding: "2px 4px", minWidth: 80,
+                          outline: "none", padding: "2px 4px", minWidth: 110,
                         }} />
                       {task.dueDate && (
                         <button onClick={() => setDueDate(task.id, "")} style={{
@@ -1192,7 +1216,7 @@ function TaskView({ tasks, setTasks, focusItemId }) {
                       onClick={e => { e.stopPropagation(); cycleAssignee(task.id); }}
                       title={task.assignee ? task.assignee : "Unassigned — click to assign"}
                       style={{
-                        width: 28, height: 28, borderRadius: "50%",
+                        width: 36, height: 36, borderRadius: "50%",
                         display: "flex", alignItems: "center", justifyContent: "center",
                         cursor: "pointer", flexShrink: 0, border: "none",
                         ...(task.assignee ? {
@@ -1206,18 +1230,18 @@ function TaskView({ tasks, setTasks, focusItemId }) {
                       }}
                     >{task.assignee || "+"}</button>
 
-                    {/* Delete button */}
-                    <div style={{ width: 36, flexShrink: 0, display: "flex", justifyContent: "center" }}>
+                    {/* Delete button — revealed on hover (desktop) or always shown on touch (mobile) */}
+                    <div style={{ width: isMobile ? 40 : 36, flexShrink: 0, display: "flex", justifyContent: "center" }}>
                       {confirmDelete === task.id ? (
                         <button onClick={e => { e.stopPropagation(); deleteTask(task.id); }} style={{
-                          padding: "2px 8px", borderRadius: 4, border: "none",
+                          padding: "6px 10px", borderRadius: 4, border: "none",
                           background: "#D94444", color: C.white,
-                          fontFamily: font, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                          fontFamily: font, fontSize: 12, fontWeight: 700, cursor: "pointer",
                         }}>Yes</button>
-                      ) : hoveredRow === task.id ? (
-                        <button onClick={e => { e.stopPropagation(); handleDelete(task); }} style={{
+                      ) : (isMobile || hoveredRow === task.id) ? (
+                        <button onClick={e => { e.stopPropagation(); handleDelete(task); }} aria-label="Delete task" style={{
                           background: "none", border: "none",
-                          color: C.textMuted, fontSize: 16, cursor: "pointer", padding: 0, lineHeight: 1,
+                          color: C.textMuted, fontSize: 18, cursor: "pointer", padding: isMobile ? "8px 8px" : 0, lineHeight: 1,
                         }}>×</button>
                       ) : null}
                     </div>
@@ -1236,7 +1260,7 @@ function TaskView({ tasks, setTasks, focusItemId }) {
                         style={{
                           width: "100%", padding: "7px 12px", borderRadius: 6,
                           border: `1.5px solid ${C.seafoam}`, background: C.white,
-                          color: C.charcoal, fontFamily: font, fontSize: 12, fontWeight: 500,
+                          color: C.charcoal, fontFamily: font, fontSize: 16, fontWeight: 500,
                           outline: "none", boxSizing: "border-box",
                         }}
                         onKeyDown={e => {
@@ -1730,8 +1754,9 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
   }, [focusItemId]);
 
   const selectStyle = {
+    // fontSize 16 avoids iOS Safari's zoom-on-focus.
     padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.border}`,
-    background: C.white, color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500,
+    background: C.white, color: C.charcoal, fontFamily: font, fontSize: 16, fontWeight: 500,
   };
 
   const filtered = useMemo(() => {
@@ -2109,7 +2134,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
               style={{
                 width: "100%", padding: "8px 12px", borderRadius: 6,
                 border: `1.5px solid ${C.border}`, background: C.offWhite,
-                color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 500, outline: "none", boxSizing: "border-box",
+                color: C.charcoal, fontFamily: font, fontSize: 16, fontWeight: 500, outline: "none", boxSizing: "border-box",
               }}
             />
           </div>
@@ -2226,9 +2251,9 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                       }}
                       onBlur={() => { updateRoomData(groupId, { miroUrl: miroInput.trim() }); setEditingMiroRoom(null); }}
                       style={{
-                        padding: "5px 10px", borderRadius: 6, border: `1.5px solid ${C.border}`,
-                        background: C.white, color: C.charcoal, fontFamily: font, fontSize: 12,
-                        fontWeight: 500, outline: "none", width: isMobile ? 160 : 260,
+                        padding: "7px 10px", borderRadius: 6, border: `1.5px solid ${C.border}`,
+                        background: C.white, color: C.charcoal, fontFamily: font, fontSize: 16,
+                        fontWeight: 500, outline: "none", width: isMobile ? 180 : 260,
                       }}
                     />
                   </div>
@@ -2529,10 +2554,11 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                         <input type="date" value={item.dueDate || ""}
                           onChange={e => setItemDueDate(item.id, e.target.value)}
                           style={{
-                            fontFamily: font, fontSize: 11, fontWeight: 500,
+                            // fontSize 16 avoids iOS zoom; wider tap zone on mobile (badge/link are hidden there).
+                            fontFamily: font, fontSize: 16, fontWeight: 500,
                             color: item.dueDate ? (isItemOverdue(item) ? "#D94444" : C.textSecondary) : C.textMuted,
                             border: "none", background: "transparent", outline: "none",
-                            cursor: "pointer", padding: "4px 2px", width: isMobile ? 28 : 110,
+                            cursor: "pointer", padding: "4px 2px", width: isMobile ? 44 : 130,
                           }}
                         />
                       </div>
@@ -3000,18 +3026,46 @@ function loadPurchasesFromCache(propertyId) {
   return [];
 }
 
-// Build the upload payload for a receipt file. Images are downscaled/compressed so uploads
-// stay well under Vercel's request-body limit; PDFs/others pass through. Returns
-// { name, contentType, dataBase64 } or throws.
+// A user-facing upload problem (bad format, too big) — its .message is safe to show as-is.
+class ReceiptUploadError extends Error {}
+
+// Max RAW bytes we'll send for a passthrough (non-image) file. The server caps the decoded
+// buffer at 2.5 MB and Vercel caps the whole request body at 4.5 MB; base64 inflates ~1.37x,
+// so keep raw comfortably under ~2.4 MB and fail fast (before uploading) if it's larger.
+const MAX_RAW_UPLOAD_BYTES = 2.4 * 1024 * 1024;
+
+// Build the upload payload for a receipt file. ALL still images — including iPhone/Android
+// HEIC/HEIF — are decoded, downscaled and re-encoded to JPEG, so uploads stay tiny AND are
+// universally viewable (Android Chrome can't render HEIC). If the browser can't decode the
+// image (e.g. Android Chrome + HEIC), we throw a clear, actionable error instead of letting
+// a multi-MB raw file get silently rejected. PDFs pass through (size-checked first).
+// Returns { name, contentType, dataBase64 } or throws.
 async function buildReceiptUpload(file) {
-  const isCompressibleImage = /^image\/(png|jpe?g|webp)$/i.test(file.type);
-  if (isCompressibleImage) {
-    const dataBase64 = await compressImageToBase64(file, 1400, 0.75);
-    const name = file.name.replace(/\.\w+$/, "") + ".jpg";
-    return { name, contentType: "image/jpeg", dataBase64 };
+  const type = (file.type || "").toLowerCase();
+  const name = file.name || "receipt";
+  const looksLikeImage = type.startsWith("image/") || /\.(png|jpe?g|webp|heic|heif)$/i.test(name);
+  // GIFs stay as-is (canvas would flatten animation); everything else image-like → JPEG.
+  if (looksLikeImage && type !== "image/gif") {
+    try {
+      const dataBase64 = await compressImageToBase64(file, 1400, 0.75);
+      return { name: name.replace(/\.\w+$/, "") + ".jpg", contentType: "image/jpeg", dataBase64 };
+    } catch (e) {
+      throw new ReceiptUploadError(
+        "This photo couldn't be processed on this device (often an iPhone HEIC photo opened on Android). " +
+        "Set your iPhone camera to \"Most Compatible\" (Settings ▸ Camera ▸ Formats), or attach a screenshot or PDF instead."
+      );
+    }
+  }
+  // Passthrough (PDF, GIF, …). Size-check BEFORE base64-encoding and uploading a file the
+  // server would only reject — saves the owner a long cellular round-trip.
+  if (typeof file.size === "number" && file.size > MAX_RAW_UPLOAD_BYTES) {
+    throw new ReceiptUploadError(
+      `That file is ${(file.size / (1024 * 1024)).toFixed(1)} MB — the limit is about 2.5 MB. ` +
+      "Try a photo of the receipt, or a smaller / compressed PDF."
+    );
   }
   const dataBase64 = await fileToBase64(file);
-  return { name: file.name, contentType: file.type || "application/octet-stream", dataBase64 };
+  return { name, contentType: file.type || "application/octet-stream", dataBase64 };
 }
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -3045,19 +3099,245 @@ function compressImageToBase64(file, maxDim, quality) {
 }
 
 const ppInput = {
-  width: "100%", padding: "9px 12px", borderRadius: 8, border: `1px solid ${C.border}`,
-  fontFamily: font, fontSize: 14, color: C.charcoal, background: C.white, outline: "none",
+  // fontSize 16 is the minimum that stops iOS Safari from auto-zooming the page on focus.
+  width: "100%", padding: "10px 12px", borderRadius: 8, border: `1px solid ${C.border}`,
+  fontFamily: font, fontSize: 16, color: C.charcoal, background: C.white, outline: "none",
   boxSizing: "border-box",
 };
 const ppLabel = { display: "block", fontSize: 12, fontWeight: 600, color: C.textSecondary, marginBottom: 5 };
 
-function PurchaseForm({ initial, onSave, onCancel }) {
-  const [d, setD] = useState(initial);
+// Self-contained receipt attach/list/remove control, reused in the purchase form (attach
+// while creating) and the expanded purchase row. Offers BOTH "take a photo" (camera) and
+// "choose photo or file" (library / Files / PDF, multi-select) — the primary trigger has no
+// `capture` so the owner can pick an existing photo, per the app's core requirement. Handles
+// HEIC→JPEG conversion, size limits, upload timeout, and per-control retry.
+// viewablePaths: Set of pathnames that are actually persisted (so their view link works);
+//   undefined → treat all as viewable (used by the already-saved expanded row).
+// deferBlobDelete: when true, removing a receipt only updates the array; the owner (the
+//   PurchaseForm) reconciles the underlying blob on Save/teardown so a discarded edit never
+//   deletes a blob the saved record still references.
+// onBlobUploaded(pathname): notified after each successful upload so the form can track and
+//   clean up blobs that were uploaded but never committed.
+function ReceiptUploader({ propertyId, purchaseId, receipts, onChange, viewablePaths, deferBlobDelete = false, onBlobUploaded }) {
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState(null); // { message, retryable } | null
+  const lastFileRef = useRef(null);
+  const isViewable = (pathname) => !viewablePaths || viewablePaths.has(pathname);
+  const anyPending = (receipts || []).some(r => !isViewable(r.pathname));
+
+  // Upload one file; returns the receipt record on success, or null (and sets error) on failure.
+  const uploadOne = async (file) => {
+    setError(null);
+    lastFileRef.current = file;
+    setUploading(true);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 60000); // generous cap for slow cellular
+    try {
+      const payload = await buildReceiptUpload(file);
+      const res = await fetch("/api/receipts-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ propertyId, purchaseId, ...payload }),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        if (res.status === 413) {
+          setError({ message: "That file is too large (about 2.5 MB max). Try a photo of the receipt, or a smaller / compressed file.", retryable: false });
+        } else {
+          const body = await res.json().catch(() => ({}));
+          setError({ message: (body && body.error) || "Upload failed. Please try again.", retryable: true });
+        }
+        return null;
+      }
+      const { pathname, name, contentType } = await res.json();
+      lastFileRef.current = null;
+      return { pathname, name, contentType, uploadedAt: new Date().toISOString() };
+    } catch (e) {
+      if (e && e.name === "AbortError") {
+        setError({ message: "Upload timed out — check your connection and tap Retry.", retryable: true });
+      } else if (e instanceof ReceiptUploadError) {
+        setError({ message: e.message, retryable: false });
+      } else if (e instanceof TypeError) {
+        setError({ message: "Couldn't reach the server — check your connection and tap Retry.", retryable: true });
+      } else {
+        setError({ message: "Could not process that file.", retryable: false });
+      }
+      return null;
+    } finally {
+      clearTimeout(timer);
+      setUploading(false);
+    }
+  };
+
+  // Upload a batch sequentially, accumulating so we never overwrite a just-added receipt
+  // (the `receipts` prop is stale within a single loop). Continue past a failed file so the
+  // rest of the batch isn't silently dropped, then summarize what failed.
+  const handleFiles = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    let current = receipts || [];
+    const failed = [];
+    for (const f of files) {
+      const added = await uploadOne(f);
+      if (added) {
+        current = [...current, added];
+        onChange(current);
+        if (onBlobUploaded) onBlobUploaded(added.pathname);
+      } else {
+        failed.push(f.name || "a file");
+      }
+    }
+    // For a single file, uploadOne's specific (retryable) error already stands. For a batch,
+    // a later success would have cleared that error — so surface a summary of what didn't upload.
+    if (files.length > 1 && failed.length > 0) {
+      setError({ message: `${failed.length} file(s) couldn't be uploaded: ${failed.join(", ")}. Tap a button above to try those again.`, retryable: false });
+    }
+  };
+
+  const retryLast = async () => {
+    const f = lastFileRef.current;
+    if (!f) return;
+    const added = await uploadOne(f);
+    if (added) { onChange([...(receipts || []), added]); if (onBlobUploaded) onBlobUploaded(added.pathname); }
+  };
+
+  const removeReceipt = (pathname) => {
+    if (!window.confirm("Remove this receipt?")) return;
+    onChange((receipts || []).filter(r => r.pathname !== pathname));
+    // Immediate-persist contexts (the saved expanded row) delete the blob now, atomically with
+    // the record update. Deferred contexts (an open form) leave the blob for the form to
+    // reconcile on Save/teardown, so a cancelled edit never strands the saved record.
+    if (!deferBlobDelete) {
+      fetch("/api/receipts-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pathname }),
+      }).catch(() => {});
+    }
+  };
+
+  const trigger = {
+    display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8,
+    fontSize: 14, fontWeight: 600, borderRadius: 8, padding: "12px 16px", minHeight: 44,
+    boxSizing: "border-box", cursor: uploading ? "wait" : "pointer",
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: C.textSecondary, marginBottom: 6 }}>Receipts</div>
+      {(receipts || []).length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+          {(receipts || []).map(r => (
+            <span key={r.pathname} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, background: C.offWhite, border: `1px solid ${C.border}`, borderRadius: 8, paddingLeft: 10 }}>
+              {isViewable(r.pathname) ? (
+                <a href={receiptViewUrl(r.pathname)} target="_blank" rel="noreferrer" style={{ color: C.mint, textDecoration: "none", fontWeight: 600, padding: "10px 2px" }}>{r.name || "receipt"}</a>
+              ) : (
+                // Not yet persisted: the view route requires the receipt to be referenced by a
+                // saved purchase, so a link would 404 until Save. Show the name (non-link).
+                <span title="Viewable after you save this purchase" style={{ color: C.textSecondary, fontWeight: 600, padding: "10px 2px" }}>{r.name || "receipt"}</span>
+              )}
+              <button onClick={() => removeReceipt(r.pathname)} title="Remove receipt" aria-label="Remove receipt" style={{ background: "none", border: "none", color: C.textMuted, cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "10px 12px", minWidth: 44, minHeight: 44 }}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      {anyPending && (
+        <p style={{ fontSize: 11, color: C.textMuted, margin: "0 0 8px" }}>Attached — viewable after you save this purchase.</p>
+      )}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        <label style={{ ...trigger, color: C.mintDark, background: C.seafoamFaint, border: `1.5px dashed ${C.mint}` }}>
+          {uploading ? "Uploading…" : "🖼️ Choose photo or file"}
+          <input type="file" accept="image/*,application/pdf" multiple disabled={uploading} onChange={e => { handleFiles(e.target.files); e.target.value = ""; }} style={{ display: "none" }} />
+        </label>
+        <label style={{ ...trigger, color: C.textSecondary, background: C.white, border: `1.5px solid ${C.border}` }}>
+          📷 Take photo
+          <input type="file" accept="image/*" capture="environment" disabled={uploading} onChange={e => { handleFiles(e.target.files); e.target.value = ""; }} style={{ display: "none" }} />
+        </label>
+      </div>
+      {error && (
+        <div style={{ color: C.ocean, fontSize: 12, marginTop: 6 }}>
+          {error.message}
+          {error.retryable && lastFileRef.current && (
+            <button onClick={retryLast} style={{ marginLeft: 8, background: "none", border: "none", color: C.mint, fontWeight: 700, fontSize: 12, cursor: "pointer", padding: 0 }}>Retry</button>
+          )}
+        </div>
+      )}
+      <p style={{ fontSize: 11, color: C.textMuted, margin: "6px 0 0" }}>Take a photo or pick an existing photo / PDF. iPhone photos are converted automatically.</p>
+    </div>
+  );
+}
+
+// Receipts are handled with a DEFERRED model: files upload to Blob immediately (we need the
+// pathname), but the receipt array commits to the record only on Save — a single whole-record
+// write, so it never races the field-edit Save (the concurrency pattern CLAUDE.md forbids).
+// A removed receipt's blob is reconciled on Save; blobs uploaded but never committed are
+// cleaned up on teardown (Cancel / tap-away / tab-switch) unless a draft still holds them.
+const MEANINGFUL_PURCHASE_FIELDS = [
+  "description", "vendor", "invoiceNo", "trade", "room", "notes",
+  "purchaseDate", "receivedDate", "qty", "unitPrice", "tax", "shipping", "totalPaid",
+];
+function draftHasContent(parsed) {
+  if (!parsed || typeof parsed !== "object" || !parsed.id) return false;
+  if ((parsed.receipts || []).length > 0) return true;
+  return MEANINGFUL_PURCHASE_FIELDS.some(k => {
+    const v = parsed[k];
+    return typeof v === "string" ? v.trim() !== "" : (v !== null && v !== undefined);
+  });
+}
+function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKey }) {
+  const [d, setD] = useState(() => {
+    // Restore an in-progress draft (e.g. after an accidental pull-to-refresh or a
+    // backgrounded-tab discard on mobile) so the owner never loses a long form. Only restore
+    // a draft that has real content, so an untouched open doesn't silently resurface later.
+    if (draftKey) {
+      try {
+        const raw = localStorage.getItem(draftKey);
+        if (raw) { const parsed = JSON.parse(raw); if (draftHasContent(parsed)) return parsed; }
+      } catch (e) { /* ignore malformed draft */ }
+    }
+    return initial;
+  });
   const set = (patch) => setD(prev => ({ ...prev, ...patch }));
+  const clearDraft = () => { if (draftKey) { try { localStorage.removeItem(draftKey); } catch (e) { /* ignore */ } } };
+  useEffect(() => {
+    if (!draftKey) return;
+    try { localStorage.setItem(draftKey, JSON.stringify(d)); } catch (e) { /* quota/full — ignore */ }
+  }, [d, draftKey]);
+
+  const initialReceiptPaths = new Set((initial.receipts || []).map(r => r.pathname));
+  // Blob pathnames uploaded during this session. Seeded from a restored draft's not-yet-saved
+  // receipts (fresh opens → []) so a reload-then-remove/cancel still reconciles their blobs.
+  const sessionUploadedRef = useRef((d.receipts || []).filter(r => r && !initialReceiptPaths.has(r.pathname)).map(r => r.pathname));
+  const savedRef = useRef(false);           // did the owner Save (vs. discard)?
+  const deleteBlobs = (pathnames) => pathnames.forEach(pathname =>
+    fetch("/api/receipts-delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pathname }) }).catch(() => {}));
+
+  // Teardown cleanup: if the form is discarded (not Saved), best-effort delete blobs uploaded
+  // this session that were never committed. Skip when a draft still persists (a reload/tab
+  // switch we intend to resume) so the restored draft's receipts still resolve.
+  useEffect(() => () => {
+    if (savedRef.current) return;
+    if (draftKey) { try { if (localStorage.getItem(draftKey)) return; } catch (e) { /* fall through */ } }
+    deleteBlobs(sessionUploadedRef.current);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const noteUploaded = (pathname) => { sessionUploadedRef.current.push(pathname); };
+  const changeReceipts = (rs) => set({ receipts: rs });
+  const handleCancel = () => { clearDraft(); onCancel(); }; // teardown effect cleans up blobs
+  const handleSave = () => {
+    savedRef.current = true;
+    clearDraft();
+    // Reconcile blobs against the saved record: delete any existing receipt the owner removed,
+    // plus any uploaded-then-removed this session; keep everything still referenced.
+    const finalPaths = new Set((d.receipts || []).map(r => r.pathname));
+    const orphaned = [...new Set([...initialReceiptPaths, ...sessionUploadedRef.current])].filter(p => !finalPaths.has(p));
+    onSave(d);
+    deleteBlobs(orphaned);
+  };
   const computedTotal = (Number(d.qty) || 0) * (Number(d.unitPrice) || 0) + (Number(d.tax) || 0) + (Number(d.shipping) || 0);
 
   const field = (label, node) => (
-    <div style={{ flex: 1, minWidth: 140 }}><label style={ppLabel}>{label}</label>{node}</div>
+    <div style={{ flex: 1, minWidth: isMobile ? "100%" : 140 }}><label style={ppLabel}>{label}</label>{node}</div>
   );
 
   return (
@@ -3093,7 +3373,7 @@ function PurchaseForm({ initial, onSave, onCancel }) {
           <div>
             <input type="number" step="0.01" style={ppInput} value={d.totalPaid ?? ""} onChange={e => set({ totalPaid: e.target.value === "" ? null : Number(e.target.value) })} placeholder={computedTotal ? String(computedTotal) : ""} />
             {computedTotal > 0 && (Number(d.totalPaid) || 0) !== computedTotal && (
-              <button type="button" onClick={() => set({ totalPaid: computedTotal })} style={{ marginTop: 4, background: "none", border: "none", color: C.mint, fontSize: 11, fontWeight: 600, cursor: "pointer", padding: 0 }}>use {fmtUSD(computedTotal)}</button>
+              <button type="button" onClick={() => set({ totalPaid: computedTotal })} style={{ marginTop: 2, background: "none", border: "none", color: C.mint, fontSize: 13, fontWeight: 600, cursor: "pointer", padding: "6px 2px" }}>use {fmtUSD(computedTotal)}</button>
             )}
           </div>
         ))}
@@ -3129,9 +3409,23 @@ function PurchaseForm({ initial, onSave, onCancel }) {
         <label style={ppLabel}>Notes</label>
         <textarea style={{ ...ppInput, minHeight: 60, resize: "vertical" }} value={d.notes} onChange={e => set({ notes: e.target.value })} />
       </div>
+      {/* Attach a receipt right here while creating/editing — no need to save first. The
+          purchase already has an id (emptyPurchase mints one), so receipts upload against it
+          and are saved with the record. */}
+      <div style={{ marginBottom: 16, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+        <ReceiptUploader
+          propertyId={propertyId}
+          purchaseId={d.id}
+          receipts={d.receipts || []}
+          onChange={changeReceipts}
+          viewablePaths={initialReceiptPaths}
+          deferBlobDelete
+          onBlobUploaded={noteUploaded}
+        />
+      </div>
       <div style={{ display: "flex", gap: 10 }}>
-        <button onClick={() => onSave(d)} disabled={!(d.description || "").trim()} style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: (d.description || "").trim() ? C.mint : C.border, color: C.white, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: (d.description || "").trim() ? "pointer" : "not-allowed" }}>Save purchase</button>
-        <button onClick={onCancel} style={{ padding: "10px 18px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.textSecondary, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+        <button onClick={handleSave} disabled={!(d.description || "").trim()} style={{ padding: "12px 18px", minHeight: 44, borderRadius: 8, border: "none", background: (d.description || "").trim() ? C.mint : C.border, color: C.white, fontFamily: font, fontSize: 15, fontWeight: 700, cursor: (d.description || "").trim() ? "pointer" : "not-allowed" }}>Save purchase</button>
+        <button onClick={handleCancel} style={{ padding: "12px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.textSecondary, fontFamily: font, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
       </div>
     </div>
   );
@@ -3141,8 +3435,12 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
   const [editingId, setEditingId] = useState(null);   // id | "new" | null
   const [expandedId, setExpandedId] = useState(null);
   const [query, setQuery] = useState("");
-  const [uploadingId, setUploadingId] = useState(null);
-  const [uploadError, setUploadError] = useState(null);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const newFormRef = useRef(null);
 
   useEffect(() => {
@@ -3186,30 +3484,6 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
     return [...list].sort((a, b) => (b.purchaseDate || "").localeCompare(a.purchaseDate || "") || (b.id > a.id ? 1 : -1));
   }, [purchases, query]);
 
-  const handleUpload = async (purchase, file) => {
-    setUploadError(null);
-    setUploadingId(purchase.id);
-    try {
-      const payload = await buildReceiptUpload(file);
-      const res = await fetch("/api/receipts-upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ propertyId: activeProperty, purchaseId: purchase.id, ...payload }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setUploadError(body.error || "Upload failed");
-        return;
-      }
-      const { pathname, name, contentType } = await res.json();
-      const receipts = [...(purchase.receipts || []), { pathname, name, contentType, uploadedAt: new Date().toISOString() }];
-      onReceiptsChange(purchase.id, receipts);
-    } catch (e) {
-      setUploadError("Could not process that file");
-    } finally {
-      setUploadingId(null);
-    }
-  };
   const exportCostSeg = () => {
     const { csv, count } = buildCostSegCsv(purchases);
     if (count === 0) { window.alert("No purchases yet have BOTH an asset class and a placed-in-service date, so there is nothing to export. Add those on your purchases first."); return; }
@@ -3223,16 +3497,6 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
-  const handleRemoveReceipt = (purchase, pathname) => {
-    onReceiptsChange(purchase.id, (purchase.receipts || []).filter(r => r.pathname !== pathname));
-    // Delete the underlying blob so no orphaned file is left behind (best-effort).
-    fetch("/api/receipts-delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pathname }),
-    }).catch(() => { /* best-effort */ });
-  };
-
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px", fontFamily: font }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
@@ -3245,13 +3509,18 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
         )}
       </div>
 
-      {/* New purchase form — at the top so it's visible immediately when opened */}
+      {/* New purchase form — at the top so it's visible immediately when opened. Keyed on the
+          active property so a property switch remounts it (draft is scoped per property). */}
       {editingId === "new" && (
         <div ref={newFormRef}>
           <PurchaseForm
+            key={`new-${activeProperty || "base"}`}
             initial={{ ...emptyPurchase(), placedInServiceDate: propertyInServiceDate || "" }}
             onSave={(p) => { onSave(p); setEditingId(null); setExpandedId(p.id); }}
             onCancel={() => setEditingId(null)}
+            propertyId={activeProperty}
+            isMobile={isMobile}
+            draftKey={`pp-purchase-draft:${activeProperty || "base"}:new`}
           />
         </div>
       )}
@@ -3343,7 +3612,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
         const isEditing = editingId === p.id;
         return (
           <div key={p.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
-            <button onClick={() => { setExpandedId(isOpen ? null : p.id); setEditingId(null); }} style={{ width: "100%", textAlign: "left", background: "none", border: "none", padding: "14px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+            <button onClick={() => { if (editingId === "new") { try { localStorage.removeItem(`pp-purchase-draft:${activeProperty || "base"}:new`); } catch (e) { /* ignore */ } } setExpandedId(isOpen ? null : p.id); setEditingId(null); }} style={{ width: "100%", textAlign: "left", background: "none", border: "none", padding: "14px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, color: C.charcoal, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.description || "(untitled)"}</div>
                 <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>
@@ -3368,25 +3637,17 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
 
                 {/* Receipts */}
                 <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: C.textSecondary, marginBottom: 6 }}>Receipts</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-                    {(p.receipts || []).map(r => (
-                      <span key={r.pathname} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, background: C.offWhite, border: `1px solid ${C.border}`, borderRadius: 8, padding: "5px 8px" }}>
-                        <a href={receiptViewUrl(r.pathname)} target="_blank" rel="noreferrer" style={{ color: C.mint, textDecoration: "none", fontWeight: 600 }}>{r.name || "receipt"}</a>
-                        <button onClick={() => handleRemoveReceipt(p, r.pathname)} title="Remove" style={{ background: "none", border: "none", color: C.textMuted, cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>
-                      </span>
-                    ))}
-                  </div>
-                  <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, color: C.mintDark, background: C.seafoamFaint, border: `1.5px dashed ${C.mint}`, borderRadius: 8, padding: "8px 14px", cursor: uploadingId === p.id ? "wait" : "pointer" }}>
-                    {uploadingId === p.id ? "Uploading…" : "📷 Add receipt (photo or PDF)"}
-                    <input type="file" accept="image/*,application/pdf" capture="environment" disabled={uploadingId === p.id} onChange={e => { const f = e.target.files && e.target.files[0]; if (f) handleUpload(p, f); e.target.value = ""; }} style={{ display: "none" }} />
-                  </label>
-                  {uploadError && <div style={{ color: C.ocean, fontSize: 12, marginTop: 6 }}>{uploadError}</div>}
+                  <ReceiptUploader
+                    propertyId={activeProperty}
+                    purchaseId={p.id}
+                    receipts={p.receipts || []}
+                    onChange={(rs) => onReceiptsChange(p.id, rs)}
+                  />
                 </div>
 
                 <div style={{ display: "flex", gap: 10 }}>
-                  <button onClick={() => { setEditingId(p.id); }} style={{ padding: "8px 16px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Edit</button>
-                  <button onClick={() => { if (window.confirm("Delete this purchase and its receipts?")) { onDelete(p.id); setExpandedId(null); } }} style={{ padding: "8px 16px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ocean, fontFamily: font, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Delete</button>
+                  <button onClick={() => { setEditingId(p.id); }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Edit</button>
+                  <button onClick={() => { if (window.confirm("Delete this purchase and its receipts?")) { onDelete(p.id); setExpandedId(null); } }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ocean, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Delete</button>
                 </div>
               </div>
             )}
@@ -3396,6 +3657,8 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
                   initial={p}
                   onSave={(updated) => { onSave(updated); setEditingId(null); }}
                   onCancel={() => setEditingId(null)}
+                  propertyId={activeProperty}
+                  isMobile={isMobile}
                 />
               </div>
             )}

@@ -3,21 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#F5F8F6" />
     <title>Pool & Paddle — Luxury STR Command Center</title>
     <meta name="description" content="Pool & Paddle Airbnb launch tracker and podcast intelligence database" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏊</text></svg>" />
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-      html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-      body { background: #0a1628; }
+      /* overscroll-behavior-y: contain stops Android Chrome's pull-to-refresh from reloading
+         the page (and wiping an in-progress form) on a swipe-down at the top. */
+      html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; overscroll-behavior-y: contain; }
+      /* Light app background so iOS rubber-band overscroll doesn't flash dark navy. */
+      body { background: #F5F8F6; overscroll-behavior-y: contain; }
       #root { min-height: 100vh; }
-      ::selection { background: rgba(196,163,90,0.3); color: #e8d5a0; }
-      input::placeholder { color: rgba(232,213,160,0.3); }
-      select option { background: #0a1628; color: #e8d5a0; }
+      ::selection { background: rgba(46,175,123,0.22); color: #238C62; }
+      input::placeholder, textarea::placeholder { color: #9AA6A0; }
+      select option { background: #FFFFFF; color: #333333; }
       ::-webkit-scrollbar { width: 8px; }
-      ::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
-      ::-webkit-scrollbar-thumb { background: rgba(196,163,90,0.3); border-radius: 4px; }
-      ::-webkit-scrollbar-thumb:hover { background: rgba(196,163,90,0.5); }
+      ::-webkit-scrollbar-track { background: rgba(0,0,0,0.05); }
+      ::-webkit-scrollbar-thumb { background: rgba(46,175,123,0.35); border-radius: 4px; }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(46,175,123,0.55); }
     </style>
   </head>
   <body>
