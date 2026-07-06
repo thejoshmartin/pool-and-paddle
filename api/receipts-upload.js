@@ -7,7 +7,11 @@ import { put } from '@vercel/blob';
 // Vercel Functions have a 4.5 MB request-body limit; the client compresses images before
 // upload, and we cap raw size at 2.5 MB (base64 stays well under the limit).
 const MAX_BYTES = 2.5 * 1024 * 1024;
-const ALLOWED_TYPE = /^(image\/(png|jpe?g|webp|gif|heic|heif)|application\/pdf)$/i;
+// The client converts every image (including iPhone HEIC/HEIF) to JPEG before upload, so
+// only universally-viewable types are ever stored. We deliberately do NOT accept heic/heif
+// here — an unconverted HEIC won't render in Android Chrome, so rejecting it (rather than
+// storing an unviewable receipt) is the safer contract.
+const ALLOWED_TYPE = /^(image\/(png|jpe?g|webp|gif)|application\/pdf)$/i;
 const SAFE_SEG = /^[a-z0-9-]+$/;
 
 export default async function handler(req, res) {
