@@ -1688,7 +1688,7 @@ function mergeFinishes(saved, deletedIds = []) {
   return [...merged, ...userItems];
 }
 
-function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, roomData, setRoomData, focusItemId, deletedFinishIds, setDeletedFinishIds, onPromote, promotedFinishIds }) {
+function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, roomData, setRoomData, focusItemId, deletedFinishIds, setDeletedFinishIds, onPromote, promotedFinishIds, onPromoteFurniture, promotedFurnitureIds }) {
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -2345,6 +2345,15 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                             <a href={furn.url} target="_blank" rel="noopener noreferrer"
                               style={{ color: C.mint, fontSize: 13, flexShrink: 0, textDecoration: "none" }}
                             >🔗</a>
+                          )}
+                          {onPromoteFurniture && (
+                            promotedFurnitureIds && promotedFurnitureIds.has(furn.id) ? (
+                              <span title="Already a purchase" style={{ fontSize: 12, fontWeight: 700, color: C.mint, flexShrink: 0 }}>✓</span>
+                            ) : (
+                              <button onClick={() => onPromoteFurniture(furn, groupId)} title="Create a purchase from this item"
+                                style={{ background: C.seafoamFaint, border: `1px solid ${C.mint}`, color: C.mintDark, fontFamily: font, fontSize: 11, fontWeight: 600, cursor: "pointer", padding: "3px 8px", borderRadius: 6, flexShrink: 0, whiteSpace: "nowrap" }}
+                              >Mark purchased</button>
+                            )
                           )}
                           <button onClick={() => deleteFurnitureItem(groupId, furn.id)}
                             style={{ background: "none", border: "none", color: C.textMuted, fontSize: 16, cursor: "pointer", padding: 0, lineHeight: 1, flexShrink: 0 }}
@@ -3145,7 +3154,7 @@ function PurchaseForm({ initial, onSave, onCancel }) {
 
 function emptyPurchase() {
   return {
-    id: newPurchaseId(), finishItemId: null, description: "", trade: "", room: "",
+    id: newPurchaseId(), finishItemId: null, furnitureId: null, description: "", trade: "", room: "",
     vendor: "", invoiceNo: "", purchasedBy: "", ownerPurchased: true, paymentMethod: "",
     qty: null, unitPrice: null, tax: null, shipping: null, totalPaid: null,
     allowanceCategory: NOT_IN_ALLOWANCE, status: "Ordered", purchaseDate: "", receivedDate: "",
@@ -3762,6 +3771,33 @@ export default function App() {
   };
   const handlePurchaseFocusCleared = useCallback(() => setFocusPurchaseId(null), []);
 
+  // Which room-furniture items already have a purchase (drives the "✓" badge).
+  const promotedFurnitureIds = useMemo(
+    () => new Set(purchases.filter(p => p.furnitureId).map(p => p.furnitureId)),
+    [purchases]
+  );
+  // Promote a room-furniture item → a purchase (non-destructive: the furniture entry stays).
+  const promoteFurnitureItem = (furn, roomId) => {
+    if (promotedFurnitureIds.has(furn.id)) return;
+    const roomLabel = (FINISH_ROOMS.find(r => r.id === roomId) || {}).label || roomId || "";
+    const draft = {
+      ...emptyPurchase(),
+      furnitureId: furn.id,
+      description: furn.name || "",
+      trade: "Furniture / FF&E",
+      room: roomLabel,
+      unitPrice: furn.price ?? null,
+      qty: 1,
+      totalPaid: furn.price ?? null,
+      ownerPurchased: true,
+      status: furn.purchased ? "Received" : "Ordered",
+      notes: furn.url ? `From design furniture · ${furn.url}` : "From design furniture",
+    };
+    savePurchase(draft);
+    setFocusPurchaseId(draft.id);
+    setActiveView("purchases");
+  };
+
   return (
     <div style={{ minHeight: "100vh", background: C.pageBg, fontFamily: font }}>
       <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -3789,7 +3825,7 @@ export default function App() {
       {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
-      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} />}
+      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} />}
       {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} focusPurchaseId={focusPurchaseId} onFocusHandled={handlePurchaseFocusCleared} />}
 
       {showMigrationModal && migrationNeeded && (
