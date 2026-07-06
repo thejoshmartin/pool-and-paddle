@@ -120,7 +120,7 @@ function getCurrentUser() {
   return null;
 }
 
-function Header({ activeView, setActiveView }) {
+function Header({ activeView, setActiveView, properties = [], activeProperty, onSwitchProperty, onDownloadBackup }) {
   const user = getCurrentUser();
   return (
     <header style={{
@@ -223,33 +223,72 @@ function Header({ activeView, setActiveView }) {
               </button>
             ))}
           </nav>
-          {user && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{
-                fontFamily: font,
-                fontSize: 12,
-                fontWeight: 600,
-                color: C.mint,
-                background: C.seafoamFaint,
-                padding: "5px 12px",
-                borderRadius: 20,
-                letterSpacing: "0.02em",
-              }}>{user.name}</span>
-              <a
-                href="/admin/logout"
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {properties.length > 0 && (
+              <select
+                value={activeProperty || ""}
+                onChange={e => onSwitchProperty && onSwitchProperty(e.target.value)}
+                aria-label="Active property"
                 style={{
                   fontFamily: font,
                   fontSize: 12,
-                  fontWeight: 500,
-                  color: C.textMuted,
-                  textDecoration: "none",
-                  transition: "color 0.2s",
+                  fontWeight: 600,
+                  color: C.charcoal,
+                  background: C.offWhite,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 8,
+                  padding: "6px 10px",
+                  cursor: "pointer",
                 }}
-                onMouseEnter={e => e.target.style.color = C.charcoal}
-                onMouseLeave={e => e.target.style.color = C.textMuted}
-              >Sign Out</a>
-            </div>
-          )}
+              >
+                {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            )}
+            {onDownloadBackup && (
+              <button
+                onClick={onDownloadBackup}
+                title="Download a full backup of all your data"
+                style={{
+                  fontFamily: font,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: C.textSecondary,
+                  background: C.white,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 8,
+                  padding: "6px 12px",
+                  cursor: "pointer",
+                }}
+              >Backup</button>
+            )}
+            {user && (
+              <>
+                <span style={{
+                  fontFamily: font,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: C.mint,
+                  background: C.seafoamFaint,
+                  padding: "5px 12px",
+                  borderRadius: 20,
+                  letterSpacing: "0.02em",
+                }}>{user.name}</span>
+                <a
+                  href="/admin/logout"
+                  style={{
+                    fontFamily: font,
+                    fontSize: 12,
+                    fontWeight: 500,
+                    color: C.textMuted,
+                    textDecoration: "none",
+                    transition: "color 0.2s",
+                  }}
+                  onMouseEnter={e => e.target.style.color = C.charcoal}
+                  onMouseLeave={e => e.target.style.color = C.textMuted}
+                >Sign Out</a>
+              </>
+            )}
+          </div>
         </div>
       </div>
     </header>
@@ -2901,8 +2940,72 @@ function mergeTasks(saved) {
 
 // ─── MAIN APP ──────────────────────────────────────────────────────────────
 
+// ─── MULTI-PROPERTY (Phase 1) ────────────────────────────────────────────────
+// Data is scoped per property. Pre-migration (activeProperty === null) the app reads
+// and writes the LEGACY global keys, so it behaves exactly as before until the owner
+// runs the one-time migration. localStorage cache keys are also per-property so
+// switching properties never bleeds one property's cached data into another.
+
+const LS_TASKS = "pool-paddle-tasks-v2";
+const LS_FINISHES = "pool-paddle-finishes-v1";
+const LS_ACTIVE_PROPERTY = "pool-paddle-active-property";
+
+// localStorage key for a property (legacy base key when propertyId is null/pre-migration).
+function lsKey(base, propertyId) {
+  return propertyId ? `${base}:${propertyId}` : base;
+}
+// API url for a property (no ?property= when null → hits the legacy global key).
+function apiUrl(base, propertyId) {
+  return propertyId ? `${base}?property=${encodeURIComponent(propertyId)}` : base;
+}
+function readActiveProperty() {
+  try { return localStorage.getItem(LS_ACTIVE_PROPERTY) || null; } catch (e) { return null; }
+}
+function loadTasksFromCache(propertyId) {
+  try {
+    const raw = localStorage.getItem(lsKey(LS_TASKS, propertyId));
+    if (raw) return mergeTasks(JSON.parse(raw));
+  } catch (e) { /* fall through to defaults */ }
+  return DEFAULT_TASKS;
+}
+function loadFinishesFromCache(propertyId) {
+  try {
+    const raw = localStorage.getItem(lsKey(LS_FINISHES, propertyId));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const deletedIds = parsed.deletedIds || [];
+      return {
+        finishes: mergeFinishes(parsed.items || parsed, deletedIds),
+        deletedIds,
+        targetBudget: parsed.targetBudget ?? null,
+        roomData: parsed.roomData ?? {},
+      };
+    }
+  } catch (e) { /* fall through to defaults */ }
+  return { finishes: DEFAULT_FINISH_ITEMS, deletedIds: [], targetBudget: null, roomData: {} };
+}
+
+const modalOverlayStyle = {
+  position: "fixed", inset: 0, zIndex: 1000,
+  background: "rgba(51,51,51,0.45)",
+  display: "flex", alignItems: "center", justifyContent: "center",
+  padding: 20,
+};
+const modalCardStyle = {
+  background: C.white, borderRadius: 16, border: `1px solid ${C.border}`,
+  padding: "32px 28px", maxWidth: 460, width: "100%",
+  boxShadow: "0 8px 40px rgba(0,0,0,0.18)", fontFamily: font,
+};
+
 export default function App() {
   const [activeView, setActiveView] = useState("dashboard");
+  const [activeProperty, setActiveProperty] = useState(() => readActiveProperty());
+  const [properties, setProperties] = useState([]);
+  const [migrationNeeded, setMigrationNeeded] = useState(false);
+  const [showMigrationModal, setShowMigrationModal] = useState(false);
+  const [backupDownloaded, setBackupDownloaded] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const [showSignoff, setShowSignoff] = useState(false);
   const [focusItemId, setFocusItemId] = useState(null);
   const [focusItemSource, setFocusItemSource] = useState(null);
 
@@ -2911,77 +3014,86 @@ export default function App() {
     setFocusItemSource(source);
     setActiveView(source === "task" ? "tasks" : "design");
   };
-  const [tasks, setTasks] = useState(() => {
-    try {
-      const raw = localStorage.getItem("pool-paddle-tasks-v2");
-      if (raw) return mergeTasks(JSON.parse(raw));
-    } catch (e) { console.warn('localStorage save failed:', e.name); }
-    return DEFAULT_TASKS;
-  });
-  const [deletedFinishIds, setDeletedFinishIds] = useState(() => {
-    try {
-      const raw = localStorage.getItem("pool-paddle-finishes-v1");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return parsed.deletedIds || [];
-      }
-    } catch (e) { console.warn('localStorage save failed:', e.name); }
-    return [];
-  });
-  const [finishes, setFinishes] = useState(() => {
-    try {
-      const raw = localStorage.getItem("pool-paddle-finishes-v1");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return mergeFinishes(parsed.items || parsed, parsed.deletedIds || []);
-      }
-    } catch (e) { console.warn('localStorage save failed:', e.name); }
-    return DEFAULT_FINISH_ITEMS;
-  });
-  const [targetBudget, setTargetBudget] = useState(() => {
-    try {
-      const raw = localStorage.getItem("pool-paddle-finishes-v1");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return parsed.targetBudget ?? null;
-      }
-    } catch (e) { console.warn('localStorage save failed:', e.name); }
-    return null;
-  });
-  const [roomData, setRoomData] = useState(() => {
-    try {
-      const raw = localStorage.getItem("pool-paddle-finishes-v1");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return parsed.roomData ?? {};
-      }
-    } catch (e) { console.warn('localStorage save failed:', e.name); }
-    return {};
-  });
+  // Initial state loads from the active property's localStorage cache (legacy base key
+  // when pre-migration). activeProperty holds its initial value here on first render.
+  const [tasks, setTasks] = useState(() => loadTasksFromCache(activeProperty));
+  const [deletedFinishIds, setDeletedFinishIds] = useState(() => loadFinishesFromCache(activeProperty).deletedIds);
+  const [finishes, setFinishes] = useState(() => loadFinishesFromCache(activeProperty).finishes);
+  const [targetBudget, setTargetBudget] = useState(() => loadFinishesFromCache(activeProperty).targetBudget);
+  const [roomData, setRoomData] = useState(() => loadFinishesFromCache(activeProperty).roomData);
   const [syncError, setSyncError] = useState(null);
   const serverLoaded = useRef(false);
   const finishesServerLoaded = useRef(false);
+  const tasksFirstRun = useRef(true);
+  const finishesFirstRun = useRef(true);
 
-  // Fetch tasks from server
+  // Load the property registry once. Decides migrated vs. needs-migration.
   useEffect(() => {
-    fetch('/api/tasks')
+    let cancelled = false;
+    fetch('/api/properties')
+      .then(r => r.json())
+      .then(reg => {
+        if (cancelled) return;
+        if (reg && reg.schemaVersion && Array.isArray(reg.properties) && reg.properties.length > 0) {
+          setProperties(reg.properties);
+          const validIds = reg.properties.map(p => p.id);
+          const lsActive = readActiveProperty();
+          const active = (lsActive && validIds.includes(lsActive)) ? lsActive
+            : (reg.activeId && validIds.includes(reg.activeId)) ? reg.activeId
+            : reg.properties[0].id;
+          setActiveProperty(active);
+          try { localStorage.setItem(LS_ACTIVE_PROPERTY, active); } catch (e) { /* ignore */ }
+        } else {
+          // Not migrated yet — stay on the legacy globals and offer the migration.
+          setMigrationNeeded(true);
+          setShowMigrationModal(true);
+        }
+      })
+      .catch(() => { /* offline / route missing → stay on legacy data, no modal */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Fetch tasks for the active property. Cancellation-guarded so a stale (out-of-order)
+  // resolution after a rapid property switch can never apply under the wrong key.
+  // On a switch (not first run) we immediately show this property's cache, never stale.
+  useEffect(() => {
+    serverLoaded.current = false;
+    let cancelled = false;
+    if (tasksFirstRun.current) {
+      tasksFirstRun.current = false; // state already initialized from cache
+    } else {
+      setTasks(loadTasksFromCache(activeProperty));
+    }
+    fetch(apiUrl('/api/tasks', activeProperty))
       .then(r => r.json())
       .then(data => {
+        if (cancelled) return;
         serverLoaded.current = true;
         if (data && Array.isArray(data) && data.length > 0) {
           setTasks(mergeTasks(data));
-        } else {
-          // Server empty — save effect will push current state on next change
         }
       })
-      .catch(() => { serverLoaded.current = true; });
-  }, []);
+      .catch(() => { if (!cancelled) serverLoaded.current = true; });
+    return () => { cancelled = true; };
+  }, [activeProperty]);
 
-  // Fetch finishes from server
+  // Fetch finishes for the active property (same discipline as tasks).
   useEffect(() => {
-    fetch('/api/finishes')
+    finishesServerLoaded.current = false;
+    let cancelled = false;
+    if (finishesFirstRun.current) {
+      finishesFirstRun.current = false;
+    } else {
+      const cached = loadFinishesFromCache(activeProperty);
+      setDeletedFinishIds(cached.deletedIds);
+      setFinishes(cached.finishes);
+      setTargetBudget(cached.targetBudget);
+      setRoomData(cached.roomData);
+    }
+    fetch(apiUrl('/api/finishes', activeProperty))
       .then(r => r.json())
       .then(data => {
+        if (cancelled) return;
         finishesServerLoaded.current = true;
         if (data && data.items && Array.isArray(data.items) && data.items.length > 0) {
           const serverDeletedIds = data.deletedIds || [];
@@ -2989,23 +3101,27 @@ export default function App() {
           setFinishes(mergeFinishes(data.items, serverDeletedIds));
           if (data.targetBudget != null) setTargetBudget(data.targetBudget);
           if (data.roomData) setRoomData(data.roomData);
-        } else {
-          // Server empty — save effect will push current state on next change
         }
       })
-      .catch(() => { finishesServerLoaded.current = true; });
-  }, []);
+      .catch(() => { if (!cancelled) finishesServerLoaded.current = true; });
+    return () => { cancelled = true; };
+  }, [activeProperty]);
 
-  // Save tasks to localStorage + server (debounced)
+  // Save tasks to localStorage + server (debounced, property-scoped).
+  // activeProperty is deliberately NOT a dependency: the effect must run only when the
+  // DATA changes, never on a bare property switch. On a switch, `tasks` still holds the
+  // previous property's data for one commit — firing then would write it under the new
+  // property's key. When the effect runs after the fetch effect's setTasks applies the
+  // new property's data, the closure's activeProperty and the data are always consistent.
   useEffect(() => {
     try {
-      localStorage.setItem("pool-paddle-tasks-v2", JSON.stringify(tasks));
+      localStorage.setItem(lsKey(LS_TASKS, activeProperty), JSON.stringify(tasks));
     } catch (e) { console.warn('localStorage save failed:', e.name); }
 
     if (!serverLoaded.current) return;
 
     const timer = setTimeout(() => {
-      fetch('/api/tasks', {
+      fetch(apiUrl('/api/tasks', activeProperty), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tasks),
@@ -3016,19 +3132,22 @@ export default function App() {
     }, 500);
 
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks]);
 
-  // Save finishes to localStorage + server (debounced)
+  // Save finishes to localStorage + server (debounced, property-scoped).
+  // activeProperty is deliberately NOT a dependency — same reasoning as the tasks save
+  // effect above: fire only when the finishes data changes, never on a bare switch.
   useEffect(() => {
     const payload = { items: finishes, targetBudget, roomData, deletedIds: deletedFinishIds };
     try {
-      localStorage.setItem("pool-paddle-finishes-v1", JSON.stringify(payload));
+      localStorage.setItem(lsKey(LS_FINISHES, activeProperty), JSON.stringify(payload));
     } catch (e) { console.warn('localStorage save failed:', e.name); }
 
     if (!finishesServerLoaded.current) return;
 
     const timer = setTimeout(() => {
-      fetch('/api/finishes', {
+      fetch(apiUrl('/api/finishes', activeProperty), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -3039,12 +3158,80 @@ export default function App() {
     }, 500);
 
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finishes, targetBudget, roomData, deletedFinishIds]);
+
+  // ── Property switch + migration + backup handlers ─────────────────────────
+  const switchProperty = (id) => {
+    if (!id || id === activeProperty) return;
+    setActiveProperty(id);
+    try { localStorage.setItem(LS_ACTIVE_PROPERTY, id); } catch (e) { /* ignore */ }
+  };
+
+  const downloadBackup = async () => {
+    try {
+      const r = await fetch('/api/backup');
+      if (!r.ok) { setSyncError('Backup failed — please try again.'); return; }
+      const data = await r.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `pool-paddle-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setBackupDownloaded(true);
+    } catch (e) {
+      setSyncError('Backup failed to reach the server — please try again.');
+    }
+  };
+
+  const runMigration = async () => {
+    setMigrating(true);
+    try {
+      const r = await fetch('/api/migrate', { method: 'POST' });
+      const result = await r.json();
+      if (r.ok && (result.status === 'migrated' || result.status === 'already') && result.properties) {
+        const reg = result.properties;
+        setProperties(reg.properties);
+        const active = reg.activeId || reg.properties[0].id;
+        // Seed the new property's cache from the current (legacy) in-memory state so the
+        // switch shows correct data immediately — no flash of defaults before the server
+        // load returns, and no transient wrong-cache write.
+        try {
+          localStorage.setItem(lsKey(LS_TASKS, active), JSON.stringify(tasks));
+          localStorage.setItem(lsKey(LS_FINISHES, active), JSON.stringify({ items: finishes, targetBudget, roomData, deletedIds: deletedFinishIds }));
+        } catch (e) { /* ignore */ }
+        setActiveProperty(active);
+        try { localStorage.setItem(LS_ACTIVE_PROPERTY, active); } catch (e) { /* ignore */ }
+        setMigrationNeeded(false);
+        setShowMigrationModal(false);
+        setShowSignoff(true);
+      } else if (result.status === 'locked') {
+        setSyncError('Setup is already running in another tab — please wait a moment and reload.');
+      } else {
+        setSyncError('Setup failed — your data is safe. Please try again.');
+      }
+    } catch (e) {
+      setSyncError('Setup could not reach the server — your data is safe. Please try again.');
+    } finally {
+      setMigrating(false);
+    }
+  };
 
   return (
     <div style={{ minHeight: "100vh", background: C.pageBg, fontFamily: font }}>
       <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-      <Header activeView={activeView} setActiveView={(v) => { setActiveView(v); setFocusItemId(null); setFocusItemSource(null); }} />
+      <Header
+        activeView={activeView}
+        setActiveView={(v) => { setActiveView(v); setFocusItemId(null); setFocusItemSource(null); }}
+        properties={properties}
+        activeProperty={activeProperty}
+        onSwitchProperty={switchProperty}
+        onDownloadBackup={downloadBackup}
+      />
       {syncError && (
         <div style={{
           background: '#fee2e2',
@@ -3062,6 +3249,74 @@ export default function App() {
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} />}
+
+      {showMigrationModal && migrationNeeded && (
+        <div style={modalOverlayStyle}>
+          <div style={modalCardStyle}>
+            <h2 style={{ fontSize: 20, fontWeight: 800, color: C.charcoal, margin: "0 0 12px" }}>Set up multi-property</h2>
+            <p style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5, margin: "0 0 12px" }}>
+              We&rsquo;re upgrading Pool &amp; Paddle so it can hold more than one property. Your current
+              Design selections and Tasks become your first property, <strong>Pool &amp; Paddle</strong>.
+              Nothing is deleted.
+            </p>
+            <p style={{ fontSize: 14, color: C.charcoal, lineHeight: 1.5, margin: "0 0 16px" }}>
+              <strong>First, save a full backup to your computer</strong> &mdash; your safety net. Keep it
+              somewhere safe (your Desktop is fine).
+            </p>
+            <button
+              onClick={downloadBackup}
+              style={{ width: "100%", padding: "12px", borderRadius: 10, border: `1.5px solid ${C.mint}`, background: C.seafoamFaint, color: C.mintDark, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer", marginBottom: 10 }}
+            >&darr; Download full backup</button>
+            {backupDownloaded && (
+              <p style={{ fontSize: 13, color: C.mint, fontWeight: 600, margin: "0 0 12px" }}>&#10003; Backup downloaded &mdash; you&rsquo;re safe to proceed.</p>
+            )}
+            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+              <button
+                onClick={runMigration}
+                disabled={!backupDownloaded || migrating}
+                style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: (!backupDownloaded || migrating) ? C.border : C.mint, color: C.white, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: (!backupDownloaded || migrating) ? "not-allowed" : "pointer" }}
+              >{migrating ? "Setting up…" : "I've saved my backup — proceed"}</button>
+              <button
+                onClick={() => setShowMigrationModal(false)}
+                disabled={migrating}
+                style={{ padding: "12px 16px", borderRadius: 10, border: `1px solid ${C.border}`, background: C.white, color: C.textSecondary, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: migrating ? "not-allowed" : "pointer" }}
+              >Not now</button>
+            </div>
+            <p style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.5, margin: "14px 0 0" }}>
+              Choose &ldquo;Not now&rdquo; to keep using the app exactly as it is &mdash; we&rsquo;ll offer this again next time.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {showSignoff && (
+        <div style={modalOverlayStyle}>
+          <div style={modalCardStyle}>
+            <h2 style={{ fontSize: 20, fontWeight: 800, color: C.charcoal, margin: "0 0 8px" }}>Setup complete &mdash; quick check</h2>
+            <p style={{ fontSize: 14, color: C.textSecondary, lineHeight: 1.5, margin: "0 0 14px" }}>
+              Your data is now under <strong>Pool &amp; Paddle</strong>. Please confirm everything looks right:
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 18 }}>
+              {[
+                "All your Tasks are present.",
+                "All the finishes you had before are present (nothing deleted has reappeared).",
+                "Edit one task — it saves without an error.",
+                "Edit one finish — it saves without an error.",
+                "The property control in the header shows “Pool & Paddle” with no errors.",
+              ].map((item, i) => (
+                <label key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: 13.5, color: C.charcoal, lineHeight: 1.4, cursor: "pointer" }}>
+                  <input type="checkbox" style={{ marginTop: 2, accentColor: C.mint, width: 16, height: 16 }} />
+                  <span>{item}</span>
+                </label>
+              ))}
+            </div>
+            <button
+              onClick={() => setShowSignoff(false)}
+              style={{ width: "100%", padding: "12px", borderRadius: 10, border: "none", background: C.mint, color: C.white, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: "pointer" }}
+            >Looks good &mdash; done</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
