@@ -3002,6 +3002,49 @@ const ALLOWANCE_CATEGORIES = [
 ];
 const EXHIBIT_B_TOTAL = 446000;
 
+// Cost-seg (Phase 3). Asset classes are SUGGESTIONS only — always confirmed with the CPA.
+const ASSET_CLASSES = ["5-yr", "7-yr", "15-yr", "27.5-yr"];
+const ASSET_CLASS_BY_TRADE = {
+  "Appliances": "5-yr", "Furniture / FF&E": "5-yr", "Decor & Styling": "5-yr",
+  "Linens & Soft Goods": "5-yr", "Electronics / AV": "5-yr",
+  "Decking": "15-yr", "Outdoor & Landscape": "15-yr", "Pool & Spa": "15-yr",
+  "Flooring": "27.5-yr", "Shower/Bath Tile": "27.5-yr", "Kitchens": "27.5-yr",
+  "Countertops": "27.5-yr", "Paint": "27.5-yr", "Electrical": "27.5-yr",
+  "Plumbing": "27.5-yr", "Drywall": "27.5-yr",
+};
+function suggestAssetClass(trade) { return ASSET_CLASS_BY_TRADE[trade] || ""; }
+
+// Build a per-property cost-seg CSV: every purchase with BOTH an asset class and a
+// placed-in-service date, grouped by asset class with subtotals. Section (§1245/1250)
+// is included only when set. Header carries the "confirm with CPA" disclaimer.
+function buildCostSegCsv(purchases) {
+  const order = { "5-yr": 1, "7-yr": 2, "15-yr": 3, "27.5-yr": 4 };
+  const rows = purchases
+    .filter(p => p.assetClass && p.placedInServiceDate)
+    .sort((a, b) => (order[a.assetClass] || 9) - (order[b.assetClass] || 9) || (a.description || "").localeCompare(b.description || ""));
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const header = ["Asset Class", "Description", "Vendor", "Invoice #", "Cost Basis (paid)", "Placed In Service", "Section", "Room", "Trade", "Purchased By", "Owner/Contractor"];
+  const lines = [];
+  lines.push(esc("Cost Segregation Export — asset classes are SUGGESTIONS; confirm all with your CPA / cost-seg engineer. Not tax advice."));
+  lines.push(header.map(esc).join(","));
+  let lastClass = null, subtotal = 0, grandTotal = 0;
+  const blanks = (label, amt) => [esc(label), "", "", "", esc(amt), "", "", "", "", "", ""].join(",");
+  const flushSubtotal = () => { if (lastClass != null) lines.push(blanks(lastClass + " subtotal", subtotal)); };
+  for (const p of rows) {
+    if (p.assetClass !== lastClass) { flushSubtotal(); lastClass = p.assetClass; subtotal = 0; }
+    const paid = Number(p.totalPaid) || 0;
+    subtotal += paid; grandTotal += paid;
+    lines.push([
+      esc(p.assetClass), esc(p.description), esc(p.vendor), esc(p.invoiceNo), esc(paid),
+      esc(p.placedInServiceDate), esc(p.section), esc(p.room), esc(p.trade),
+      esc(p.purchasedBy), esc(p.ownerPurchased ? "Owner" : "Contractor"),
+    ].join(","));
+  }
+  flushSubtotal();
+  lines.push(blanks("GRAND TOTAL", grandTotal));
+  return { csv: lines.join("\n"), count: rows.length };
+}
+
 function newPurchaseId() {
   return `pur-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -3089,7 +3132,7 @@ function PurchaseForm({ initial, onSave, onCancel }) {
         {field("Item / Description", <input autoFocus style={ppInput} value={d.description} onChange={e => set({ description: e.target.value })} placeholder="e.g. Blanco undermount sink" />)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-        {field("Trade", <select style={ppInput} value={d.trade} onChange={e => set({ trade: e.target.value })}><option value="">—</option>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>)}
+        {field("Trade", <select style={ppInput} value={d.trade} onChange={e => set({ trade: e.target.value, assetClass: d.assetClass || suggestAssetClass(e.target.value) })}><option value="">—</option>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>)}
         {field("Room / Area", <input style={ppInput} value={d.room} onChange={e => set({ room: e.target.value })} placeholder="e.g. Kitchen" />)}
         {field("Status", <select style={ppInput} value={d.status} onChange={e => set({ status: e.target.value })}>{PURCHASE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>)}
       </div>
@@ -3140,6 +3183,14 @@ function PurchaseForm({ initial, onSave, onCancel }) {
         ))}
         {field("Binder pocket", <input style={ppInput} value={d.binderPocket} onChange={e => set({ binderPocket: e.target.value })} />)}
       </div>
+      <div style={{ marginTop: 4, marginBottom: 6, fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+        Cost-seg <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0 }}>— suggested; confirm with your CPA</span>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Placed in service", <input type="date" style={ppInput} value={d.placedInServiceDate || ""} onChange={e => set({ placedInServiceDate: e.target.value })} />)}
+        {field("Asset class", <select style={ppInput} value={d.assetClass} onChange={e => set({ assetClass: e.target.value })}><option value="">— (unset)</option>{ASSET_CLASSES.map(a => <option key={a} value={a}>{a}</option>)}</select>)}
+        {field("Section", <select style={ppInput} value={d.section} onChange={e => set({ section: e.target.value })}><option value="">— (blank)</option><option value="1245">§1245 (personal property)</option><option value="1250">§1250 (real property)</option></select>)}
+      </div>
       <div style={{ marginBottom: 14 }}>
         <label style={ppLabel}>Notes</label>
         <textarea style={{ ...ppInput, minHeight: 60, resize: "vertical" }} value={d.notes} onChange={e => set({ notes: e.target.value })} />
@@ -3158,12 +3209,13 @@ function emptyPurchase() {
     vendor: "", invoiceNo: "", purchasedBy: "", ownerPurchased: true, paymentMethod: "",
     qty: null, unitPrice: null, tax: null, shipping: null, totalPaid: null,
     allowanceCategory: NOT_IN_ALLOWANCE, status: "Ordered", purchaseDate: "", receivedDate: "",
+    placedInServiceDate: "", assetClass: "", section: "",
     warranty: false, warrantyTerm: "", registered: false, binderPocket: "",
     receipts: [], notes: "", userCreated: true,
   };
 }
 
-function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, focusPurchaseId, onFocusHandled }) {
+function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, focusPurchaseId, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
   const [editingId, setEditingId] = useState(null);   // id | "new" | null
   const [expandedId, setExpandedId] = useState(null);
   const [query, setQuery] = useState("");
@@ -3236,6 +3288,19 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
       setUploadingId(null);
     }
   };
+  const exportCostSeg = () => {
+    const { csv, count } = buildCostSegCsv(purchases);
+    if (count === 0) { window.alert("No purchases yet have BOTH an asset class and a placed-in-service date, so there is nothing to export. Add those on your purchases first."); return; }
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `pool-paddle-cost-seg-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
   const handleRemoveReceipt = (purchase, pathname) => {
     onReceiptsChange(purchase.id, (purchase.receipts || []).filter(r => r.pathname !== pathname));
     // Delete the underlying blob so no orphaned file is left behind (best-effort).
@@ -3262,7 +3327,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
       {editingId === "new" && (
         <div ref={newFormRef}>
           <PurchaseForm
-            initial={emptyPurchase()}
+            initial={{ ...emptyPurchase(), placedInServiceDate: propertyInServiceDate || "" }}
             onSave={(p) => { onSave(p); setEditingId(null); setExpandedId(p.id); }}
             onCancel={() => setEditingId(null)}
           />
@@ -3323,6 +3388,22 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Cost segregation */}
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 22 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <h3 style={{ fontSize: 15, fontWeight: 700, color: C.charcoal, margin: "0 0 4px" }}>Cost segregation</h3>
+            <p style={{ fontSize: 12, color: C.textMuted, margin: 0, maxWidth: 480 }}>Asset classes are <strong>suggestions</strong> — confirm with your CPA / cost-seg engineer. Not tax advice. Export includes every purchase that has both an asset class and a placed-in-service date.</p>
+          </div>
+          <button onClick={exportCostSeg} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${C.mint}`, background: C.seafoamFaint, color: C.mintDark, fontFamily: font, fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>&darr; Export Cost Seg CSV</button>
+        </div>
+        <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: C.textSecondary }}>Property in-service date</label>
+          <input type="date" value={propertyInServiceDate || ""} onChange={e => onSetInServiceDate && onSetInServiceDate(e.target.value)} style={{ ...ppInput, maxWidth: 180 }} />
+          <span style={{ fontSize: 11, color: C.textMuted }}>Defaults the placed-in-service date on new purchases.</span>
         </div>
       </div>
 
@@ -3748,6 +3829,33 @@ export default function App() {
     () => new Set(purchases.filter(p => p.finishItemId).map(p => p.finishItemId)),
     [purchases]
   );
+
+  // Property in-service date (cost-seg) — set in one place, defaults each purchase's
+  // placed-in-service date.
+  const activeInServiceDate = (properties.find(p => p.id === activeProperty) || {}).inServiceDate || "";
+  const setPropertyInServiceDate = async (date) => {
+    if (!activeProperty) return;
+    // Optimistic local update.
+    setProperties(prev => prev.map(p => (p.id === activeProperty ? { ...p, inServiceDate: date || null } : p)));
+    try {
+      // Read the FRESH registry and patch only this property's date, so we never clobber
+      // other properties/fields written by another device (future-proofs multi-property).
+      const reg = await fetch('/api/properties').then(r => r.json()).catch(() => null);
+      const base = (reg && Array.isArray(reg.properties) && reg.properties.length > 0)
+        ? reg
+        : { schemaVersion: 'v2', activeId: activeProperty, properties };
+      const updated = base.properties.map(p => (p.id === activeProperty ? { ...p, inServiceDate: date || null } : p));
+      const registry = { schemaVersion: base.schemaVersion || 'v2', activeId: base.activeId || activeProperty, properties: updated };
+      const res = await fetch('/api/properties', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(registry),
+      });
+      if (!res.ok) setSyncError('Failed to save property date'); else setSyncError(null);
+    } catch (e) {
+      setSyncError('Unable to reach server');
+    }
+  };
   // Promote a design item → a purchase record, non-destructively (the design item is never
   // changed). Pre-fills from the selection, then opens it on the Purchases tab to finish.
   const promoteFinishItem = (item) => {
@@ -3763,6 +3871,8 @@ export default function App() {
       room: roomLabel,
       unitPrice: item.unitPrice ?? null,
       qty: item.quantity ?? null,
+      assetClass: suggestAssetClass(trade),
+      placedInServiceDate: activeInServiceDate,
       notes: item.url ? `Promoted from design selection · ${item.url}` : "Promoted from design selection",
     };
     savePurchase(draft);
@@ -3790,6 +3900,8 @@ export default function App() {
       qty: 1,
       totalPaid: furn.price ?? null,
       ownerPurchased: true,
+      assetClass: suggestAssetClass("Furniture / FF&E"),
+      placedInServiceDate: activeInServiceDate,
       status: furn.purchased ? "Received" : "Ordered",
       notes: furn.url ? `From design furniture · ${furn.url}` : "From design furniture",
     };
@@ -3826,7 +3938,7 @@ export default function App() {
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} />}
-      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} focusPurchaseId={focusPurchaseId} onFocusHandled={handlePurchaseFocusCleared} />}
+      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} focusPurchaseId={focusPurchaseId} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
 
       {showMigrationModal && migrationNeeded && (
         <div style={modalOverlayStyle}>

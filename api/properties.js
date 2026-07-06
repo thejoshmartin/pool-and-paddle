@@ -20,6 +20,14 @@ export default async function handler(req, res) {
     if (!registry || typeof registry !== 'object' || !Array.isArray(registry.properties)) {
       return res.status(400).json({ error: 'Expected { properties: [...] }' });
     }
+    const props = registry.properties;
+    if (!props.every((p) => p && typeof p.id === 'string' && p.id)) {
+      return res.status(400).json({ error: 'Each property needs a non-empty string id' });
+    }
+    const ids = props.map((p) => p.id);
+    if (new Set(ids).size !== ids.length) {
+      return res.status(400).json({ error: 'Duplicate property ids' });
+    }
     await redis.set('properties', JSON.stringify(registry));
     return res.status(200).json({ ok: true });
   }
