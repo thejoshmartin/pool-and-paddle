@@ -199,6 +199,7 @@ function Header({ activeView, setActiveView, properties = [], activeProperty, on
               { key: "dashboard", label: "Dashboard" },
               { key: "tasks", label: "Tasks" },
               { key: "design", label: "Design" },
+              { key: "purchases", label: "Purchases" },
               { key: "summary", label: "Brief" },
               { key: "podcast", label: "Podcast" },
             ].map(v => (
@@ -2940,6 +2941,420 @@ function mergeTasks(saved) {
 
 // ─── MAIN APP ──────────────────────────────────────────────────────────────
 
+// ─── PURCHASES (Phase 2) ─────────────────────────────────────────────────────
+// What we actually bought — scoped per property, independent of the Design schedule.
+// Persisted server-side as a Redis hash (one field per purchase) via /api/purchases;
+// localStorage is a local read-cache only. Field names mirror the Excel expense tracker.
+
+const LS_PURCHASES = "pool-paddle-purchases-v1";
+
+const PURCHASE_TRADES = [
+  "Flooring", "Shower/Bath Tile", "Kitchens", "Countertops", "Paint", "Decking",
+  "Appliances", "Electrical", "Plumbing", "Drywall", "Furniture / FF&E",
+  "Decor & Styling", "Linens & Soft Goods", "Electronics / AV", "Outdoor & Landscape",
+  "Pool & Spa", "Other",
+];
+const PURCHASED_BY_OPTIONS = ["Josh", "Kerry", "Sparrow (Contractor)", "Other"];
+const CONTRACTOR_PURCHASER = "Sparrow (Contractor)";
+const PAYMENT_METHODS = ["Credit Card", "ACH / Bank Transfer", "Minoan", "Check", "Cash", "Other"];
+const PURCHASE_STATUSES = ["Ordered", "Received", "Installed"];
+const NOT_IN_ALLOWANCE = "Not in Allowance / Owner FF&E";
+const ALLOWANCE_CATEGORIES = [
+  { name: "Plumbing Fixtures", allowance: 22000 },
+  { name: "Electrical Fixtures", allowance: 20000 },
+  { name: "Tile/Flooring Material", allowance: 34500 },
+  { name: "Cabinets", allowance: 60000 },
+  { name: "Countertops", allowance: 20000 },
+  { name: "Appliances", allowance: 25000 },
+  { name: "Interior Hardware", allowance: 9000 },
+  { name: "Shelving", allowance: 10500 },
+  { name: "Landscape", allowance: 135000 },
+  { name: "Pool & Spa", allowance: 100000 },
+  { name: "Glass Shower Enclosures", allowance: 10000 },
+];
+const EXHIBIT_B_TOTAL = 446000;
+
+function newPurchaseId() {
+  return `pur-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+function fmtUSD(n) {
+  const v = Number(n) || 0;
+  return v.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+}
+function receiptViewUrl(pathname) {
+  return `/api/receipts-view?pathname=${encodeURIComponent(pathname)}`;
+}
+function loadPurchasesFromCache(propertyId) {
+  try {
+    const raw = localStorage.getItem(lsKey(LS_PURCHASES, propertyId));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) { /* fall through to empty */ }
+  return [];
+}
+
+// Build the upload payload for a receipt file. Images are downscaled/compressed so uploads
+// stay well under Vercel's request-body limit; PDFs/others pass through. Returns
+// { name, contentType, dataBase64 } or throws.
+async function buildReceiptUpload(file) {
+  const isCompressibleImage = /^image\/(png|jpe?g|webp)$/i.test(file.type);
+  if (isCompressibleImage) {
+    const dataBase64 = await compressImageToBase64(file, 1400, 0.75);
+    const name = file.name.replace(/\.\w+$/, "") + ".jpg";
+    return { name, contentType: "image/jpeg", dataBase64 };
+  }
+  const dataBase64 = await fileToBase64(file);
+  return { name: file.name, contentType: file.type || "application/octet-stream", dataBase64 };
+}
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = () => reject(new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+function compressImageToBase64(file, maxDim, quality) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { width, height } = img;
+      if (Math.max(width, height) > maxDim) {
+        const scale = maxDim / Math.max(width, height);
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL("image/jpeg", quality).split(",")[1] || "");
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("image decode failed")); };
+    img.src = url;
+  });
+}
+
+const ppInput = {
+  width: "100%", padding: "9px 12px", borderRadius: 8, border: `1px solid ${C.border}`,
+  fontFamily: font, fontSize: 14, color: C.charcoal, background: C.white, outline: "none",
+  boxSizing: "border-box",
+};
+const ppLabel = { display: "block", fontSize: 12, fontWeight: 600, color: C.textSecondary, marginBottom: 5 };
+
+function PurchaseForm({ initial, onSave, onCancel }) {
+  const [d, setD] = useState(initial);
+  const set = (patch) => setD(prev => ({ ...prev, ...patch }));
+  const computedTotal = (Number(d.qty) || 0) * (Number(d.unitPrice) || 0) + (Number(d.tax) || 0) + (Number(d.shipping) || 0);
+
+  const field = (label, node) => (
+    <div style={{ flex: 1, minWidth: 140 }}><label style={ppLabel}>{label}</label>{node}</div>
+  );
+
+  return (
+    <div style={{ background: C.offWhite, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 14 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Item / Description", <input style={ppInput} value={d.description} onChange={e => set({ description: e.target.value })} placeholder="e.g. Blanco undermount sink" />)}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Trade", <select style={ppInput} value={d.trade} onChange={e => set({ trade: e.target.value })}><option value="">—</option>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>)}
+        {field("Room / Area", <input style={ppInput} value={d.room} onChange={e => set({ room: e.target.value })} placeholder="e.g. Kitchen" />)}
+        {field("Status", <select style={ppInput} value={d.status} onChange={e => set({ status: e.target.value })}>{PURCHASE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>)}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Vendor", <input style={ppInput} value={d.vendor} onChange={e => set({ vendor: e.target.value })} placeholder="e.g. Ferguson" />)}
+        {field("Order / Invoice #", <input style={ppInput} value={d.invoiceNo} onChange={e => set({ invoiceNo: e.target.value })} />)}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Paid by", <select style={ppInput} value={d.purchasedBy} onChange={e => set({ purchasedBy: e.target.value, ownerPurchased: e.target.value !== CONTRACTOR_PURCHASER })}><option value="">—</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
+        {field("Payment method", <select style={ppInput} value={d.paymentMethod} onChange={e => set({ paymentMethod: e.target.value })}><option value="">—</option>{PAYMENT_METHODS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
+        {field("Whose money?", (
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.charcoal, padding: "9px 0" }}>
+            <input type="checkbox" checked={!!d.ownerPurchased} onChange={e => set({ ownerPurchased: e.target.checked })} style={{ accentColor: C.mint, width: 16, height: 16 }} />
+            {d.ownerPurchased ? "Owner-purchased (our money)" : "Contractor / Exhibit B allowance"}
+          </label>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Qty", <input type="number" style={ppInput} value={d.qty ?? ""} onChange={e => set({ qty: e.target.value === "" ? null : Number(e.target.value) })} />)}
+        {field("Unit price ($)", <input type="number" step="0.01" style={ppInput} value={d.unitPrice ?? ""} onChange={e => set({ unitPrice: e.target.value === "" ? null : Number(e.target.value) })} />)}
+        {field("Tax ($)", <input type="number" step="0.01" style={ppInput} value={d.tax ?? ""} onChange={e => set({ tax: e.target.value === "" ? null : Number(e.target.value) })} />)}
+        {field("Shipping ($)", <input type="number" step="0.01" style={ppInput} value={d.shipping ?? ""} onChange={e => set({ shipping: e.target.value === "" ? null : Number(e.target.value) })} />)}
+        {field("Total paid ($)", (
+          <div>
+            <input type="number" step="0.01" style={ppInput} value={d.totalPaid ?? ""} onChange={e => set({ totalPaid: e.target.value === "" ? null : Number(e.target.value) })} placeholder={computedTotal ? String(computedTotal) : ""} />
+            {computedTotal > 0 && (Number(d.totalPaid) || 0) !== computedTotal && (
+              <button type="button" onClick={() => set({ totalPaid: computedTotal })} style={{ marginTop: 4, background: "none", border: "none", color: C.mint, fontSize: 11, fontWeight: 600, cursor: "pointer", padding: 0 }}>use {fmtUSD(computedTotal)}</button>
+            )}
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Allowance category", <select style={ppInput} value={d.allowanceCategory} onChange={e => set({ allowanceCategory: e.target.value })}><option value={NOT_IN_ALLOWANCE}>{NOT_IN_ALLOWANCE}</option>{ALLOWANCE_CATEGORIES.map(a => <option key={a.name} value={a.name}>{a.name}</option>)}</select>)}
+        {field("Purchase date", <input type="date" style={ppInput} value={d.purchaseDate || ""} onChange={e => set({ purchaseDate: e.target.value })} />)}
+        {field("Received date", <input type="date" style={ppInput} value={d.receivedDate || ""} onChange={e => set({ receivedDate: e.target.value })} />)}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Warranty", (
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.charcoal, padding: "9px 0" }}>
+            <input type="checkbox" checked={!!d.warranty} onChange={e => set({ warranty: e.target.checked })} style={{ accentColor: C.mint, width: 16, height: 16 }} /> Has warranty
+          </label>
+        ))}
+        {field("Warranty term", <input style={ppInput} value={d.warrantyTerm} onChange={e => set({ warrantyTerm: e.target.value })} placeholder="e.g. 5 years" />)}
+        {field("Registered", (
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.charcoal, padding: "9px 0" }}>
+            <input type="checkbox" checked={!!d.registered} onChange={e => set({ registered: e.target.checked })} style={{ accentColor: C.mint, width: 16, height: 16 }} /> Registered
+          </label>
+        ))}
+        {field("Binder pocket", <input style={ppInput} value={d.binderPocket} onChange={e => set({ binderPocket: e.target.value })} />)}
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <label style={ppLabel}>Notes</label>
+        <textarea style={{ ...ppInput, minHeight: 60, resize: "vertical" }} value={d.notes} onChange={e => set({ notes: e.target.value })} />
+      </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <button onClick={() => onSave(d)} disabled={!(d.description || "").trim()} style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: (d.description || "").trim() ? C.mint : C.border, color: C.white, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: (d.description || "").trim() ? "pointer" : "not-allowed" }}>Save purchase</button>
+        <button onClick={onCancel} style={{ padding: "10px 18px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.textSecondary, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function emptyPurchase() {
+  return {
+    id: newPurchaseId(), finishItemId: null, description: "", trade: "", room: "",
+    vendor: "", invoiceNo: "", purchasedBy: "", ownerPurchased: true, paymentMethod: "",
+    qty: null, unitPrice: null, tax: null, shipping: null, totalPaid: null,
+    allowanceCategory: NOT_IN_ALLOWANCE, status: "Ordered", purchaseDate: "", receivedDate: "",
+    warranty: false, warrantyTerm: "", registered: false, binderPocket: "",
+    receipts: [], notes: "", userCreated: true,
+  };
+}
+
+function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange }) {
+  const [editingId, setEditingId] = useState(null);   // id | "new" | null
+  const [expandedId, setExpandedId] = useState(null);
+  const [query, setQuery] = useState("");
+  const [uploadingId, setUploadingId] = useState(null);
+  const [uploadError, setUploadError] = useState(null);
+
+  const stats = useMemo(() => {
+    let total = 0, owner = 0, contractor = 0;
+    const byAllowance = {};
+    const byTrade = {};
+    for (const p of purchases) {
+      const amt = Number(p.totalPaid) || 0;
+      total += amt;
+      if (p.ownerPurchased) owner += amt; else contractor += amt;
+      if (p.allowanceCategory && p.allowanceCategory !== NOT_IN_ALLOWANCE) {
+        byAllowance[p.allowanceCategory] = (byAllowance[p.allowanceCategory] || 0) + amt;
+      }
+      if (p.trade) byTrade[p.trade] = (byTrade[p.trade] || 0) + amt;
+    }
+    return { total, owner, contractor, byAllowance, byTrade };
+  }, [purchases]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = q
+      ? purchases.filter(p => [p.description, p.vendor, p.trade, p.room, p.allowanceCategory].some(v => (v || "").toLowerCase().includes(q)))
+      : purchases;
+    return [...list].sort((a, b) => (b.purchaseDate || "").localeCompare(a.purchaseDate || "") || (b.id > a.id ? 1 : -1));
+  }, [purchases, query]);
+
+  const handleUpload = async (purchase, file) => {
+    setUploadError(null);
+    setUploadingId(purchase.id);
+    try {
+      const payload = await buildReceiptUpload(file);
+      const res = await fetch("/api/receipts-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ propertyId: activeProperty, purchaseId: purchase.id, ...payload }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setUploadError(body.error || "Upload failed");
+        return;
+      }
+      const { pathname, name, contentType } = await res.json();
+      const receipts = [...(purchase.receipts || []), { pathname, name, contentType, uploadedAt: new Date().toISOString() }];
+      onReceiptsChange(purchase.id, receipts);
+    } catch (e) {
+      setUploadError("Could not process that file");
+    } finally {
+      setUploadingId(null);
+    }
+  };
+  const handleRemoveReceipt = (purchase, pathname) => {
+    onReceiptsChange(purchase.id, (purchase.receipts || []).filter(r => r.pathname !== pathname));
+    // Delete the underlying blob so no orphaned file is left behind (best-effort).
+    fetch("/api/receipts-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pathname }),
+    }).catch(() => { /* best-effort */ });
+  };
+
+  return (
+    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px", fontFamily: font }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
+        <div>
+          <h2 style={{ fontSize: 24, fontWeight: 800, color: C.charcoal, margin: 0 }}>Purchases</h2>
+          <p style={{ fontSize: 13, color: C.textMuted, margin: "4px 0 0" }}>What we actually bought · {purchases.length} logged</p>
+        </div>
+        {editingId !== "new" && (
+          <button onClick={() => { setEditingId("new"); setExpandedId(null); }} style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: C.mint, color: C.white, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>+ Add purchase</button>
+        )}
+      </div>
+
+      {/* Summary cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 18 }}>
+        {[
+          { label: "Total spent", value: fmtUSD(stats.total) },
+          { label: "Purchases logged", value: String(purchases.length) },
+          { label: "Owner-purchased", value: fmtUSD(stats.owner) },
+          { label: "Contractor / allowance", value: fmtUSD(stats.contractor) },
+        ].map(c => (
+          <div key={c.label} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px" }}>
+            <div style={{ fontSize: 12, color: C.textMuted, fontWeight: 600 }}>{c.label}</div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: C.charcoal, marginTop: 4 }}>{c.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Exhibit B allowance reconciliation */}
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 22 }}>
+        <h3 style={{ fontSize: 15, fontWeight: 700, color: C.charcoal, margin: "0 0 4px" }}>Exhibit B allowance reconciliation</h3>
+        <p style={{ fontSize: 12, color: C.textMuted, margin: "0 0 12px" }}>Allowances total {fmtUSD(EXHIBIT_B_TOTAL)} (Construction Agreement, Exhibit B). Spend below is drawn from purchases tagged to each category.</p>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ color: C.textSecondary, textAlign: "right" }}>
+                <th style={{ textAlign: "left", padding: "6px 8px", fontWeight: 600 }}>Category</th>
+                <th style={{ padding: "6px 8px", fontWeight: 600 }}>Allowance</th>
+                <th style={{ padding: "6px 8px", fontWeight: 600 }}>Spent</th>
+                <th style={{ padding: "6px 8px", fontWeight: 600 }}>Remaining</th>
+                <th style={{ padding: "6px 8px", fontWeight: 600 }}>% used</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ALLOWANCE_CATEGORIES.map(a => {
+                const spent = stats.byAllowance[a.name] || 0;
+                const remaining = a.allowance - spent;
+                const pct = a.allowance ? Math.round((spent / a.allowance) * 100) : 0;
+                return (
+                  <tr key={a.name} style={{ borderTop: `1px solid ${C.borderLight}`, textAlign: "right" }}>
+                    <td style={{ textAlign: "left", padding: "7px 8px", color: C.charcoal }}>{a.name}</td>
+                    <td style={{ padding: "7px 8px", color: C.textSecondary }}>{fmtUSD(a.allowance)}</td>
+                    <td style={{ padding: "7px 8px", color: C.charcoal, fontWeight: 600 }}>{fmtUSD(spent)}</td>
+                    <td style={{ padding: "7px 8px", color: remaining < 0 ? C.ocean : C.textSecondary }}>{fmtUSD(remaining)}</td>
+                    <td style={{ padding: "7px 8px", color: pct > 100 ? C.ocean : C.mint, fontWeight: 600 }}>{pct}%</td>
+                  </tr>
+                );
+              })}
+              <tr style={{ borderTop: `2px solid ${C.border}`, textAlign: "right", fontWeight: 800 }}>
+                <td style={{ textAlign: "left", padding: "8px", color: C.charcoal }}>Total</td>
+                <td style={{ padding: "8px", color: C.charcoal }}>{fmtUSD(EXHIBIT_B_TOTAL)}</td>
+                <td style={{ padding: "8px", color: C.charcoal }}>{fmtUSD(Object.values(stats.byAllowance).reduce((s, v) => s + v, 0))}</td>
+                <td style={{ padding: "8px", color: C.charcoal }}>{fmtUSD(EXHIBIT_B_TOTAL - Object.values(stats.byAllowance).reduce((s, v) => s + v, 0))}</td>
+                <td style={{ padding: "8px" }}></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* New purchase form */}
+      {editingId === "new" && (
+        <PurchaseForm
+          initial={emptyPurchase()}
+          onSave={(p) => { onSave(p); setEditingId(null); setExpandedId(p.id); }}
+          onCancel={() => setEditingId(null)}
+        />
+      )}
+
+      {/* Search */}
+      {purchases.length > 0 && (
+        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search purchases…" style={{ ...ppInput, marginBottom: 12, maxWidth: 320 }} />
+      )}
+
+      {/* Purchase list */}
+      {filtered.length === 0 && editingId !== "new" && (
+        <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>No purchases yet. Click “+ Add purchase” to log your first one.</p>
+      )}
+      {filtered.map(p => {
+        const isOpen = expandedId === p.id;
+        const isEditing = editingId === p.id;
+        return (
+          <div key={p.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
+            <button onClick={() => { setExpandedId(isOpen ? null : p.id); setEditingId(null); }} style={{ width: "100%", textAlign: "left", background: "none", border: "none", padding: "14px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: C.charcoal, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.description || "(untitled)"}</div>
+                <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>
+                  {[p.trade, p.room, p.vendor].filter(Boolean).join(" · ") || "—"}
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                {(p.receipts || []).length > 0 && <span style={{ fontSize: 11, color: C.textMuted }}>📎 {(p.receipts || []).length}</span>}
+                <span style={{ fontSize: 11, fontWeight: 600, color: p.ownerPurchased ? C.mint : C.ocean, background: p.ownerPurchased ? C.seafoamFaint : C.oceanLight, padding: "3px 9px", borderRadius: 12 }}>{p.ownerPurchased ? "Owner" : "Contractor"}</span>
+                <span style={{ fontSize: 15, fontWeight: 800, color: C.charcoal }}>{fmtUSD(p.totalPaid)}</span>
+              </div>
+            </button>
+            {isOpen && !isEditing && (
+              <div style={{ padding: "0 16px 16px" }}>
+                <div style={{ fontSize: 13, color: C.textSecondary, lineHeight: 1.7, marginBottom: 12 }}>
+                  {p.invoiceNo && <>Invoice: {p.invoiceNo}<br /></>}
+                  {p.purchasedBy && <>Paid by: {p.purchasedBy} · {p.paymentMethod || "—"}<br /></>}
+                  Allowance: {p.allowanceCategory} · Status: {p.status}<br />
+                  {(p.warranty || p.warrantyTerm) && <>Warranty: {p.warrantyTerm || "yes"}{p.registered ? " (registered)" : ""}{p.binderPocket ? ` · Binder ${p.binderPocket}` : ""}<br /></>}
+                  {p.notes && <span style={{ color: C.textMuted }}>{p.notes}</span>}
+                </div>
+
+                {/* Receipts */}
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.textSecondary, marginBottom: 6 }}>Receipts</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                    {(p.receipts || []).map(r => (
+                      <span key={r.pathname} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, background: C.offWhite, border: `1px solid ${C.border}`, borderRadius: 8, padding: "5px 8px" }}>
+                        <a href={receiptViewUrl(r.pathname)} target="_blank" rel="noreferrer" style={{ color: C.mint, textDecoration: "none", fontWeight: 600 }}>{r.name || "receipt"}</a>
+                        <button onClick={() => handleRemoveReceipt(p, r.pathname)} title="Remove" style={{ background: "none", border: "none", color: C.textMuted, cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>
+                      </span>
+                    ))}
+                  </div>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, color: C.mintDark, background: C.seafoamFaint, border: `1.5px dashed ${C.mint}`, borderRadius: 8, padding: "8px 14px", cursor: uploadingId === p.id ? "wait" : "pointer" }}>
+                    {uploadingId === p.id ? "Uploading…" : "📷 Add receipt (photo or PDF)"}
+                    <input type="file" accept="image/*,application/pdf" capture="environment" disabled={uploadingId === p.id} onChange={e => { const f = e.target.files && e.target.files[0]; if (f) handleUpload(p, f); e.target.value = ""; }} style={{ display: "none" }} />
+                  </label>
+                  {uploadError && <div style={{ color: C.ocean, fontSize: 12, marginTop: 6 }}>{uploadError}</div>}
+                </div>
+
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button onClick={() => { setEditingId(p.id); }} style={{ padding: "8px 16px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Edit</button>
+                  <button onClick={() => { if (window.confirm("Delete this purchase and its receipts?")) { onDelete(p.id); setExpandedId(null); } }} style={{ padding: "8px 16px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ocean, fontFamily: font, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Delete</button>
+                </div>
+              </div>
+            )}
+            {isOpen && isEditing && (
+              <div style={{ padding: "0 16px 16px" }}>
+                <PurchaseForm
+                  initial={p}
+                  onSave={(updated) => { onSave(updated); setEditingId(null); }}
+                  onCancel={() => setEditingId(null)}
+                />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── MULTI-PROPERTY (Phase 1) ────────────────────────────────────────────────
 // Data is scoped per property. Pre-migration (activeProperty === null) the app reads
 // and writes the LEGACY global keys, so it behaves exactly as before until the owner
@@ -3026,6 +3441,9 @@ export default function App() {
   const finishesServerLoaded = useRef(false);
   const tasksFirstRun = useRef(true);
   const finishesFirstRun = useRef(true);
+  const [purchases, setPurchases] = useState(() => loadPurchasesFromCache(activeProperty));
+  const purchasesServerLoaded = useRef(false);
+  const purchasesFirstRun = useRef(true);
 
   // Load the property registry once. Decides migrated vs. needs-migration.
   useEffect(() => {
@@ -3107,6 +3525,26 @@ export default function App() {
     return () => { cancelled = true; };
   }, [activeProperty]);
 
+  // Fetch purchases for the active property (same load discipline as tasks/finishes).
+  useEffect(() => {
+    purchasesServerLoaded.current = false;
+    let cancelled = false;
+    if (purchasesFirstRun.current) {
+      purchasesFirstRun.current = false;
+    } else {
+      setPurchases(loadPurchasesFromCache(activeProperty));
+    }
+    fetch(apiUrl('/api/purchases', activeProperty))
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return;
+        purchasesServerLoaded.current = true;
+        if (Array.isArray(data)) setPurchases(data);
+      })
+      .catch(() => { if (!cancelled) purchasesServerLoaded.current = true; });
+    return () => { cancelled = true; };
+  }, [activeProperty]);
+
   // Save tasks to localStorage + server (debounced, property-scoped).
   // activeProperty is deliberately NOT a dependency: the effect must run only when the
   // DATA changes, never on a bare property switch. On a switch, `tasks` still holds the
@@ -3160,6 +3598,16 @@ export default function App() {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finishes, targetBudget, roomData, deletedFinishIds]);
+
+  // Cache purchases to localStorage (LOCAL read-cache only — server writes are per-record
+  // via the handlers below, never a whole-array PUT). activeProperty omitted from deps for
+  // the same reason as the tasks/finishes save effects.
+  useEffect(() => {
+    try {
+      localStorage.setItem(lsKey(LS_PURCHASES, activeProperty), JSON.stringify(purchases));
+    } catch (e) { console.warn('localStorage save failed:', e.name); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [purchases]);
 
   // ── Property switch + migration + backup handlers ─────────────────────────
   const switchProperty = (id) => {
@@ -3221,6 +3669,31 @@ export default function App() {
     }
   };
 
+  // Purchases — per-record server mutations (HSET/HDEL), never a whole-array write.
+  const savePurchase = (purchase) => {
+    setPurchases(prev => (prev.some(p => p.id === purchase.id)
+      ? prev.map(p => (p.id === purchase.id ? purchase : p))
+      : [...prev, purchase]));
+    fetch(apiUrl('/api/purchases', activeProperty), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(purchase),
+    }).then(r => { if (!r.ok) setSyncError('Failed to save purchase'); else setSyncError(null); })
+      .catch(() => setSyncError('Unable to reach server'));
+  };
+  const deletePurchase = (id) => {
+    setPurchases(prev => prev.filter(p => p.id !== id));
+    const base = apiUrl('/api/purchases', activeProperty);
+    const url = base + (activeProperty ? '&' : '?') + 'id=' + encodeURIComponent(id);
+    fetch(url, { method: 'DELETE' })
+      .then(r => { if (!r.ok) setSyncError('Failed to delete purchase'); else setSyncError(null); })
+      .catch(() => setSyncError('Unable to reach server'));
+  };
+  const changePurchaseReceipts = (id, receipts) => {
+    const target = purchases.find(p => p.id === id);
+    if (target) savePurchase({ ...target, receipts });
+  };
+
   return (
     <div style={{ minHeight: "100vh", background: C.pageBg, fontFamily: font }}>
       <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -3249,6 +3722,7 @@ export default function App() {
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} />}
+      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} />}
 
       {showMigrationModal && migrationNeeded && (
         <div style={modalOverlayStyle}>

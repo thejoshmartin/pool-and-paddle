@@ -27,8 +27,8 @@ export default async function handler(req, res) {
     perProperty[id] = {
       tasks: await redis.get(`tasks:${id}`),
       finishes: await redis.get(`finishes:${id}`),
-      // purchases arrive in Phase 2 (as a hash); absent in Phase 1.
-      purchases: await redis.get(`purchases:${id}`),
+      // purchases are a Redis hash (field = purchaseId); hgetall returns the full record set.
+      purchases: await redis.hgetall(`purchases:${id}`),
     };
   }
 

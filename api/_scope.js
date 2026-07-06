@@ -19,6 +19,17 @@ export function scopedKey(base, property) {
   return `${base}:${property}`;
 }
 
+// Receipt blob pathnames are `receipts/<propertyId>/<purchaseId>/<file>`. Parse + validate
+// (rejects traversal, wrong prefix, and extra path levels). Returns { propertyId, purchaseId }
+// or null. Callers must ALSO confirm the pathname is referenced by a real purchase before
+// serving — this only validates shape.
+export function parseReceiptPathname(pathname) {
+  if (typeof pathname !== 'string') return null;
+  const m = pathname.match(/^receipts\/([a-z0-9-]+)\/([a-z0-9-]+)\/[^/]+$/);
+  if (!m) return null;
+  return { propertyId: m[1], purchaseId: m[2] };
+}
+
 // One-time migration of legacy globals → per-property keys. Runs server-side against a
 // redis-like client ({ get, set(key,val,{nx,ex}), del }). Safety properties:
 //   - Idempotent: re-reads untouched legacy keys and overwrites, so a retry is a no-op.
