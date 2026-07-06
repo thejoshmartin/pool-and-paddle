@@ -3058,7 +3058,7 @@ function PurchaseForm({ initial, onSave, onCancel }) {
   return (
     <div style={{ background: C.offWhite, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 14 }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-        {field("Item / Description", <input style={ppInput} value={d.description} onChange={e => set({ description: e.target.value })} placeholder="e.g. Blanco undermount sink" />)}
+        {field("Item / Description", <input autoFocus style={ppInput} value={d.description} onChange={e => set({ description: e.target.value })} placeholder="e.g. Blanco undermount sink" />)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
         {field("Trade", <select style={ppInput} value={d.trade} onChange={e => set({ trade: e.target.value })}><option value="">—</option>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>)}
@@ -3141,6 +3141,13 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
   const [query, setQuery] = useState("");
   const [uploadingId, setUploadingId] = useState(null);
   const [uploadError, setUploadError] = useState(null);
+  const newFormRef = useRef(null);
+
+  useEffect(() => {
+    if (editingId === "new" && newFormRef.current) {
+      newFormRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [editingId]);
 
   const stats = useMemo(() => {
     let total = 0, owner = 0, contractor = 0;
@@ -3212,6 +3219,17 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
         )}
       </div>
 
+      {/* New purchase form — at the top so it's visible immediately when opened */}
+      {editingId === "new" && (
+        <div ref={newFormRef}>
+          <PurchaseForm
+            initial={emptyPurchase()}
+            onSave={(p) => { onSave(p); setEditingId(null); setExpandedId(p.id); }}
+            onCancel={() => setEditingId(null)}
+          />
+        </div>
+      )}
+
       {/* Summary cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 18 }}>
         {[
@@ -3268,15 +3286,6 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
           </table>
         </div>
       </div>
-
-      {/* New purchase form */}
-      {editingId === "new" && (
-        <PurchaseForm
-          initial={emptyPurchase()}
-          onSave={(p) => { onSave(p); setEditingId(null); setExpandedId(p.id); }}
-          onCancel={() => setEditingId(null)}
-        />
-      )}
 
       {/* Search */}
       {purchases.length > 0 && (
