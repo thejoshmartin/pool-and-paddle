@@ -2208,15 +2208,18 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search items…"
-            style={{ ...selectStyle, paddingRight: search ? 30 : 14, minWidth: 180 }}
+            style={{ ...selectStyle, paddingRight: search ? 44 : 14, minWidth: 180 }}
           />
           {search && (
             <button
+              type="button"
               onClick={() => setSearch("")}
               aria-label="Clear search"
               style={{
-                position: "absolute", right: 8, background: "none", border: "none",
-                color: C.textMuted, fontSize: 16, cursor: "pointer", padding: 0, lineHeight: 1,
+                position: "absolute", right: 4, background: "none", border: "none",
+                color: C.textMuted, fontSize: 16, cursor: "pointer",
+                padding: "10px 8px", lineHeight: 1, minWidth: 44, minHeight: 44,
+                display: "flex", alignItems: "center", justifyContent: "center",
               }}
             >×</button>
           )}
