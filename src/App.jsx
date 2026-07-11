@@ -2524,7 +2524,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                 return (
                   <div key={item.id} ref={el => { itemRowRefs.current[item.id] = el; }}>
                     <div
-                      onClick={() => { setExpandedId(isExpanded ? null : item.id); setConfirmDelete(null); }}
+                      onClick={() => { setExpandedId(isExpanded ? null : item.id); setConfirmDelete(null); setCopyToast(""); }}
                       onMouseEnter={() => !isMobile && setHoveredRow(item.id)}
                       onMouseLeave={() => { setHoveredRow(null); }}
                       style={{
@@ -3021,7 +3021,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                                     type="button"
                                     onClick={() => setCopyMode(opt.key)}
                                     style={{
-                                      padding: "7px 14px", border: "none",
+                                      padding: "7px 14px", border: "none", minHeight: 44,
                                       background: copyMode === opt.key ? C.mint : C.white,
                                       color: copyMode === opt.key ? C.white : C.textSecondary,
                                       fontFamily: font, fontSize: 12, fontWeight: 600, cursor: "pointer",
