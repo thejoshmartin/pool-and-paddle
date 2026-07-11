@@ -8,6 +8,7 @@ import {
   PURCHASE_STATUSES, NOT_IN_ALLOWANCE, ALLOWANCE_CATEGORIES, EXHIBIT_B_TOTAL,
   ASSET_CLASSES, suggestAssetClass, buildCostSegCsv, fmtUSD, emptyPurchase,
 } from "./lib/purchases-logic.js";
+import { matchesFinishSearch, buildRoomCopies } from "./lib/design-logic.js";
 
 // ─── DATA ───────────────────────────────────────────────────────────────────
 
@@ -1736,6 +1737,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
   const [hoveredRow, setHoveredRow] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [filterAssignee, setFilterAssignee] = useState("all");
+  const [search, setSearch] = useState("");
   const dateRefs = useRef({});
   const itemRowRefs = useRef({});
 
@@ -1746,6 +1748,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
     setFilterRoom("all");
     setFilterStatus("all");
     setFilterAssignee("all");
+    setSearch("");
     setExpandedId(focusItemId);
     requestAnimationFrame(() => {
       const el = itemRowRefs.current[focusItemId];
@@ -1773,9 +1776,10 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
          filterStatus === "needs-selection" ? !hasSel : true);
       const matchAssignee = filterAssignee === "all" ||
         (filterAssignee === "unassigned" ? !item.assignee : item.assignee === filterAssignee);
-      return matchCat && matchRoom && matchStatus && matchAssignee;
+      const matchSearch = matchesFinishSearch(item, resolvedSel, search);
+      return matchCat && matchRoom && matchStatus && matchAssignee && matchSearch;
     });
-  }, [finishes, filterCat, filterRoom, filterStatus, filterAssignee]);
+  }, [finishes, filterCat, filterRoom, filterStatus, filterAssignee, search]);
 
   const grouped = useMemo(() => {
     const g = {};
@@ -2198,6 +2202,25 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
           <option value="needs-selection">Needs Selection</option>
           <option value="priced">Priced</option>
         </select>
+        <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search items…"
+            style={{ ...selectStyle, paddingRight: search ? 30 : 14, minWidth: 180 }}
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              aria-label="Clear search"
+              style={{
+                position: "absolute", right: 8, background: "none", border: "none",
+                color: C.textMuted, fontSize: 16, cursor: "pointer", padding: 0, lineHeight: 1,
+              }}
+            >×</button>
+          )}
+        </div>
         <select value={filterAssignee} onChange={e => setFilterAssignee(e.target.value)} style={selectStyle}>
           <option value="all">All Owners</option>
           <option value="JM">JM</option>
@@ -2978,7 +3001,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
           textAlign: "center", padding: "48px 24px",
           fontFamily: font, fontSize: 14, color: C.textMuted,
         }}>
-          No items match your filters. Try adjusting the trade, room, or status filters above.
+          No items match your filters. Try adjusting the search or the trade, room, and status filters above.
         </div>
       )}
     </div>
