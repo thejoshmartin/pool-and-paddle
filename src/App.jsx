@@ -1738,6 +1738,10 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [filterAssignee, setFilterAssignee] = useState("all");
   const [search, setSearch] = useState("");
+  const [copyPanelId, setCopyPanelId] = useState(null);   // id of the item whose copy panel is open
+  const [copyRooms, setCopyRooms] = useState([]);         // checked target room ids
+  const [copyMode, setCopyMode] = useState("independent"); // "independent" | "linked"
+  const [copyToast, setCopyToast] = useState("");         // transient "Copied to N rooms" message
   const dateRefs = useRef({});
   const itemRowRefs = useRef({});
 
@@ -1909,6 +1913,22 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
     }]);
     setNewItem({ item: "", category: FINISH_CATEGORIES[0].id, room: FINISH_ROOMS[0].id });
     setShowAddForm(false);
+  };
+
+  const openCopyPanel = (item) => {
+    setCopyPanelId(item.id);
+    setCopyRooms([]);
+    setCopyMode("independent");
+    setCopyToast("");
+  };
+
+  const createRoomCopies = (source) => {
+    if (copyRooms.length === 0) return;
+    const copies = buildRoomCopies({ source, roomIds: copyRooms, mode: copyMode, idBase: Date.now() });
+    setFinishes(prev => [...prev, ...copies]);
+    setCopyToast(`Copied to ${copies.length} room${copies.length !== 1 ? "s" : ""}`);
+    setCopyPanelId(null);
+    setCopyRooms([]);
   };
 
   const [editingMiroRoom, setEditingMiroRoom] = useState(null);
@@ -2986,6 +3006,86 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                             )}
                           </div>
                         )}
+                        {/* Copy this item to other rooms (independent copies or linked children) */}
+                        <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.borderLight}` }}>
+                          {copyPanelId === item.id ? (
+                            <div onClick={e => e.stopPropagation()}>
+                              <div style={{ fontFamily: font, fontSize: 12, fontWeight: 700, color: C.charcoal, marginBottom: 10 }}>
+                                Copy to rooms
+                              </div>
+                              {/* Mode toggle */}
+                              <div style={{ display: "flex", borderRadius: 8, overflow: "hidden", border: `1px solid ${C.border}`, marginBottom: 12, width: "fit-content" }}>
+                                {[{ key: "independent", label: "Independent copies" }, { key: "linked", label: "Linked to this item" }].map(opt => (
+                                  <button
+                                    key={opt.key}
+                                    type="button"
+                                    onClick={() => setCopyMode(opt.key)}
+                                    style={{
+                                      padding: "7px 14px", border: "none",
+                                      background: copyMode === opt.key ? C.mint : C.white,
+                                      color: copyMode === opt.key ? C.white : C.textSecondary,
+                                      fontFamily: font, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                                    }}
+                                  >{opt.label}</button>
+                                ))}
+                              </div>
+                              {/* Room checkboxes — exclude the item's current room */}
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                                {FINISH_ROOMS.filter(r => r.id !== item.room).map(r => {
+                                  const checked = copyRooms.includes(r.id);
+                                  return (
+                                    <button
+                                      key={r.id}
+                                      type="button"
+                                      onClick={() => setCopyRooms(prev => checked ? prev.filter(x => x !== r.id) : [...prev, r.id])}
+                                      style={{
+                                        padding: "6px 12px", borderRadius: 8, minHeight: 44,
+                                        border: `1.5px solid ${checked ? C.mint : C.border}`,
+                                        background: checked ? C.seafoamFaint : C.white,
+                                        color: checked ? C.mint : C.textSecondary,
+                                        fontFamily: font, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                                      }}
+                                    >{checked ? "✓ " : ""}{r.label}</button>
+                                  );
+                                })}
+                              </div>
+                              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                                <button
+                                  type="button"
+                                  onClick={() => createRoomCopies(item)}
+                                  disabled={copyRooms.length === 0}
+                                  style={{
+                                    padding: "10px 18px", borderRadius: 8, border: "none", minHeight: 44,
+                                    background: C.mint, color: C.white, fontFamily: font, fontSize: 13, fontWeight: 700,
+                                    cursor: copyRooms.length === 0 ? "default" : "pointer",
+                                    opacity: copyRooms.length === 0 ? 0.5 : 1,
+                                  }}
+                                >Create copies</button>
+                                <button
+                                  type="button"
+                                  onClick={() => { setCopyPanelId(null); setCopyRooms([]); }}
+                                  style={{ background: "none", border: "none", color: C.textMuted, fontFamily: font, fontSize: 12, cursor: "pointer", padding: "10px 8px", minHeight: 44 }}
+                                >Cancel</button>
+                              </div>
+                              <div style={{ fontFamily: font, fontSize: 11, color: C.textMuted, marginTop: 10 }}>
+                                {copyMode === "linked"
+                                  ? "Linked rooms inherit this item's selection & price automatically; each keeps its own quantity, notes, owner, and date."
+                                  : "Independent copies start from this item's selection & price but can be edited separately per room."}
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={e => { e.stopPropagation(); openCopyPanel(item); }}
+                                style={{ padding: "10px 18px", borderRadius: 8, minHeight: 44, border: `1.5px solid ${C.mint}`, background: C.white, color: C.mint, fontFamily: font, fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                              >Copy to rooms…</button>
+                              {copyToast && (
+                                <span style={{ marginLeft: 12, fontFamily: font, fontSize: 12, fontWeight: 600, color: C.mint, background: C.seafoamFaint, padding: "7px 14px", borderRadius: 8 }}>{copyToast}</span>
+                              )}
+                            </>
+                          )}
+                        </div>
                         </>
                           );
                         })()}
