@@ -7,6 +7,7 @@ import {
   buildCostSegCsv, suggestAssetClass, emptyPurchase, NOT_IN_ALLOWANCE,
 } from '../src/lib/purchases-logic.js';
 import { scopedKey, parseReceiptPathname } from '../api/_scope.js';
+import { matchesFinishSearch, buildRoomCopies } from '../src/lib/design-logic.js';
 
 let passed = 0;
 function ok(name) { passed += 1; console.log(`  ✓ ${name}`); }
@@ -79,5 +80,82 @@ assert.equal(parseReceiptPathname('receipts/pp/pur-1/a/b.jpg'), null);   // extr
 assert.equal(parseReceiptPathname('../../etc/passwd'), null);            // traversal / wrong prefix
 assert.equal(parseReceiptPathname('receipts/pp/pur-1'), null);           // missing file segment
 ok('parseReceiptPathname accepts valid, rejects traversal / extra levels / missing file');
+
+console.log('matchesFinishSearch():');
+{
+  const item = { item: 'Kohler faucet', notes: 'brushed nickel', url: 'https://kohler.com/x' };
+  assert.equal(matchesFinishSearch(item, 'Purist', ''), true);      // blank term matches all
+  assert.equal(matchesFinishSearch(item, 'Purist', '   '), true);   // whitespace-only matches all
+  assert.equal(matchesFinishSearch(item, 'Purist', 'kohler'), true);   // matches name, case-insensitive
+  assert.equal(matchesFinishSearch(item, 'Purist', 'PURIST'), true);   // matches resolved selection
+  assert.equal(matchesFinishSearch(item, 'Purist', 'nickel'), true);   // matches notes
+  assert.equal(matchesFinishSearch(item, 'Purist', 'kohler.com'), true); // matches url
+  assert.equal(matchesFinishSearch(item, 'Purist', 'bathtub'), false);   // no match
+  ok('matches name/selection/notes/url case-insensitively; blank term matches all');
+  const sparse = { item: 'Towel bar' };
+  assert.equal(matchesFinishSearch(sparse, '', 'towel'), true);   // missing fields don't throw
+  assert.equal(matchesFinishSearch(sparse, null, 'zzz'), false);
+  ok('tolerates missing selection/notes/url fields');
+}
+
+console.log('buildRoomCopies():');
+{
+  const source = {
+    id: 'p1', category: 'plumbing', room: 'primary-bath', item: 'Shower valve',
+    contractorOptions: ['A', 'B'], selection: 'Delta 17T', unitPrice: 120, quantity: 2,
+    unit: 'ea', url: 'https://x.com', notes: 'trim in nickel', assignee: 'JM', dueDate: '2026-01-01',
+    userCreated: false, linkedTo: null,
+  };
+
+  // Independent mode
+  const ind = buildRoomCopies({ source, roomIds: ['guest-bath', 'pool-bath'], mode: 'independent', idBase: 1000 });
+  assert.equal(ind.length, 2);
+  assert.equal(ind[0].id, 'uf10000');
+  assert.equal(ind[1].id, 'uf10001');
+  assert.notEqual(ind[0].id, ind[1].id);
+  assert.equal(ind[0].room, 'guest-bath');
+  assert.equal(ind[0].item, 'Shower valve');
+  assert.equal(ind[0].category, 'plumbing');
+  assert.equal(ind[0].selection, 'Delta 17T');    // carried over
+  assert.equal(ind[0].unitPrice, 120);
+  assert.equal(ind[0].unit, 'ea');
+  assert.equal(ind[0].url, 'https://x.com');
+  assert.deepEqual(ind[0].contractorOptions, ['A', 'B']);
+  assert.equal(ind[0].quantity, 2);
+  assert.equal(ind[0].notes, 'trim in nickel');
+  assert.equal(ind[0].linkedTo, null);
+  assert.equal(ind[0].userCreated, true);
+  assert.equal(ind[0].assignee, null);             // never carried
+  assert.equal(ind[0].dueDate, null);
+  ok('independent copies carry selection/price/unit/url/options, blank assignee/dueDate, unique ids');
+
+  // contractorOptions is a fresh array (no shared reference)
+  ind[0].contractorOptions.push('C');
+  assert.deepEqual(source.contractorOptions, ['A', 'B']);
+  ok('independent copy does not share the source contractorOptions array');
+
+  // Linked mode from a root source
+  const lnk = buildRoomCopies({ source, roomIds: ['guest-bath'], mode: 'linked', idBase: 2000 });
+  assert.equal(lnk[0].linkedTo, 'p1');             // links to the source (it is the root)
+  assert.equal(lnk[0].selection, '');              // inherited live, not copied
+  assert.equal(lnk[0].unitPrice, null);
+  assert.equal(lnk[0].url, '');
+  assert.deepEqual(lnk[0].contractorOptions, []);
+  assert.equal(lnk[0].quantity, 2);                // own quantity, seeded from source
+  assert.equal(lnk[0].notes, 'trim in nickel');
+  assert.equal(lnk[0].item, 'Shower valve');
+  assert.equal(lnk[0].userCreated, true);
+  ok('linked copies point at source id, leave selection/price/url blank, keep own quantity/notes');
+
+  // Linked mode from a child source → links to the ROOT, not the child
+  const childSource = { ...source, id: 'child1', linkedTo: 'root9' };
+  const lnk2 = buildRoomCopies({ source: childSource, roomIds: ['pool-bath'], mode: 'linked', idBase: 3000 });
+  assert.equal(lnk2[0].linkedTo, 'root9');
+  ok('linked copy of a linked child points at the root parent (no two-level chain)');
+
+  // Empty room list → empty result
+  assert.deepEqual(buildRoomCopies({ source, roomIds: [], mode: 'independent', idBase: 4000 }), []);
+  ok('no rooms → no copies');
+}
 
 console.log(`\nAll ${passed} checks passed.`);
