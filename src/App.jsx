@@ -8,7 +8,7 @@ import {
   PURCHASE_STATUSES, NOT_IN_ALLOWANCE, ALLOWANCE_CATEGORIES, EXHIBIT_B_TOTAL,
   ASSET_CLASSES, suggestAssetClass, buildCostSegCsv, fmtUSD, emptyPurchase,
 } from "./lib/purchases-logic.js";
-import { matchesFinishSearch, buildRoomCopies } from "./lib/design-logic.js";
+import { matchesFinishSearch, buildRoomCopies, mergeFinishes } from "./lib/design-logic.js";
 
 // ─── DATA ───────────────────────────────────────────────────────────────────
 
@@ -1688,35 +1688,6 @@ function ExecutiveSummary() {
 const FINISH_CATEGORIES = FINISHES_DATA.categories;
 const FINISH_ROOMS = FINISHES_DATA.rooms;
 const DEFAULT_FINISH_ITEMS = FINISHES_DATA.items.map(item => ({ ...item, userCreated: false }));
-
-// Migrate old room IDs → new room IDs (2026-02-16 room restructure)
-const ROOM_MIGRATION = {
-  "bed1-bath": "ground-floor-king",
-  "bed2": "downstairs-full-bed",
-  "bed3-bath": "second-master",
-  "bunk-bath": "bunk-room",
-  "upper-half-bath": "3rd-floor-bath",
-  "kitchen": "kitchen-upstairs",
-};
-
-function migrateRoom(roomId) {
-  return ROOM_MIGRATION[roomId] || roomId;
-}
-
-function mergeFinishes(saved, deletedIds = []) {
-  if (!saved || !Array.isArray(saved)) return DEFAULT_FINISH_ITEMS;
-  const deletedSet = new Set(deletedIds);
-  const defaultIds = new Set(DEFAULT_FINISH_ITEMS.map(i => i.id));
-  const merged = DEFAULT_FINISH_ITEMS
-    .filter(item => !deletedSet.has(item.id))
-    .map(item => {
-      const s = saved.find(s => s.id === item.id);
-      return s ? { ...item, room: s.room ? migrateRoom(s.room) : item.room, selection: s.selection ?? "", unitPrice: s.unitPrice ?? null, quantity: s.quantity ?? null, unit: s.unit ?? item.unit, url: s.url ?? "", notes: s.notes ?? "", linkedTo: s.linkedTo ?? null, assignee: s.assignee ?? null, dueDate: s.dueDate ?? null } : item;
-    });
-  const userItems = saved.filter(s => s.userCreated && !defaultIds.has(s.id))
-    .map(item => ({ ...item, room: migrateRoom(item.room) }));
-  return [...merged, ...userItems];
-}
 
 function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, roomData, setRoomData, focusItemId, deletedFinishIds, setDeletedFinishIds, onPromote, promotedFinishIds, onPromoteFurniture, promotedFurnitureIds }) {
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
@@ -3843,7 +3814,7 @@ function loadFinishesFromCache(propertyId) {
       const parsed = JSON.parse(raw);
       const deletedIds = parsed.deletedIds || [];
       return {
-        finishes: mergeFinishes(parsed.items || parsed, deletedIds),
+        finishes: mergeFinishes(parsed.items || parsed, deletedIds, DEFAULT_FINISH_ITEMS),
         deletedIds,
         targetBudget: parsed.targetBudget ?? null,
         roomData: parsed.roomData ?? {},
@@ -3970,7 +3941,7 @@ export default function App() {
         if (data && data.items && Array.isArray(data.items) && data.items.length > 0) {
           const serverDeletedIds = data.deletedIds || [];
           setDeletedFinishIds(serverDeletedIds);
-          setFinishes(mergeFinishes(data.items, serverDeletedIds));
+          setFinishes(mergeFinishes(data.items, serverDeletedIds, DEFAULT_FINISH_ITEMS));
           if (data.targetBudget != null) setTargetBudget(data.targetBudget);
           if (data.roomData) setRoomData(data.roomData);
         }

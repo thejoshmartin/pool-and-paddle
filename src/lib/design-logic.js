@@ -20,6 +20,43 @@ export function matchesFinishSearch(item, resolvedSelection, term) {
   return haystack.includes(t);
 }
 
+// Migrate old room IDs → new room IDs (2026-02-16 room restructure)
+export const ROOM_MIGRATION = {
+  "bed1-bath": "ground-floor-king",
+  "bed2": "downstairs-full-bed",
+  "bed3-bath": "second-master",
+  "bunk-bath": "bunk-room",
+  "upper-half-bath": "3rd-floor-bath",
+  "kitchen": "kitchen-upstairs",
+};
+
+export function migrateRoom(roomId) {
+  return ROOM_MIGRATION[roomId] || roomId;
+}
+
+/**
+ * Reconcile saved finish data with the default catalogue.
+ * Default items are rebuilt from `defaults` but keep every user-edited field
+ * (name, category, room, selection, price, etc.). User-created items pass through.
+ * @param {object[]} saved      - the persisted finishes array
+ * @param {string[]} deletedIds - ids of default items the user removed
+ * @param {object[]} defaults   - the default finish catalogue (DEFAULT_FINISH_ITEMS)
+ */
+export function mergeFinishes(saved, deletedIds = [], defaults = []) {
+  if (!saved || !Array.isArray(saved)) return defaults;
+  const deletedSet = new Set(deletedIds);
+  const defaultIds = new Set(defaults.map(i => i.id));
+  const merged = defaults
+    .filter(item => !deletedSet.has(item.id))
+    .map(item => {
+      const s = saved.find(s => s.id === item.id);
+      return s ? { ...item, item: s.item ?? item.item, category: s.category ?? item.category, room: s.room ? migrateRoom(s.room) : item.room, selection: s.selection ?? "", unitPrice: s.unitPrice ?? null, quantity: s.quantity ?? null, unit: s.unit ?? item.unit, url: s.url ?? "", notes: s.notes ?? "", linkedTo: s.linkedTo ?? null, assignee: s.assignee ?? null, dueDate: s.dueDate ?? null } : item;
+    });
+  const userItems = saved.filter(s => s.userCreated && !defaultIds.has(s.id))
+    .map(item => ({ ...item, room: migrateRoom(item.room) }));
+  return [...merged, ...userItems];
+}
+
 /**
  * Build independent-or-linked copies of a finish item across target rooms.
  * @param {object}   args

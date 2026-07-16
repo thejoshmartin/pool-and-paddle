@@ -7,7 +7,7 @@ import {
   buildCostSegCsv, suggestAssetClass, emptyPurchase, NOT_IN_ALLOWANCE,
 } from '../src/lib/purchases-logic.js';
 import { scopedKey, parseReceiptPathname } from '../api/_scope.js';
-import { matchesFinishSearch, buildRoomCopies } from '../src/lib/design-logic.js';
+import { matchesFinishSearch, buildRoomCopies, mergeFinishes, migrateRoom } from '../src/lib/design-logic.js';
 
 let passed = 0;
 function ok(name) { passed += 1; console.log(`  ✓ ${name}`); }
@@ -156,6 +156,45 @@ console.log('buildRoomCopies():');
   // Empty room list → empty result
   assert.deepEqual(buildRoomCopies({ source, roomIds: [], mode: 'independent', idBase: 4000 }), []);
   ok('no rooms → no copies');
+}
+
+console.log('mergeFinishes():');
+{
+  const defaults = [
+    { id: 'f1', category: 'plumbing', room: 'kitchen', item: 'Sink faucet', unit: 'ea', selection: '', unitPrice: null },
+    { id: 'f2', category: 'electrical', room: 'bunk-bath', item: 'Sconce', unit: 'ea', selection: '', unitPrice: null },
+  ];
+
+  // Regression: an edited NAME on a default item must survive the merge (was dropped → reverted on reload)
+  const saved = [{ id: 'f1', item: 'Brizo sink faucet', selection: 'Brizo', unitPrice: 420 }];
+  const m = mergeFinishes(saved, [], defaults);
+  const f1 = m.find(i => i.id === 'f1');
+  assert.equal(f1.item, 'Brizo sink faucet');   // the fix: name persists
+  assert.equal(f1.selection, 'Brizo');
+  assert.equal(f1.unitPrice, 420);
+  ok('preserves an edited default-item name (regression: name no longer reverts on reload)');
+
+  // An edited category on a default item also survives
+  const m2 = mergeFinishes([{ id: 'f2', category: 'lighting' }], [], defaults);
+  assert.equal(m2.find(i => i.id === 'f2').category, 'lighting');
+  ok('preserves an edited default-item category');
+
+  // Untouched default items keep their catalogue values
+  assert.equal(m.find(i => i.id === 'f2').item, 'Sconce');
+  ok('untouched defaults keep catalogue values');
+
+  // Old room ids migrate; deleted default ids are excluded; user items pass through
+  assert.equal(mergeFinishes([{ id: 'f2', room: 'bunk-bath' }], [], defaults).find(i => i.id === 'f2').room, 'bunk-room');
+  assert.equal(migrateRoom('kitchen'), 'kitchen-upstairs');
+  assert.ok(!mergeFinishes([], ['f1'], defaults).some(i => i.id === 'f1'));
+  const withUser = mergeFinishes([{ id: 'u1', userCreated: true, room: 'kitchen', item: 'Custom shelf' }], [], defaults);
+  assert.equal(withUser.find(i => i.id === 'u1').item, 'Custom shelf');
+  assert.equal(withUser.find(i => i.id === 'u1').room, 'kitchen-upstairs');
+  ok('migrates rooms, excludes deleted defaults, passes user items through');
+
+  // Invalid saved payload → the defaults array, verbatim
+  assert.equal(mergeFinishes(null, [], defaults), defaults);
+  ok('null saved → defaults');
 }
 
 console.log(`\nAll ${passed} checks passed.`);
