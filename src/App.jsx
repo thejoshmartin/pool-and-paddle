@@ -4194,12 +4194,16 @@ export default function App() {
   const writeRoomMeta = (roomId, meta) => putFinishField(roomField(roomId), meta);
   const writeBudget = (val) => putFinishField(BUDGET_FIELD, val);
 
+  // Flush pending finish writes when the tab is hidden/closed. Empty dep array is safe
+  // because there is a single, static property (no property-switch UI) — the flush closure's
+  // captured activeProperty can't go stale for a different key. visibilitychange lives on
+  // `document`; beforeunload is a less-reliable belt-and-suspenders (mobile Safari).
   useEffect(() => {
     const onHide = () => { if (document.visibilityState === 'hidden') flushFinishFields(); };
-    window.addEventListener('visibilitychange', onHide);
+    document.addEventListener('visibilitychange', onHide);
     window.addEventListener('beforeunload', flushFinishFields);
     return () => {
-      window.removeEventListener('visibilitychange', onHide);
+      document.removeEventListener('visibilitychange', onHide);
       window.removeEventListener('beforeunload', flushFinishFields);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
