@@ -115,6 +115,15 @@ console.log('blobToFields() → partitionFinishFields() round-trip:');
   // Null/undefined map → empty partition (never throws).
   assert.deepEqual(partitionFinishFields(null).savedItems, []);
   ok('null hash → empty partition');
+
+  // Furniture is sorted by id (stable order) regardless of HGETALL field order.
+  const shuffled = {
+    'furn:den:furn200': { id: 'furn200', name: 'Later' },
+    'furn:den:furn100': { id: 'furn100', name: 'Earlier' },
+  };
+  const ord = partitionFinishFields(shuffled).roomData['den'].furniture.map(f => f.id);
+  assert.deepEqual(ord, ['furn100', 'furn200']);
+  ok('furniture is deterministically ordered by id');
 }
 ```
 
@@ -204,6 +213,12 @@ export function partitionFinishFields(map) {
     }
     // unknown prefix → ignore
   }
+  // HGETALL field order is arbitrary; sort each room's furniture by id (ids embed
+  // Date.now(), so this is chronological) for a STABLE order across reloads — otherwise
+  // furniture rows would visibly reshuffle every load.
+  for (const rd of Object.values(out.roomData)) {
+    rd.furniture.sort((a, b) => String((a && a.id) || '').localeCompare(String((b && b.id) || '')));
+  }
   return out;
 }
 ```
@@ -281,6 +296,18 @@ console.log('migrateFinishesToHash():');
   assert.equal(r3.status, 'empty');
   assert.equal('finish-records:new' in fresh.store, false);
   ok('no legacy blob → nothing migrated');
+
+  // Interrupted run: content fields present, __migrated stamp NOT yet written, and the user
+  // has since edited item:t1. A retry must NOT re-write the stale legacy blob over the edit.
+  const interrupted = mockRedis({
+    'finishes:pp': { items: [{ id: 't1', item: 'LVP' }], deletedIds: [], roomData: {}, targetBudget: null },
+    'finish-records:pp': { 'item:t1': JSON.stringify({ id: 't1', item: 'User renamed this' }) },
+  });
+  const r4 = await migrateFinishesToHash(interrupted, { key: 'finish-records:pp', legacyKey: 'finishes:pp', toFields });
+  assert.equal(r4.status, 'already');
+  assert.equal(JSON.parse(interrupted.store['finish-records:pp']['item:t1']).item, 'User renamed this'); // edit preserved
+  assert.equal(interrupted.store['finish-records:pp']['__migrated'], '1');                                // stamp finished
+  ok('interrupted migration + later edit → no re-clobber, stamp completed');
 }
 ```
 
@@ -315,8 +342,16 @@ export async function migrateFinishesToHash(redis, { key, legacyKey, toFields })
   if (lock !== 'OK') return { status: 'locked' };
 
   try {
-    const again = await redis.hget(key, '__migrated');
-    if (again) return { status: 'already' };
+    // Re-check under the lock. Abort if the hash already has ANY content field — not just
+    // the __migrated stamp. The content batch below is a single (atomic) HSET, so the
+    // presence of any item:/furn:/room:/budget field means a prior run already wrote the
+    // full content. Re-running toFields(legacy) here would clobber edits the user made
+    // between an interrupted run (fields written, stamp not yet) and this retry.
+    const current = await redis.hgetall(key);
+    if (current && Object.keys(current).some((f) => f !== '__migrated')) {
+      if (!current.__migrated) await redis.hset(key, { __migrated: '1' }); // finish the stamp
+      return { status: 'already' };
+    }
 
     const fields = toFields(legacy);
     const toWrite = {};
@@ -374,7 +409,11 @@ const redis = new Redis({
 //   GET    → run one-time blob→hash migration, then HGETALL (raw field map)
 //   PUT    → HSET one field   ({ field, value })
 //   DELETE → HDEL one field   (?field=)
-// Only these field shapes are accepted (defense-in-depth against key injection):
+// Only these field shapes are accepted (defense-in-depth against key injection).
+// item/furniture id segments allow [A-Za-z0-9-] (permissive so no valid id is ever
+// rejected — today's ids are lowercase, but the class won't reject a future mixed-case id);
+// room-id segments are [a-z0-9-] to match the real kebab room ids (incl. digit-first like
+// `3rd-floor-bath`). None of these ids contain a colon, so the field parses unambiguously.
 const FIELD_RE = /^(item:[A-Za-z0-9-]+|furn:[a-z0-9-]+:[A-Za-z0-9-]+|room:[a-z0-9-]+|budget)$/;
 
 export default async function handler(req, res) {
@@ -474,7 +513,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Modify: `src/App.jsx` — add helpers next to the purchases write handlers (after `deletePurchase`, ~line 4116); extend the `design-logic` import (line 11).
 
-These live in `App()` (the parent) because they need `apiUrl`, `activeProperty`, `finishesServerLoaded`, and `setSyncError`. Item writes are **debounced per field** (400 ms) via a ref-held timer map so typing a name is one `HSET`, not one per keystroke; a flush drains pending timers on teardown. Furniture/room/budget edits are discrete (blur / click / Enter), so they write immediately.
+These live in `App()` (the parent) because they need `apiUrl`, `activeProperty`, `finishesServerLoaded`, and `setSyncError`. Item writes are **debounced per field** (400 ms) via a ref-held timer map so typing a name is one `HSET`, not one per keystroke; a flush drains pending writes on tab-hide/unload with `keepalive:true` so the last keystroke survives a page close. Furniture/room/budget edits are discrete (blur / click / Enter), so they write immediately. **Critically, a delete/tombstone cancels any still-pending debounced write to the same field first** — otherwise a rename queued moments before a delete would fire after the tombstone and resurrect the deleted item on reload.
 
 - [ ] **Step 1: Extend the design-logic import**
 
@@ -494,18 +533,33 @@ In `App()`, immediately after the `deletePurchase`/`changePurchaseReceipts` bloc
   const finishFieldTimers = useRef({});   // field → setTimeout id (debounce)
   const finishFieldPending = useRef({});  // field → latest value awaiting its write
 
-  const putFinishField = (field, value) => {
+  // Cancel any pending debounced write for a field (used before a superseding write,
+  // e.g. a delete/tombstone must beat a still-pending rename — otherwise the stale rename
+  // fires after the tombstone and resurrects the deleted item on reload).
+  const cancelPendingFinishField = (field) => {
+    if (finishFieldTimers.current[field]) {
+      clearTimeout(finishFieldTimers.current[field]);
+      delete finishFieldTimers.current[field];
+    }
+    delete finishFieldPending.current[field];
+  };
+
+  // `useKeepalive` lets the unload/hide flush survive tab close (browsers cancel plain
+  // in-flight fetches on unload; keepalive does not).
+  const putFinishField = (field, value, useKeepalive = false) => {
     if (!finishesServerLoaded.current) return;
     fetch(apiUrl('/api/finish-records', activeProperty), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ field, value }),
+      keepalive: useKeepalive,
     }).then(r => { if (!r.ok) setSyncError('Failed to save finishes'); else setSyncError(null); })
       .catch(() => setSyncError('Unable to reach server'));
   };
 
   const deleteFinishField = (field) => {
     if (!finishesServerLoaded.current) return;
+    cancelPendingFinishField(field);   // a delete supersedes any queued write to this field
     const base = apiUrl('/api/finish-records', activeProperty);
     const url = base + (activeProperty ? '&' : '?') + 'field=' + encodeURIComponent(field);
     fetch(url, { method: 'DELETE' })
@@ -525,17 +579,24 @@ In `App()`, immediately after the `deletePurchase`/`changePurchaseReceipts` bloc
   };
 
   // Fire any still-pending debounced writes immediately (tab hidden / page unload).
+  // keepalive=true so the request isn't cancelled when the page is closing.
   const flushFinishFields = () => {
     for (const id of Object.values(finishFieldTimers.current)) clearTimeout(id);
     const pending = finishFieldPending.current;
     finishFieldTimers.current = {};
     finishFieldPending.current = {};
-    for (const [field, value] of Object.entries(pending)) putFinishField(field, value);
+    for (const [field, value] of Object.entries(pending)) putFinishField(field, value, true);
   };
 
   // Typed callbacks passed to DesignView (kept here so all server I/O lives in the parent).
+  // tombstone/remove call putFinishField/deleteFinishField which cancel any pending rename
+  // on the SAME field first, so a delete can never be undone by a late debounced write.
   const writeFinishItem = (item) => putFinishFieldDebounced(finishItemField(item.id), item);
-  const tombstoneFinishItem = (id) => putFinishField(finishItemField(id), tombstone(id));
+  const tombstoneFinishItem = (id) => {
+    const field = finishItemField(id);
+    cancelPendingFinishField(field);   // beat any still-pending rename for this item
+    putFinishField(field, tombstone(id));
+  };
   const removeFinishItem = (id) => deleteFinishField(finishItemField(id));
   const writeFurniture = (roomId, furn) => putFinishField(furnitureField(roomId, furn.id), furn);
   const removeFurniture = (roomId, furnId) => deleteFinishField(furnitureField(roomId, furnId));
@@ -602,6 +663,10 @@ Replace the finishes fetch effect body (the `fetch(apiUrl('/api/finishes', ...))
         const { savedItems, deletedIds, roomData: rd, targetBudget: tb } = partitionFinishFields(map);
         // Only apply server data when the hash actually has records (a brand-new property
         // returns {} → keep defaults, exactly like the old `items.length > 0` guard).
+        // INVARIANT: the hash is fully empty ONLY for a fresh property — deleting a default
+        // always leaves a tombstone (deletedIds > 0) and user items leave item: fields. So an
+        // all-empty partition can't be a "user deleted everything" state. If a future
+        // "restore all defaults" feature HDELs tombstones, revisit this guard.
         if (savedItems.length > 0 || deletedIds.length > 0 || Object.keys(rd).length > 0 || tb != null) {
           setDeletedFinishIds(deletedIds);
           setFinishes(mergeFinishes(savedItems, deletedIds, DEFAULT_FINISH_ITEMS));
@@ -672,7 +737,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
 
 - [ ] **Step 3: Wire the item mutations**
 
-Replace `updateItem`, `cycleAssignee`, `setItemDueDate` (~1851-1880) so each writes the resulting record:
+Replace `updateItem` (~1822), `cycleAssignee` (~1840), `setItemDueDate` (~1849) — all inside `DesignView` — so each writes the resulting record (line numbers are approximate; search for `const updateItem` etc. rather than jumping):
 
 ```js
   const updateItem = (id, updates) => {
@@ -770,7 +835,7 @@ Replace the `setFinishes` calls in `addItem` (~1869) and `createRoomCopies` (~18
 
 - [ ] **Step 5: Wire the furniture mutations**
 
-Replace `addFurnitureItem`, `updateFurnitureItem`, `deleteFurnitureItem` (~1920-1949):
+Replace `addFurnitureItem`, `updateFurnitureItem`, `deleteFurnitureItem` (~1920-1949). Furniture writes are **immediate** (not debounced) — this is safe because furniture fields are edited only via the discrete add-form and the `purchased` checkbox toggle (verified: `updateFurnitureItem`'s only call site is the checkbox at ~2373; name/price/url live in the `newFurniture` add-form). **If a future inline `onChange` editor is added for existing furniture, route its write through a debounced writer keyed by `furnitureField(roomId, furnId)`** to avoid an `HSET` per keystroke.
 
 ```js
   const addFurnitureItem = (roomId) => {
@@ -914,3 +979,10 @@ Push to `main`, wait for Vercel, then on the live `/admin` app:
 **Placeholder scan:** No TBD/TODO. Every code step shows complete, final code (Task 5's debounce uses a single pending-value implementation — no sketch/rewrite).
 
 **Type consistency:** Field builders (`finishItemField`/`furnitureField`/`roomField`/`BUDGET_FIELD`/`tombstone`) and `partitionFinishFields`/`blobToFields` names are identical across Tasks 1, 2, 3, 5, 6. Write callbacks (`writeFinishItem`/`tombstoneFinishItem`/`removeFinishItem`/`writeFurniture`/`removeFurniture`/`writeRoomMeta`/`writeBudget`) are defined in Task 5 and consumed with the same names/arity in Task 7. `migrateFinishesToHash(redis, {key, legacyKey, toFields})` signature matches between Tasks 2 and 3.
+
+**Multi-model review fixes folded in (2026-07-16):** a 3-model review (grounded in the codebase) hardened the plan against:
+1. *Pending-rename resurrects a deleted item* — `tombstoneFinishItem`/`deleteFinishField` now `cancelPendingFinishField(field)` before writing (Task 5). Prevents a debounced rename from firing after a tombstone.
+2. *Unload flush loses the last keystroke* — `flushFinishFields` sends with `keepalive:true` (Task 5).
+3. *Migration re-clobber window* — `migrateFinishesToHash` aborts if any content field exists, not just the `__migrated` stamp (Task 2), with a regression test for the interrupted-run + later-edit case.
+4. *Furniture reshuffles on reload* — `partitionFinishFields` sorts furniture by id for a stable order (Task 1 + test).
+5. Doc/clarity: `FIELD_RE` id-class comment (Task 3), furniture-immediate-write assumption (Task 7 Step 5), load-guard empty-hash invariant (Task 6), corrected `updateItem` line reference (Task 7 Step 3). The `api/→src/lib` import remains the one deploy-time unknown (fallback in Task 3 Step 2).
