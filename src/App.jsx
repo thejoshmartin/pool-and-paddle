@@ -1711,7 +1711,7 @@ function mergeFinishes(saved, deletedIds = []) {
     .filter(item => !deletedSet.has(item.id))
     .map(item => {
       const s = saved.find(s => s.id === item.id);
-      return s ? { ...item, selection: s.selection ?? "", unitPrice: s.unitPrice ?? null, quantity: s.quantity ?? null, unit: s.unit ?? item.unit, url: s.url ?? "", notes: s.notes ?? "", linkedTo: s.linkedTo ?? null, assignee: s.assignee ?? null, dueDate: s.dueDate ?? null } : item;
+      return s ? { ...item, room: s.room ? migrateRoom(s.room) : item.room, selection: s.selection ?? "", unitPrice: s.unitPrice ?? null, quantity: s.quantity ?? null, unit: s.unit ?? item.unit, url: s.url ?? "", notes: s.notes ?? "", linkedTo: s.linkedTo ?? null, assignee: s.assignee ?? null, dueDate: s.dueDate ?? null } : item;
     });
   const userItems = saved.filter(s => s.userCreated && !defaultIds.has(s.id))
     .map(item => ({ ...item, room: migrateRoom(item.room) }));
@@ -2702,6 +2702,19 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                             onClick={e => e.stopPropagation()}
                             style={inputStyle} {...focusHandlers}
                           />
+                        </div>
+
+                        {/* Editable room — reclassify the item to another room */}
+                        <div style={{ marginBottom: 14 }}>
+                          <label style={labelStyle}>Room</label>
+                          <select
+                            value={item.room || ""}
+                            onChange={e => updateItem(item.id, { room: e.target.value })}
+                            onClick={e => e.stopPropagation()}
+                            style={inputStyle} {...focusHandlers}
+                          >
+                            {FINISH_ROOMS.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+                          </select>
                         </div>
 
                         {/* Linked item banner */}
