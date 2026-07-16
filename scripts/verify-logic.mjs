@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {
   buildCostSegCsv, suggestAssetClass, emptyPurchase, NOT_IN_ALLOWANCE,
 } from '../src/lib/purchases-logic.js';
-import { scopedKey, parseReceiptPathname } from '../api/_scope.js';
+import { scopedKey, parseReceiptPathname, migrateFinishesToHash } from '../api/_scope.js';
 import {
   matchesFinishSearch, buildRoomCopies, mergeFinishes, migrateRoom,
   finishItemField, furnitureField, roomField, tombstone,
@@ -276,6 +276,60 @@ console.log('blobToFields() → partitionFinishFields() round-trip:');
   const ord = partitionFinishFields(shuffled).roomData['den'].furniture.map(f => f.id);
   assert.deepEqual(ord, ['furn100', 'furn200']);
   ok('furniture is deterministically ordered by id');
+}
+
+console.log('migrateFinishesToHash():');
+{
+  // Minimal mock redis backing store.
+  function mockRedis(initial = {}) {
+    const store = { ...initial };     // string keys → value; hash keys → object
+    return {
+      store,
+      async hget(key, field) { return (store[key] || {})[field] ?? null; },
+      async hgetall(key) { return store[key] ? { ...store[key] } : null; },
+      async get(key) { return store[key] ?? null; },
+      async set(key, val, opts) {
+        if (opts && opts.nx && key in store) return null;
+        store[key] = val; return 'OK';
+      },
+      async hset(key, obj) { store[key] = { ...(store[key] || {}), ...obj }; return 1; },
+      async del(key) { delete store[key]; return 1; },
+    };
+  }
+
+  const blob = { items: [{ id: 't1', item: 'LVP' }], deletedIds: ['t9'], roomData: {}, targetBudget: 100 };
+  const redis = mockRedis({ 'finishes:pp': blob });
+  const toFields = blobToFields;
+
+  const r1 = await migrateFinishesToHash(redis, { key: 'finish-records:pp', legacyKey: 'finishes:pp', toFields });
+  assert.equal(r1.status, 'migrated');
+  assert.equal(JSON.parse(redis.store['finish-records:pp']['item:t1']).item, 'LVP');
+  assert.deepEqual(JSON.parse(redis.store['finish-records:pp']['item:t9']), { id: 't9', __deleted: true });
+  assert.equal(redis.store['finish-records:pp']['__migrated'], '1');
+  assert.equal('finishes:pp' in redis.store, true);          // blob NEVER deleted
+  ok('migrates the blob into the hash, stamps __migrated, keeps the blob');
+
+  const r2 = await migrateFinishesToHash(redis, { key: 'finish-records:pp', legacyKey: 'finishes:pp', toFields });
+  assert.equal(r2.status, 'already');                          // idempotent
+  ok('second run is a no-op (already stamped)');
+
+  const fresh = mockRedis({});                                 // no legacy blob
+  const r3 = await migrateFinishesToHash(fresh, { key: 'finish-records:new', legacyKey: 'finishes:new', toFields });
+  assert.equal(r3.status, 'empty');
+  assert.equal('finish-records:new' in fresh.store, false);
+  ok('no legacy blob → nothing migrated');
+
+  // Interrupted run: content fields present, __migrated stamp NOT yet written, and the user
+  // has since edited item:t1. A retry must NOT re-write the stale legacy blob over the edit.
+  const interrupted = mockRedis({
+    'finishes:pp': { items: [{ id: 't1', item: 'LVP' }], deletedIds: [], roomData: {}, targetBudget: null },
+    'finish-records:pp': { 'item:t1': JSON.stringify({ id: 't1', item: 'User renamed this' }) },
+  });
+  const r4 = await migrateFinishesToHash(interrupted, { key: 'finish-records:pp', legacyKey: 'finishes:pp', toFields });
+  assert.equal(r4.status, 'already');
+  assert.equal(JSON.parse(interrupted.store['finish-records:pp']['item:t1']).item, 'User renamed this'); // edit preserved
+  assert.equal(interrupted.store['finish-records:pp']['__migrated'], '1');                                // stamp finished
+  ok('interrupted migration + later edit → no re-clobber, stamp completed');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

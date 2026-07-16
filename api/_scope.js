@@ -39,6 +39,49 @@ export function parseReceiptPathname(pathname) {
 //   - Legacy keys are never written or deleted — they remain the backup.
 //   - The entire finishes object (including deletedIds) copies verbatim, so nothing
 //     already-deleted reappears.
+// One-time migration of a legacy finishes BLOB (`finishes:<id>`) → the per-record
+// HASH (`finish-records:<id>`). Mirrors migrateData's safety model:
+//   - Idempotent: a `__migrated` stamp short-circuits re-runs.
+//   - Lock-guarded (NX): only one caller migrates; a loser returns { status:'locked' }.
+//   - Write-then-stamp: fields written first, `__migrated` last, so an interrupted
+//     run leaves no stamp and simply retries.
+//   - The legacy blob is never written or deleted — it stays as the frozen backup.
+// `toFields` is injected (the pure blobToFields from src/lib/design-logic.js) so this
+// module stays dependency-free and unit-testable with a mock redis.
+export async function migrateFinishesToHash(redis, { key, legacyKey, toFields }) {
+  const stamped = await redis.hget(key, '__migrated');
+  if (stamped) return { status: 'already' };
+
+  const legacy = await redis.get(legacyKey);
+  if (!legacy || !Array.isArray(legacy.items)) return { status: 'empty' };
+
+  const lockKey = `finishes-hash-migration:lock:${key}`;
+  const lock = await redis.set(lockKey, String(Date.now()), { nx: true, ex: 60 });
+  if (lock !== 'OK') return { status: 'locked' };
+
+  try {
+    // Re-check under the lock. Abort if the hash already has ANY content field — not just
+    // the __migrated stamp. The content batch below is a single (atomic) HSET, so the
+    // presence of any item:/furn:/room:/budget field means a prior run already wrote the
+    // full content. Re-running toFields(legacy) here would clobber edits the user made
+    // between an interrupted run (fields written, stamp not yet) and this retry.
+    const current = await redis.hgetall(key);
+    if (current && Object.keys(current).some((f) => f !== '__migrated')) {
+      if (!current.__migrated) await redis.hset(key, { __migrated: '1' }); // finish the stamp
+      return { status: 'already' };
+    }
+
+    const fields = toFields(legacy);
+    const toWrite = {};
+    for (const [f, v] of Object.entries(fields)) toWrite[f] = JSON.stringify(v);
+    if (Object.keys(toWrite).length > 0) await redis.hset(key, toWrite);
+    await redis.hset(key, { __migrated: '1' });
+    return { status: 'migrated' };
+  } finally {
+    await redis.del(lockKey);
+  }
+}
+
 export async function migrateData(redis) {
   const existing = await redis.get('properties');
   if (existing && existing.schemaVersion) {
