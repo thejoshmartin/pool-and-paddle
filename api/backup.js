@@ -27,6 +27,8 @@ export default async function handler(req, res) {
     perProperty[id] = {
       tasks: await redis.get(`tasks:${id}`),
       finishes: await redis.get(`finishes:${id}`),
+      // finishes are ALSO stored as a per-record hash (field per item/furn/room/budget).
+      finishRecords: await redis.hgetall(`finish-records:${id}`),
       // purchases are a Redis hash (field = purchaseId); hgetall returns the full record set.
       purchases: await redis.hgetall(`purchases:${id}`),
     };
