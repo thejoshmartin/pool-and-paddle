@@ -1689,7 +1689,7 @@ const FINISH_CATEGORIES = FINISHES_DATA.categories;
 const FINISH_ROOMS = FINISHES_DATA.rooms;
 const DEFAULT_FINISH_ITEMS = FINISHES_DATA.items.map(item => ({ ...item, userCreated: false }));
 
-function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, roomData, setRoomData, focusItemId, deletedFinishIds, setDeletedFinishIds, onPromote, promotedFinishIds, onPromoteFurniture, promotedFurnitureIds }) {
+function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, roomData, setRoomData, focusItemId, deletedFinishIds, setDeletedFinishIds, onPromote, promotedFinishIds, onPromoteFurniture, promotedFurnitureIds, writeFinishItem, tombstoneFinishItem, removeFinishItem, writeFurniture, removeFurniture, writeRoomMeta, writeBudget }) {
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -1820,20 +1820,32 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
   const outstandingCount = finishes.length - decidedCount;
 
   const updateItem = (id, updates) => {
-    setFinishes(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
+    setFinishes(prev => prev.map(item => {
+      if (item.id !== id) return item;
+      const next = { ...item, ...updates };
+      writeFinishItem(next);
+      return next;
+    }));
   };
 
   const deleteItem = (id) => {
     const item = finishes.find(i => i.id === id);
     if (item && !item.userCreated) {
       setDeletedFinishIds(prev => [...prev, id]);
+      tombstoneFinishItem(id);          // default → tombstone field
+    } else {
+      removeFinishItem(id);             // user item → HDEL
     }
-    setFinishes(prev => {
-      // Also unlink any children that reference this parent
-      return prev
-        .filter(item => item.id !== id)
-        .map(item => item.linkedTo === id ? { ...item, linkedTo: null } : item);
-    });
+    setFinishes(prev => prev
+      .filter(item => item.id !== id)
+      .map(item => {
+        if (item.linkedTo === id) {
+          const next = { ...item, linkedTo: null };
+          writeFinishItem(next);        // persist each unlinked child
+          return next;
+        }
+        return item;
+      }));
     setConfirmDelete(null);
   };
 
@@ -1842,12 +1854,19 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
     setFinishes(prev => prev.map(item => {
       if (item.id !== id) return item;
       const idx = cycle.indexOf(item.assignee);
-      return { ...item, assignee: cycle[(idx + 1) % cycle.length] };
+      const next = { ...item, assignee: cycle[(idx + 1) % cycle.length] };
+      writeFinishItem(next);
+      return next;
     }));
   };
 
   const setItemDueDate = (id, date) => {
-    setFinishes(prev => prev.map(item => item.id === id ? { ...item, dueDate: date || null } : item));
+    setFinishes(prev => prev.map(item => {
+      if (item.id !== id) return item;
+      const next = { ...item, dueDate: date || null };
+      writeFinishItem(next);
+      return next;
+    }));
   };
 
   const fmtDate = (dateStr) => {
@@ -1866,7 +1885,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
 
   const addItem = () => {
     if (!newItem.item.trim()) return;
-    setFinishes(prev => [...prev, {
+    const created = {
       id: "uf" + Date.now(),
       category: newItem.category,
       room: newItem.room,
@@ -1881,7 +1900,9 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
       assignee: null,
       dueDate: null,
       userCreated: true,
-    }]);
+    };
+    setFinishes(prev => [...prev, created]);
+    writeFinishItem(created);
     setNewItem({ item: "", category: FINISH_CATEGORIES[0].id, room: FINISH_ROOMS[0].id });
     setShowAddForm(false);
   };
@@ -1897,6 +1918,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
     if (copyRooms.length === 0) return;
     const copies = buildRoomCopies({ source, roomIds: copyRooms, mode: copyMode, idBase: Date.now() });
     setFinishes(prev => [...prev, ...copies]);
+    copies.forEach(writeFinishItem);
     setCopyToast(`Copied to ${copies.length} room${copies.length !== 1 ? "s" : ""}`);
     setCopyPanelId(null);
     setCopyRooms([]);
@@ -1920,32 +1942,32 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
   const addFurnitureItem = (roomId) => {
     if (!newFurniture.name.trim()) return;
     const rd = getRoomData(roomId);
-    updateRoomData(roomId, {
-      furniture: [...rd.furniture, {
-        id: "furn" + Date.now(),
-        name: newFurniture.name.trim(),
-        price: newFurniture.price ? parseFloat(newFurniture.price) : null,
-        url: newFurniture.url || "",
-        notes: newFurniture.notes || "",
-        purchased: false,
-      }],
-    });
+    const furn = {
+      id: "furn" + Date.now(),
+      name: newFurniture.name.trim(),
+      price: newFurniture.price ? parseFloat(newFurniture.price) : null,
+      url: newFurniture.url || "",
+      notes: newFurniture.notes || "",
+      purchased: false,
+    };
+    updateRoomData(roomId, { furniture: [...rd.furniture, furn] });
+    writeFurniture(roomId, furn);
     setNewFurniture({ name: "", price: "", url: "", notes: "" });
     setShowAddFurniture(null);
   };
 
   const updateFurnitureItem = (roomId, furnId, updates) => {
     const rd = getRoomData(roomId);
-    updateRoomData(roomId, {
-      furniture: rd.furniture.map(f => f.id === furnId ? { ...f, ...updates } : f),
-    });
+    const next = rd.furniture.map(f => f.id === furnId ? { ...f, ...updates } : f);
+    updateRoomData(roomId, { furniture: next });
+    const updated = next.find(f => f.id === furnId);
+    if (updated) writeFurniture(roomId, updated);
   };
 
   const deleteFurnitureItem = (roomId, furnId) => {
     const rd = getRoomData(roomId);
-    updateRoomData(roomId, {
-      furniture: rd.furniture.filter(f => f.id !== furnId),
-    });
+    updateRoomData(roomId, { furniture: rd.furniture.filter(f => f.id !== furnId) });
+    removeFurniture(roomId, furnId);
   };
 
   const fmtMoney = (n) => {
@@ -2073,6 +2095,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                   if (e.key === "Enter") {
                     const val = budgetInput.trim() ? parseFloat(budgetInput) : null;
                     setTargetBudget(val);
+                    writeBudget(val);
                     setEditingBudget(false);
                   }
                   if (e.key === "Escape") setEditingBudget(false);
@@ -2080,6 +2103,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                 onBlur={() => {
                   const val = budgetInput.trim() ? parseFloat(budgetInput) : null;
                   setTargetBudget(val);
+                  writeBudget(val);
                   setEditingBudget(false);
                 }}
                 style={{
@@ -2263,10 +2287,10 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                       placeholder="Paste Miro board URL..."
                       autoFocus
                       onKeyDown={e => {
-                        if (e.key === "Enter") { updateRoomData(groupId, { miroUrl: miroInput.trim() }); setEditingMiroRoom(null); }
+                        if (e.key === "Enter") { updateRoomData(groupId, { miroUrl: miroInput.trim() }); writeRoomMeta(groupId, { miroUrl: miroInput.trim() }); setEditingMiroRoom(null); }
                         if (e.key === "Escape") setEditingMiroRoom(null);
                       }}
-                      onBlur={() => { updateRoomData(groupId, { miroUrl: miroInput.trim() }); setEditingMiroRoom(null); }}
+                      onBlur={() => { updateRoomData(groupId, { miroUrl: miroInput.trim() }); writeRoomMeta(groupId, { miroUrl: miroInput.trim() }); setEditingMiroRoom(null); }}
                       style={{
                         padding: "7px 10px", borderRadius: 6, border: `1.5px solid ${C.border}`,
                         background: C.white, color: C.charcoal, fontFamily: font, fontSize: 16,
@@ -4314,7 +4338,7 @@ export default function App() {
       {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
-      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} />}
+      {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
       {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} focusPurchaseId={focusPurchaseId} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
 
       {showMigrationModal && migrationNeeded && (
