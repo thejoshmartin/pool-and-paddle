@@ -8,7 +8,7 @@ import {
   PURCHASE_STATUSES, NOT_IN_ALLOWANCE, ALLOWANCE_CATEGORIES, EXHIBIT_B_TOTAL,
   ASSET_CLASSES, suggestAssetClass, buildCostSegCsv, fmtUSD, emptyPurchase,
 } from "./lib/purchases-logic.js";
-import { matchesFinishSearch, buildRoomCopies, mergeFinishes } from "./lib/design-logic.js";
+import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, furnitureField, roomField, tombstone, BUDGET_FIELD, partitionFinishFields } from "./lib/design-logic.js";
 
 // ─── DATA ───────────────────────────────────────────────────────────────────
 
@@ -4118,6 +4118,92 @@ export default function App() {
     const target = purchases.find(p => p.id === id);
     if (target) savePurchase({ ...target, receipts });
   };
+
+  // ── Finishes — per-record server mutations (HSET/HDEL one field), never a whole-array
+  // write. finishesServerLoaded gates writes so loading defaults/cache never persists.
+  const finishFieldTimers = useRef({});   // field → setTimeout id (debounce)
+  const finishFieldPending = useRef({});  // field → latest value awaiting its write
+
+  // Cancel any pending debounced write for a field (used before a superseding write,
+  // e.g. a delete/tombstone must beat a still-pending rename — otherwise the stale rename
+  // fires after the tombstone and resurrects the deleted item on reload).
+  const cancelPendingFinishField = (field) => {
+    if (finishFieldTimers.current[field]) {
+      clearTimeout(finishFieldTimers.current[field]);
+      delete finishFieldTimers.current[field];
+    }
+    delete finishFieldPending.current[field];
+  };
+
+  // `useKeepalive` lets the unload/hide flush survive tab close (browsers cancel plain
+  // in-flight fetches on unload; keepalive does not).
+  const putFinishField = (field, value, useKeepalive = false) => {
+    if (!finishesServerLoaded.current) return;
+    fetch(apiUrl('/api/finish-records', activeProperty), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field, value }),
+      keepalive: useKeepalive,
+    }).then(r => { if (!r.ok) setSyncError('Failed to save finishes'); else setSyncError(null); })
+      .catch(() => setSyncError('Unable to reach server'));
+  };
+
+  const deleteFinishField = (field) => {
+    if (!finishesServerLoaded.current) return;
+    cancelPendingFinishField(field);   // a delete supersedes any queued write to this field
+    const base = apiUrl('/api/finish-records', activeProperty);
+    const url = base + (activeProperty ? '&' : '?') + 'field=' + encodeURIComponent(field);
+    fetch(url, { method: 'DELETE' })
+      .then(r => { if (!r.ok) setSyncError('Failed to save finishes'); else setSyncError(null); })
+      .catch(() => setSyncError('Unable to reach server'));
+  };
+
+  // Debounced field write (coalesces rapid keystrokes on the same field).
+  const putFinishFieldDebounced = (field, value) => {
+    finishFieldPending.current[field] = value;
+    if (finishFieldTimers.current[field]) clearTimeout(finishFieldTimers.current[field]);
+    finishFieldTimers.current[field] = setTimeout(() => {
+      delete finishFieldTimers.current[field];
+      delete finishFieldPending.current[field];
+      putFinishField(field, value);
+    }, 400);
+  };
+
+  // Fire any still-pending debounced writes immediately (tab hidden / page unload).
+  // keepalive=true so the request isn't cancelled when the page is closing.
+  const flushFinishFields = () => {
+    for (const id of Object.values(finishFieldTimers.current)) clearTimeout(id);
+    const pending = finishFieldPending.current;
+    finishFieldTimers.current = {};
+    finishFieldPending.current = {};
+    for (const [field, value] of Object.entries(pending)) putFinishField(field, value, true);
+  };
+
+  // Typed callbacks passed to DesignView (kept here so all server I/O lives in the parent).
+  // tombstone/remove call putFinishField/deleteFinishField which cancel any pending rename
+  // on the SAME field first, so a delete can never be undone by a late debounced write.
+  const writeFinishItem = (item) => putFinishFieldDebounced(finishItemField(item.id), item);
+  const tombstoneFinishItem = (id) => {
+    const field = finishItemField(id);
+    cancelPendingFinishField(field);   // beat any still-pending rename for this item
+    putFinishField(field, tombstone(id));
+  };
+  const removeFinishItem = (id) => deleteFinishField(finishItemField(id));
+  const writeFurniture = (roomId, furn) => putFinishField(furnitureField(roomId, furn.id), furn);
+  const removeFurniture = (roomId, furnId) => deleteFinishField(furnitureField(roomId, furnId));
+  const writeRoomMeta = (roomId, meta) => putFinishField(roomField(roomId), meta);
+  const writeBudget = (val) => putFinishField(BUDGET_FIELD, val);
+
+  useEffect(() => {
+    const onHide = () => { if (document.visibilityState === 'hidden') flushFinishFields(); };
+    window.addEventListener('visibilitychange', onHide);
+    window.addEventListener('beforeunload', flushFinishFields);
+    return () => {
+      window.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('beforeunload', flushFinishFields);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Which design items already have a purchase (drives the "✓ Purchased" badge).
   const promotedFinishIds = useMemo(
