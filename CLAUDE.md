@@ -29,16 +29,19 @@ Luxury STR (short-term rental) command center for Josh & Kerry's beach house at 
 
 ## Persistence — CRITICAL rules (don't regress these)
 - Redis is source of truth; **localStorage is a per-property cache**; server writes are gated by a `serverLoaded` ref so defaults never clobber server data on load.
-- **Tasks & finishes**: whole-payload debounced (500 ms) PUT. Their SAVE effects **deliberately OMIT `activeProperty` from the dep array** (with an eslint-disable + comment). This is intentional: firing on a bare property switch would write the *previous* property's in-memory data under the *new* key. Do **not** "fix" this by adding `activeProperty`.
+- **Tasks**: whole-payload debounced (500 ms) PUT. The SAVE effect **deliberately OMITS `activeProperty` from the dep array** (with an eslint-disable + comment). This is intentional: firing on a bare property switch would write the *previous* property's in-memory data under the *new* key. Do **not** "fix" this by adding `activeProperty`. (Finishes used to work this way too, but are now per-record — see the Finishes bullet below; their localStorage cache effect keeps the same `activeProperty`-omitted discipline.)
 - **Fetch effects** reset the `serverLoaded` ref + use a per-run `isCancelled` guard (cleanup sets it) so an out-of-order resolution after a rapid property switch can't apply under the wrong key; on a switch they load that property's cache first.
 - **Purchases**: stored as a Redis **HASH** (`purchases:<id>`, field = purchase id). Every mutation is a **targeted single-record op** — `PUT` = `HSET` one field (add/edit), `DELETE` = `HDEL` one field (+ `del()`s its receipt blobs). **Never** whole-array PUT purchases (that reintroduces a concurrency race). The localStorage purchases cache is local-only.
+- **Finishes**: stored as a Redis **HASH** (`finish-records:<id>`) with one field per editable unit — `item:<id>`, `furn:<roomId>:<furnId>`, `room:<roomId>`, `budget`, and `item:<id>` **deletion tombstones** (`{id,__deleted:true}`). Every mutation is a **targeted single-field `HSET`/`HDEL`** (never a whole-array PUT) so concurrent edits can't clobber. Item writes are debounced per field (400 ms) and flushed on hide/unload (`keepalive`); a delete/tombstone cancels any pending write to the same field first. Load = `HGETALL` → `partitionFinishFields` → `mergeFinishes`. The legacy `finishes:<id>` blob is **frozen as backup** and read only by a one-time, idempotent, server-side migration (`migrateFinishesToHash` in `_scope.js`, run on first GET; never deletes the blob). Pure encode/decode helpers (`blobToFields`/`partitionFinishFields`/field builders) live in `src/lib/design-logic.js`. The route is `api/finish-records.js` (GET/PUT-field/DELETE-field); the localStorage finishes cache is local-only. **Never** reintroduce a whole-array PUT of finishes.
 - **Merge functions**: `mergeTasks()` (in `App.jsx`) / `mergeFinishes()` (pure, in `src/lib/design-logic.js` — takes `(saved, deletedIds, defaults)`) reconcile saved data with defaults; user-created items (`userCreated:true`) appended after defaults; `ROOM_MIGRATION`/`migrateRoom()` remap old room ids. **`mergeFinishes` rebuilds each default item from the catalogue and copies back a whitelist of saved fields — that whitelist MUST include every user-editable field (`item` name, `category`, room, selection, price, qty, unit, url, notes, linkedTo, assignee, dueDate). A field missing from the whitelist silently reverts on reload** (see 2026-07 historical fix).
 
 ## API Routes (Vercel Serverless — `api/*.js`)
-- `tasks.js`, `finishes.js` — GET/PUT, `?property=<id>` scoped (absent → legacy global key), via `scopedKey`.
+- `tasks.js` — GET/PUT, `?property=<id>` scoped (absent → legacy global key), via `scopedKey`.
+- `finishes.js` — legacy blob GET/PUT, kept intact so `backup.js` can read the frozen `finishes:<id>` blob; the client no longer writes it (finishes moved to `finish-records.js`).
+- `finish-records.js` — the live finishes store: GET (`migrateFinishesToHash` blob→hash on first read, then `HGETALL`) / PUT (`HSET` one validated field `{field,value}`) / DELETE (`HDEL` one `?field=`), `?property=` scoped. Fields validated against a strict `FIELD_RE`.
 - `properties.js` — GET/PUT the registry (validates string + unique ids).
 - `migrate.js` — POST, one-time legacy→per-property migration (see above).
-- `backup.js` — GET, full snapshot of every key (legacy + per-property + purchases hash). Wired to a **permanent "Download full backup"** button.
+- `backup.js` — GET, full snapshot of every key (legacy + per-property + `finish-records` + purchases hashes). Wired to a **permanent "Download full backup"** button.
 - `purchases.js` — GET (`HGETALL`) / PUT (`HSET`) / DELETE (`HDEL` + receipt-blob cleanup), `?property=` scoped.
 - `receipts-upload.js` — POST, server-side upload to the **private** Blob store (base64 in, size/type capped, token stays server-side).
 - `receipts-view.js` — GET `?pathname=`, streams a private receipt after validating the pathname shape AND that it's referenced by a real purchase (defense-in-depth).
@@ -49,7 +52,7 @@ Luxury STR (short-term rental) command center for Josh & Kerry's beach house at 
 
 ## Redis / Upstash
 - DB `upstash-kv-citrine-cushion`. Uses `PP_REDIS_URL` + `PP_REDIS_TOKEN` (NOT `Redis.fromEnv()`; the old `KV_REST_API_*` integration vars point at a dead DB).
-- **Keys**: `properties`, `tasks`/`finishes` (legacy backup), `tasks:<id>`/`finishes:<id>`, `purchases:<id>` (hash), `migration:lock` (transient).
+- **Keys**: `properties`, `tasks`/`finishes` (legacy backup), `tasks:<id>`, `finishes:<id>` (frozen legacy blob backup), `finish-records:<id>` (hash — live finishes), `purchases:<id>` (hash), `migration:lock` / `finishes-hash-migration:lock:<key>` (transient).
 - **Keepalive cron** (`vercel.json`): `/api/keepalive` Mondays 09:00 UTC — free tier deletes after 14 days idle.
 
 ## Design & Purchases data models

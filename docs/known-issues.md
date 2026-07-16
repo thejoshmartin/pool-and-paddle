@@ -15,14 +15,23 @@ banner) but don't revert local state; on the next load the server value wins.
 failures. *Fix if needed:* snapshot prior state and restore it in the `.catch`, or add a
 retry/queue.
 
-### 2. `api/finishes.js` doesn't merge `deletedIds` tombstones (pre-existing)
-**Low–medium.** The finishes payload is stored/returned whole and the client re-applies
-`deletedIds` on load, but a concurrent whole-array PUT can overwrite another device's
-`deletedIds` — so a finish deleted on one device can reappear if the other edits & saves
-before syncing. This predates the 2026-07 work (inherent to the whole-array finishes save).
-*Why deferred:* rare with 2 users; a proper fix is a behavior change best done on its own.
-*Fix if needed:* on the finishes PUT, read the existing payload and **union** the incoming
-`deletedIds` with the stored ones server-side (`api/finishes.js`), so deletions are never lost.
+### 2. Whole-array finishes save = concurrent-edit clobber — ✅ RESOLVED (2026-07 per-record hash)
+**Was Low–medium, now closed.** The finishes payload used to be stored/returned whole, so a
+concurrent whole-array PUT could overwrite another device's edits and `deletedIds` — a finish
+deleted or renamed on one device could be lost if the other saved before syncing. **Resolved:**
+finishes now persist as a per-record Redis **hash** (`finish-records:<id>`), one independently
+-writable field per item/furniture/room/budget, with deletions as `item:<id>` tombstones. Edits
+to *different* units can no longer clobber each other. See the **Finishes** bullet in
+`CLAUDE.md` → Persistence, and the design/plan docs under `docs/superpowers/`.
+
+Two conscious caveats remain (not bugs):
+- **No live sync (out of scope).** Two people still only *see* each other's saved changes after
+  a reload — non-destructive saves were the goal, not real-time updates. A poll/focus refresh or
+  SSE push is a separate future project. Same-field simultaneous edits still resolve last-writer
+  -wins on *that one field only* (fine for 2 people; not CRDT merging).
+- **Rollback caveat.** The legacy `finishes:<id>` blob is frozen as backup and the one-time
+  server-side migration never deletes it — but edits made *after* migration live only in the
+  hash, so reverting the client to the old blob-PUT would lose post-migration edits.
 
 ### 3. Best-effort receipt-blob cleanup (a few tiny orphan/dangling windows)
 **Low.** Receipt blobs upload to Blob immediately; the record referencing them commits
