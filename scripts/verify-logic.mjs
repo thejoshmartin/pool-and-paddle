@@ -7,7 +7,11 @@ import {
   buildCostSegCsv, suggestAssetClass, emptyPurchase, NOT_IN_ALLOWANCE,
 } from '../src/lib/purchases-logic.js';
 import { scopedKey, parseReceiptPathname } from '../api/_scope.js';
-import { matchesFinishSearch, buildRoomCopies, mergeFinishes, migrateRoom } from '../src/lib/design-logic.js';
+import {
+  matchesFinishSearch, buildRoomCopies, mergeFinishes, migrateRoom,
+  finishItemField, furnitureField, roomField, tombstone,
+  BUDGET_FIELD, MIGRATED_FIELD, partitionFinishFields, blobToFields,
+} from '../src/lib/design-logic.js';
 
 let passed = 0;
 function ok(name) { passed += 1; console.log(`  ✓ ${name}`); }
@@ -195,6 +199,83 @@ console.log('mergeFinishes():');
   // Invalid saved payload → the defaults array, verbatim
   assert.equal(mergeFinishes(null, [], defaults), defaults);
   ok('null saved → defaults');
+}
+
+console.log('finish field helpers:');
+{
+  assert.equal(finishItemField('t42'), 'item:t42');
+  assert.equal(furnitureField('kitchen-upstairs', 'furn9'), 'furn:kitchen-upstairs:furn9');
+  assert.equal(roomField('bunk-room'), 'room:bunk-room');
+  assert.equal(BUDGET_FIELD, 'budget');
+  assert.deepEqual(tombstone('t42'), { id: 't42', __deleted: true });
+  ok('field-name builders + tombstone');
+}
+
+console.log('blobToFields() → partitionFinishFields() round-trip:');
+{
+  const blob = {
+    items: [
+      { id: 't1', category: 'flooring', room: 'kitchen-upstairs', item: 'LVP', selection: 'Coretec', unitPrice: 5, quantity: 100, unit: 'sqft', userCreated: false },
+      { id: 'uf7', category: 'plumbing', room: 'guest-bath', item: 'Custom faucet', userCreated: true, linkedTo: null, contractorOptions: ['A'] },
+    ],
+    deletedIds: ['t99'],
+    roomData: {
+      'kitchen-upstairs': { miroUrl: 'https://miro/x', furniture: [ { id: 'furn1', name: 'Stool', price: 40, purchased: false } ] },
+      'guest-bath': { miroUrl: '', furniture: [] },
+    },
+    targetBudget: 446000,
+  };
+
+  const fields = blobToFields(blob);
+  // Upstash hgetall returns already-parsed objects; simulate that (values are objects, not strings).
+  assert.deepEqual(fields['item:t1'].item, 'LVP');
+  assert.deepEqual(fields['item:t99'], { id: 't99', __deleted: true });
+  assert.equal(fields['furn:kitchen-upstairs:furn1'].name, 'Stool');
+  assert.deepEqual(fields['room:kitchen-upstairs'], { miroUrl: 'https://miro/x' });
+  assert.equal(fields[BUDGET_FIELD], 446000);
+  ok('blobToFields emits item/furn/room/budget + deletion tombstones');
+
+  const parsed = partitionFinishFields(fields);
+  assert.equal(parsed.savedItems.length, 2);                       // tombstone NOT a saved item
+  assert.deepEqual(parsed.deletedIds, ['t99']);
+  assert.equal(parsed.savedItems.find(i => i.id === 'uf7').userCreated, true);
+  assert.equal(parsed.roomData['kitchen-upstairs'].miroUrl, 'https://miro/x');
+  assert.equal(parsed.roomData['kitchen-upstairs'].furniture[0].name, 'Stool');
+  assert.equal(parsed.targetBudget, 446000);
+  ok('partitionFinishFields splits items/deletions/roomData/budget');
+
+  // String values (Upstash may return raw strings) parse too.
+  const asStrings = Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : v]));
+  const parsed2 = partitionFinishFields(asStrings);
+  assert.equal(parsed2.savedItems.length, 2);
+  assert.deepEqual(parsed2.deletedIds, ['t99']);
+  ok('partitionFinishFields tolerates string-encoded field values');
+
+  // Unknown/reserved fields ignored.
+  const parsed3 = partitionFinishFields({ ...fields, [MIGRATED_FIELD]: '1', 'weird:thing': 'x' });
+  assert.equal(parsed3.savedItems.length, 2);
+  ok('partitionFinishFields ignores __migrated and unknown prefixes');
+
+  // Empty map → empty everything.
+  const empty = partitionFinishFields({});
+  assert.deepEqual(empty.savedItems, []);
+  assert.deepEqual(empty.deletedIds, []);
+  assert.deepEqual(empty.roomData, {});
+  assert.equal(empty.targetBudget, null);
+  ok('empty hash → empty partition');
+
+  // Null/undefined map → empty partition (never throws).
+  assert.deepEqual(partitionFinishFields(null).savedItems, []);
+  ok('null hash → empty partition');
+
+  // Furniture is sorted by id (stable order) regardless of HGETALL field order.
+  const shuffled = {
+    'furn:den:furn200': { id: 'furn200', name: 'Later' },
+    'furn:den:furn100': { id: 'furn100', name: 'Earlier' },
+  };
+  const ord = partitionFinishFields(shuffled).roomData['den'].furniture.map(f => f.id);
+  assert.deepEqual(ord, ['furn100', 'furn200']);
+  ok('furniture is deterministically ordered by id');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

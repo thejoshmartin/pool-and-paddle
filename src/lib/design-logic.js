@@ -101,3 +101,88 @@ export function buildRoomCopies({ source, roomIds, mode, idBase }) {
     };
   });
 }
+
+/* ── Per-record finish hash: field encoding/decoding ──────────────────────────
+ * Finishes persist as a Redis HASH (`finish-records:<propertyId>`) with one
+ * independently-writable field per editable unit, so concurrent edits to
+ * different units never overwrite each other. Field layout:
+ *   item:<itemId>              → a finish item's saved record
+ *   item:<itemId> {__deleted}  → tombstone for a deleted DEFAULT item
+ *   furn:<roomId>:<furnId>     → one furniture item
+ *   room:<roomId>              → { miroUrl }
+ *   budget                     → the targetBudget scalar
+ *   __migrated                 → idempotency stamp (ignored on decode)
+ * Room/furniture/item ids are colon-free, so `prefix:...` parses unambiguously.
+ */
+export const BUDGET_FIELD = 'budget';
+export const MIGRATED_FIELD = '__migrated';
+
+export function finishItemField(id) { return `item:${id}`; }
+export function furnitureField(roomId, furnId) { return `furn:${roomId}:${furnId}`; }
+export function roomField(roomId) { return `room:${roomId}`; }
+export function tombstone(id) { return { id, __deleted: true }; }
+
+// Legacy blob { items, roomData, targetBudget, deletedIds } → { field: value } map.
+// Values are plain objects/scalars; the caller JSON-stringifies before HSET.
+export function blobToFields(blob) {
+  const fields = {};
+  const b = blob || {};
+  for (const item of Array.isArray(b.items) ? b.items : []) {
+    if (item && item.id != null) fields[finishItemField(item.id)] = item;
+  }
+  for (const id of Array.isArray(b.deletedIds) ? b.deletedIds : []) {
+    fields[finishItemField(id)] = tombstone(id);
+  }
+  const rooms = b.roomData && typeof b.roomData === 'object' ? b.roomData : {};
+  for (const [roomId, rd] of Object.entries(rooms)) {
+    const data = rd || {};
+    fields[roomField(roomId)] = { miroUrl: data.miroUrl || '' };
+    for (const furn of Array.isArray(data.furniture) ? data.furniture : []) {
+      if (furn && furn.id != null) fields[furnitureField(roomId, furn.id)] = furn;
+    }
+  }
+  if (b.targetBudget != null) fields[BUDGET_FIELD] = b.targetBudget;
+  return fields;
+}
+
+// Raw HGETALL map ({ field: objectOrJsonString }) → the shapes App state uses.
+export function partitionFinishFields(map) {
+  const out = { savedItems: [], deletedIds: [], roomData: {}, targetBudget: null };
+  if (!map || typeof map !== 'object') return out;
+  const val = (v) => (typeof v === 'string' ? JSON.parse(v) : v);
+  const ensureRoom = (roomId) => {
+    if (!out.roomData[roomId]) out.roomData[roomId] = { miroUrl: '', furniture: [] };
+    return out.roomData[roomId];
+  };
+  for (const [field, raw] of Object.entries(map)) {
+    if (field === MIGRATED_FIELD) continue;
+    if (field === BUDGET_FIELD) { out.targetBudget = val(raw); continue; }
+    if (field.startsWith('item:')) {
+      const rec = val(raw);
+      if (rec && rec.__deleted) out.deletedIds.push(rec.id != null ? rec.id : field.slice(5));
+      else if (rec) out.savedItems.push(rec);
+      continue;
+    }
+    if (field.startsWith('room:')) {
+      const roomId = field.slice(5);
+      ensureRoom(roomId).miroUrl = (val(raw) || {}).miroUrl || '';
+      continue;
+    }
+    if (field.startsWith('furn:')) {
+      const rest = field.slice(5);
+      const idx = rest.lastIndexOf(':');
+      if (idx < 0) continue;
+      const roomId = rest.slice(0, idx);
+      ensureRoom(roomId).furniture.push(val(raw));
+      continue;
+    }
+    // unknown prefix → ignore
+  }
+  // HGETALL field order is arbitrary; sort each room's furniture by id (ids embed
+  // Date.now(), so this is chronological) for a STABLE order across reloads — otherwise
+  // furniture rows would visibly reshuffle every load.
+  for (const rd of Object.values(out.roomData)) {
+    rd.furniture.sort((a, b) => String((a && a.id) || '').localeCompare(String((b && b.id) || '')));
+  }
+  return out;
+}
