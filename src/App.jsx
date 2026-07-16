@@ -3920,7 +3920,8 @@ export default function App() {
     return () => { cancelled = true; };
   }, [activeProperty]);
 
-  // Fetch finishes for the active property (same discipline as tasks).
+  // Fetch finishes for the active property from the per-record HASH (server migrates the
+  // legacy blob → hash on first read). Same cancellation discipline as tasks/purchases.
   useEffect(() => {
     finishesServerLoaded.current = false;
     let cancelled = false;
@@ -3933,17 +3934,23 @@ export default function App() {
       setTargetBudget(cached.targetBudget);
       setRoomData(cached.roomData);
     }
-    fetch(apiUrl('/api/finishes', activeProperty))
+    fetch(apiUrl('/api/finish-records', activeProperty))
       .then(r => r.json())
-      .then(data => {
+      .then(map => {
         if (cancelled) return;
         finishesServerLoaded.current = true;
-        if (data && data.items && Array.isArray(data.items) && data.items.length > 0) {
-          const serverDeletedIds = data.deletedIds || [];
-          setDeletedFinishIds(serverDeletedIds);
-          setFinishes(mergeFinishes(data.items, serverDeletedIds, DEFAULT_FINISH_ITEMS));
-          if (data.targetBudget != null) setTargetBudget(data.targetBudget);
-          if (data.roomData) setRoomData(data.roomData);
+        const { savedItems, deletedIds, roomData: rd, targetBudget: tb } = partitionFinishFields(map);
+        // Only apply server data when the hash actually has records (a brand-new property
+        // returns {} → keep defaults, exactly like the old `items.length > 0` guard).
+        // INVARIANT: the hash is fully empty ONLY for a fresh property — deleting a default
+        // always leaves a tombstone (deletedIds > 0) and user items leave item: fields. So an
+        // all-empty partition can't be a "user deleted everything" state. If a future
+        // "restore all defaults" feature HDELs tombstones, revisit this guard.
+        if (savedItems.length > 0 || deletedIds.length > 0 || Object.keys(rd).length > 0 || tb != null) {
+          setDeletedFinishIds(deletedIds);
+          setFinishes(mergeFinishes(savedItems, deletedIds, DEFAULT_FINISH_ITEMS));
+          setRoomData(rd);
+          if (tb != null) setTargetBudget(tb);
         }
       })
       .catch(() => { if (!cancelled) finishesServerLoaded.current = true; });
@@ -3998,29 +4005,14 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks]);
 
-  // Save finishes to localStorage + server (debounced, property-scoped).
-  // activeProperty is deliberately NOT a dependency — same reasoning as the tasks save
-  // effect above: fire only when the finishes data changes, never on a bare switch.
+  // Cache finishes to localStorage (LOCAL read-cache only — server writes are per-record
+  // via the write helpers, never a whole-array PUT). activeProperty omitted from deps for
+  // the same reason as the tasks save effect.
   useEffect(() => {
     const payload = { items: finishes, targetBudget, roomData, deletedIds: deletedFinishIds };
     try {
       localStorage.setItem(lsKey(LS_FINISHES, activeProperty), JSON.stringify(payload));
     } catch (e) { console.warn('localStorage save failed:', e.name); }
-
-    if (!finishesServerLoaded.current) return;
-
-    const timer = setTimeout(() => {
-      fetch(apiUrl('/api/finishes', activeProperty), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      }).then(r => {
-        if (!r.ok) setSyncError('Failed to save finishes');
-        else setSyncError(null);
-      }).catch(() => setSyncError('Unable to reach server'));
-    }, 500);
-
-    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finishes, targetBudget, roomData, deletedFinishIds]);
 
