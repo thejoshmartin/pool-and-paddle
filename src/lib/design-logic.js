@@ -173,14 +173,16 @@ export function partitionFinishFields(map) {
       const idx = rest.lastIndexOf(':');
       if (idx < 0) continue;
       const roomId = rest.slice(0, idx);
-      ensureRoom(roomId).furniture.push(val(raw));
+      const rec = val(raw);
+      if (rec) ensureRoom(roomId).furniture.push(rec);   // guard mirrors the item: branch
       continue;
     }
     // unknown prefix → ignore
   }
-  // HGETALL field order is arbitrary; sort each room's furniture by id (ids embed
-  // Date.now(), so this is chronological) for a STABLE order across reloads — otherwise
-  // furniture rows would visibly reshuffle every load.
+  // HGETALL field order is arbitrary; sort each room's furniture by id for a STABLE order
+  // across reloads (otherwise rows would visibly reshuffle every load). localeCompare is
+  // lexicographic — chronological for the equal-length `furn<Date.now()>` ids used in
+  // practice; don't rely on numeric ordering for a differently-shaped id.
   for (const rd of Object.values(out.roomData)) {
     rd.furniture.sort((a, b) => String((a && a.id) || '').localeCompare(String((b && b.id) || '')));
   }
