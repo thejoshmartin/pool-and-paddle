@@ -39,6 +39,47 @@ export function parseReceiptPathname(pathname) {
 //   - Legacy keys are never written or deleted — they remain the backup.
 //   - The entire finishes object (including deletedIds) copies verbatim, so nothing
 //     already-deleted reappears.
+export async function migrateData(redis) {
+  const existing = await redis.get('properties');
+  if (existing && existing.schemaVersion) {
+    return { status: 'already', properties: existing };
+  }
+
+  const lock = await redis.set('migration:lock', String(Date.now()), { nx: true, ex: 60 });
+  if (lock !== 'OK') {
+    return { status: 'locked' };
+  }
+
+  try {
+    const registryNow = await redis.get('properties');
+    if (registryNow && registryNow.schemaVersion) {
+      return { status: 'already', properties: registryNow };
+    }
+
+    const pid = DEFAULT_PROPERTY.id;
+    const legacyTasks = await redis.get('tasks');
+    const legacyFinishes = await redis.get('finishes');
+
+    if (legacyTasks != null) {
+      await redis.set(`tasks:${pid}`, JSON.stringify(legacyTasks));
+    }
+    if (legacyFinishes != null) {
+      await redis.set(`finishes:${pid}`, JSON.stringify(legacyFinishes));
+    }
+
+    const registry = {
+      schemaVersion: 'v2',
+      activeId: pid,
+      properties: [DEFAULT_PROPERTY],
+    };
+    await redis.set('properties', JSON.stringify(registry));
+
+    return { status: 'migrated', properties: registry };
+  } finally {
+    await redis.del('migration:lock');
+  }
+}
+
 // One-time migration of a legacy finishes BLOB (`finishes:<id>`) → the per-record
 // HASH (`finish-records:<id>`). Mirrors migrateData's safety model:
 //   - Idempotent: a `__migrated` stamp short-circuits re-runs.
@@ -79,46 +120,5 @@ export async function migrateFinishesToHash(redis, { key, legacyKey, toFields })
     return { status: 'migrated' };
   } finally {
     await redis.del(lockKey);
-  }
-}
-
-export async function migrateData(redis) {
-  const existing = await redis.get('properties');
-  if (existing && existing.schemaVersion) {
-    return { status: 'already', properties: existing };
-  }
-
-  const lock = await redis.set('migration:lock', String(Date.now()), { nx: true, ex: 60 });
-  if (lock !== 'OK') {
-    return { status: 'locked' };
-  }
-
-  try {
-    const registryNow = await redis.get('properties');
-    if (registryNow && registryNow.schemaVersion) {
-      return { status: 'already', properties: registryNow };
-    }
-
-    const pid = DEFAULT_PROPERTY.id;
-    const legacyTasks = await redis.get('tasks');
-    const legacyFinishes = await redis.get('finishes');
-
-    if (legacyTasks != null) {
-      await redis.set(`tasks:${pid}`, JSON.stringify(legacyTasks));
-    }
-    if (legacyFinishes != null) {
-      await redis.set(`finishes:${pid}`, JSON.stringify(legacyFinishes));
-    }
-
-    const registry = {
-      schemaVersion: 'v2',
-      activeId: pid,
-      properties: [DEFAULT_PROPERTY],
-    };
-    await redis.set('properties', JSON.stringify(registry));
-
-    return { status: 'migrated', properties: registry };
-  } finally {
-    await redis.del('migration:lock');
   }
 }
