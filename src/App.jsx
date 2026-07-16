@@ -2000,17 +2000,23 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
             onClick={() => {
               const headers = ["Trade", "Room", "Item", "Selection", "Unit Price", "Quantity", "Unit", "Line Total", "Product Link", "Notes", "Linked To", "Assignee", "Decision Date", "Contractor Options"];
               const csvRows = [headers.join(",")];
+              const esc = (s) => `"${String(s || "").replace(/"/g, '""')}"`;
+              // =HYPERLINK() renders as a clickable link in the cell (Excel + Google Sheets);
+              // empty url → empty cell (no broken formula).
+              const hyperlink = (url) => {
+                const u = String(url || "").trim();
+                return u ? esc(`=HYPERLINK("${u}","${u}")`) : "";
+              };
               finishes.forEach(item => {
                 const r = resolveItem(item);
                 const catLabel = FINISH_CATEGORIES.find(c => c.id === item.category)?.label || item.category;
                 const roomLabel = FINISH_ROOMS.find(rr => rr.id === item.room)?.label || item.room;
                 const lineTotal = (r.unitPrice != null && item.quantity != null) ? r.unitPrice * item.quantity : "";
                 const parentName = item.linkedTo ? finishes.find(p => p.id === item.linkedTo)?.item || "" : "";
-                const esc = (s) => `"${String(s || "").replace(/"/g, '""')}"`;
                 csvRows.push([
                   esc(catLabel), esc(roomLabel), esc(item.item),
                   esc(r.selection), r.unitPrice ?? "", item.quantity ?? "",
-                  esc(r.unit), lineTotal, esc(r.url), esc(item.notes), esc(parentName),
+                  esc(r.unit), lineTotal, hyperlink(r.url), esc(item.notes), esc(parentName),
                   esc(item.assignee || ""), esc(item.dueDate || ""),
                   esc((item.contractorOptions || []).join("; ")),
                 ].join(","));
@@ -2024,7 +2030,7 @@ function DesignView({ finishes, setFinishes, targetBudget, setTargetBudget, room
                     furnitureRows.push([
                       esc("Furniture"), esc(room.label), esc(f.name),
                       "", "", f.price ?? "", "", "",
-                      f.price ?? "", esc(f.url), esc(f.notes), "",
+                      f.price ?? "", hyperlink(f.url), esc(f.notes), "",
                     ].join(","));
                   });
                 }
