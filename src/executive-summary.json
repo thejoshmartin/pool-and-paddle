@@ -1,13 +1,19 @@
 {
-  "generatedDate": "2026-07-01",
-  "totalEpisodes": 535,
-  "nonGimmickCount": 532,
+  "generatedDate": "2026-08-01",
+  "totalEpisodes": 540,
+  "nonGimmickCount": 537,
   "categories": [
     {
       "name": "Operations",
-      "count": 144,
-      "criticalHighCount": 76,
+      "count": 145,
+      "criticalHighCount": 77,
       "topEpisodes": [
+        {
+          "ep": 559,
+          "title": "Do This Every Time Airbnb Pays You",
+          "keyInsight": "A payout is information, not just money—it reveals whether Airbnb paid correctly, if revenue matches forecasts, and whether your hosting business is actually profitable.",
+          "priority": "critical"
+        },
         {
           "ep": 546,
           "title": "The Pre-Arrival Inspection Checklist That Protects Your 5-Star Reviews",
@@ -59,7 +65,7 @@
     },
     {
       "name": "Industry Trends",
-      "count": 80,
+      "count": 81,
       "criticalHighCount": 14,
       "topEpisodes": [
         {
@@ -155,9 +161,15 @@
     },
     {
       "name": "Marketing",
-      "count": 54,
-      "criticalHighCount": 35,
+      "count": 56,
+      "criticalHighCount": 37,
       "topEpisodes": [
+        {
+          "ep": 558,
+          "title": "Why Your Airbnb Isn't Getting Bookings",
+          "keyInsight": "Guests make booking decisions quickly by comparing your property against a full screen of alternatives, so STR-specific photography and strategic presentation matter more than immediate price cuts.",
+          "priority": "critical"
+        },
         {
           "ep": 5,
           "title": "The Importance of Getting Professional Photos for Your Airbnb Property",
@@ -203,7 +215,7 @@
     },
     {
       "name": "Getting Started",
-      "count": 49,
+      "count": 50,
       "criticalHighCount": 20,
       "topEpisodes": [
         {
@@ -456,6 +468,20 @@
   ],
   "topInsights": [
     {
+      "ep": "559",
+      "title": "Do This Every Time Airbnb Pays You",
+      "keyInsight": "A payout is information, not just money—it reveals whether Airbnb paid correctly, if revenue matches forecasts, and whether your hosting business is actually profitable.",
+      "category": "Operations",
+      "priority": "critical"
+    },
+    {
+      "ep": "558",
+      "title": "Why Your Airbnb Isn't Getting Bookings",
+      "keyInsight": "Guests make booking decisions quickly by comparing your property against a full screen of alternatives, so STR-specific photography and strategic presentation matter more than immediate price cuts.",
+      "category": "Marketing",
+      "priority": "critical"
+    },
+    {
       "ep": "557",
       "title": "How to Beat the Airbnb Algorithm Without Guessing",
       "keyInsight": "Your listing's algorithm performance is a direct reflection of how reliably you deliver great guest experiences, not a mysterious force working against you.",
@@ -620,23 +646,27 @@
   "tagCloud": [
     {
       "tag": "property management",
-      "count": 43
+      "count": 44
     },
     {
       "tag": "pricing strategy",
-      "count": 38
+      "count": 39
+    },
+    {
+      "tag": "scaling",
+      "count": 34
     },
     {
       "tag": "guest experience",
       "count": 33
     },
     {
-      "tag": "scaling",
-      "count": 32
-    },
-    {
       "tag": "revenue management",
       "count": 29
+    },
+    {
+      "tag": "direct bookings",
+      "count": 26
     },
     {
       "tag": "insurance",
@@ -647,24 +677,20 @@
       "count": 26
     },
     {
-      "tag": "direct bookings",
-      "count": 25
-    },
-    {
       "tag": "dynamic pricing",
       "count": 23
     },
     {
-      "tag": "pricelabs",
+      "tag": "co-hosting",
       "count": 22
     },
     {
-      "tag": "co-hosting",
-      "count": 21
+      "tag": "operations",
+      "count": 22
     },
     {
-      "tag": "operations",
-      "count": 21
+      "tag": "pricelabs",
+      "count": 22
     },
     {
       "tag": "risk management",
@@ -683,7 +709,15 @@
       "count": 19
     },
     {
+      "tag": "compliance",
+      "count": 18
+    },
+    {
       "tag": "direct booking",
+      "count": 18
+    },
+    {
+      "tag": "occupancy",
       "count": 18
     },
     {
@@ -691,11 +725,7 @@
       "count": 18
     },
     {
-      "tag": "compliance",
-      "count": 17
-    },
-    {
-      "tag": "occupancy",
+      "tag": "photography",
       "count": 17
     },
     {
@@ -711,7 +741,7 @@
       "count": 16
     },
     {
-      "tag": "photography",
+      "tag": "profitability",
       "count": 16
     },
     {
@@ -723,21 +753,17 @@
       "count": 15
     },
     {
-      "tag": "profitability",
-      "count": 15
+      "tag": "branding",
+      "count": 14
     },
     {
-      "tag": "branding",
+      "tag": "listing optimization",
       "count": 14
     },
     {
       "tag": "regulations",
       "count": 14
-    },
-    {
-      "tag": "booking strategy",
-      "count": 13
     }
   ],
-  "lastIndexedEpisode": 557
+  "lastIndexedEpisode": 562
 }
