@@ -137,6 +137,27 @@
   },
   {
     "id": 8,
+    "ep": 11,
+    "title": "11 Airbnb Expenses Hosts Never See Coming",
+    "category": "Getting Started",
+    "priority": "critical",
+    "tags": [
+      "budgeting",
+      "expenses",
+      "insurance",
+      "permits",
+      "platform fees",
+      "profit margins",
+      "financial planning"
+    ],
+    "summary": "Most hosts budget for obvious costs like mortgage and furnishings but miss critical operating expenses that can add thousands annually. Hidden costs include STR-specific insurance, licensing and permits, platform fees, and ongoing operational expenses that should be forecasted from day one. Understanding these 11 commonly overlooked expenses is essential for accurate profit and loss projections.",
+    "keyInsight": "Standard homeowner's insurance doesn't cover STR activity, and AirCover is not insurance—hosts need STR-specific policies and must account for platform fees based on net income, not gross revenue.",
+    "isGimmick": false,
+    "processedDate": "2026-09-01",
+    "source": "https://thanksforvisiting.com/podcasts/11/"
+  },
+  {
+    "id": 8,
     "ep": 20,
     "title": "What it Takes to be a Superhosting Power Couple with Tia Brown and Kyle Brown",
     "category": "Operations",
@@ -11015,6 +11036,69 @@
     "isGimmick": false,
     "processedDate": "2026-08-01",
     "source": "https://thanksforvisiting.com/podcasts/562/"
+  },
+  {
+    "id": 541,
+    "ep": 563,
+    "title": "How a 700-Square-Foot Airbnb Hit $84K",
+    "category": "Pricing & Revenue",
+    "priority": "high",
+    "tags": [
+      "data analysis",
+      "market selection",
+      "family-friendly",
+      "pricing strategy",
+      "gulf shores",
+      "performance optimization",
+      "pro forma"
+    ],
+    "summary": "Steve Marquis generated $84K from a modest 700-square-foot beach condo by using rigorous data analysis and strategic market selection. Instead of choosing markets he loved, he identified Gulf Shores as an opportunity market with demand but outdated competition, allowing him to differentiate through better hospitality and positioning. His approach involved running multiple daily pro formas before purchase to ensure profitability.",
+    "keyInsight": "Ask 'Where is there opportunity?' instead of 'Where do I want to vacation?' when selecting STR markets to find underserved demand with room for strategic differentiation.",
+    "isGimmick": false,
+    "processedDate": "2026-09-01",
+    "source": "https://thanksforvisiting.com/podcasts/563/"
+  },
+  {
+    "id": 542,
+    "ep": 564,
+    "title": "She Turned Her Family Ski House Into a Top-Tier Airbnb",
+    "category": "Operations",
+    "priority": "medium",
+    "tags": [
+      "co-hosting",
+      "business mindset",
+      "ski property",
+      "adirondacks",
+      "professionalization",
+      "family property",
+      "financial management"
+    ],
+    "summary": "Gale Golden transformed her family's Adirondack ski house into a successful STR by shifting from casual operation to treating it as a real business. Despite having a great property with strong design and location, performance improved only when she adopted proper financial tracking, professional photography, and a profit-and-loss mindset. Her experience highlights that property quality alone isn't enough without business discipline.",
+    "keyInsight": "A great property with perfect bones and location will underperform without treating it as a real business with proper financial management and professional operations.",
+    "isGimmick": false,
+    "processedDate": "2026-09-01",
+    "source": "https://thanksforvisiting.com/podcasts/564/"
+  },
+  {
+    "id": 543,
+    "ep": 566,
+    "title": "How To Find Airbnb Properties No One Else Knows About",
+    "category": "Getting Started",
+    "priority": "high",
+    "tags": [
+      "acquisition strategy",
+      "co-hosting",
+      "off-market deals",
+      "relationship building",
+      "property sourcing",
+      "market visibility",
+      "investment strategy"
+    ],
+    "summary": "The best STR properties never reach public listings and go to hosts with established relationships and market presence. Co-hosting can become an acquisition strategy by building trust with owners, improving property performance, and gaining inside knowledge before purchase opportunities arise. Sarah and Annette acquired The Audrey after Sarah co-hosted it, reinvested to improve operations, and proved the property's potential.",
+    "keyInsight": "Co-hosting allows you to prove operational competence, build owner trust, and understand a property's true potential before it becomes available for purchase off-market.",
+    "isGimmick": false,
+    "processedDate": "2026-09-01",
+    "source": "https://thanksforvisiting.com/podcasts/566/"
   },
   {
     "id": 517,

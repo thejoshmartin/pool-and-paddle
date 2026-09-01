@@ -1,11 +1,11 @@
 {
-  "generatedDate": "2026-08-01",
-  "totalEpisodes": 540,
-  "nonGimmickCount": 537,
+  "generatedDate": "2026-09-01",
+  "totalEpisodes": 544,
+  "nonGimmickCount": 541,
   "categories": [
     {
       "name": "Operations",
-      "count": 145,
+      "count": 146,
       "criticalHighCount": 77,
       "topEpisodes": [
         {
@@ -113,8 +113,8 @@
     },
     {
       "name": "Pricing & Revenue",
-      "count": 59,
-      "criticalHighCount": 45,
+      "count": 60,
+      "criticalHighCount": 46,
       "topEpisodes": [
         {
           "ep": 3,
@@ -215,9 +215,15 @@
     },
     {
       "name": "Getting Started",
-      "count": 50,
-      "criticalHighCount": 20,
+      "count": 52,
+      "criticalHighCount": 22,
       "topEpisodes": [
+        {
+          "ep": 11,
+          "title": "11 Airbnb Expenses Hosts Never See Coming",
+          "keyInsight": "Standard homeowner's insurance doesn't cover STR activity, and AirCover is not insurance—hosts need STR-specific policies and must account for platform fees based on net income, not gross revenue.",
+          "priority": "critical"
+        },
         {
           "ep": 1,
           "title": "Considering What to Invest When Starting an Airbnb",
@@ -468,6 +474,13 @@
   ],
   "topInsights": [
     {
+      "ep": "11",
+      "title": "11 Airbnb Expenses Hosts Never See Coming",
+      "keyInsight": "Standard homeowner's insurance doesn't cover STR activity, and AirCover is not insurance—hosts need STR-specific policies and must account for platform fees based on net income, not gross revenue.",
+      "category": "Getting Started",
+      "priority": "critical"
+    },
+    {
       "ep": "559",
       "title": "Do This Every Time Airbnb Pays You",
       "keyInsight": "A payout is information, not just money—it reveals whether Airbnb paid correctly, if revenue matches forecasts, and whether your hosting business is actually profitable.",
@@ -650,7 +663,7 @@
     },
     {
       "tag": "pricing strategy",
-      "count": 39
+      "count": 40
     },
     {
       "tag": "scaling",
@@ -665,11 +678,11 @@
       "count": 29
     },
     {
-      "tag": "direct bookings",
-      "count": 26
+      "tag": "insurance",
+      "count": 27
     },
     {
-      "tag": "insurance",
+      "tag": "direct bookings",
       "count": 26
     },
     {
@@ -677,12 +690,12 @@
       "count": 26
     },
     {
-      "tag": "dynamic pricing",
-      "count": 23
+      "tag": "co-hosting",
+      "count": 24
     },
     {
-      "tag": "co-hosting",
-      "count": 22
+      "tag": "dynamic pricing",
+      "count": 23
     },
     {
       "tag": "operations",
@@ -765,5 +778,5 @@
       "count": 14
     }
   ],
-  "lastIndexedEpisode": 562
+  "lastIndexedEpisode": 566
 }
