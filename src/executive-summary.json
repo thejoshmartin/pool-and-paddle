@@ -1,13 +1,25 @@
 {
-  "generatedDate": "2026-07-01",
-  "totalEpisodes": 535,
-  "nonGimmickCount": 532,
+  "generatedDate": "2026-10-01",
+  "totalEpisodes": 549,
+  "nonGimmickCount": 546,
   "categories": [
     {
       "name": "Operations",
-      "count": 144,
-      "criticalHighCount": 76,
+      "count": 148,
+      "criticalHighCount": 79,
       "topEpisodes": [
+        {
+          "ep": 567,
+          "title": "We Made $5 Million From Airbnb Hosting: Here's What We've Learned",
+          "keyInsight": "Track your finances from day one with separated business accounts and professional support—you cannot know if your business actually works without clean numbers.",
+          "priority": "critical"
+        },
+        {
+          "ep": 559,
+          "title": "Do This Every Time Airbnb Pays You",
+          "keyInsight": "A payout is information, not just money—it reveals whether Airbnb paid correctly, if revenue matches forecasts, and whether your hosting business is actually profitable.",
+          "priority": "critical"
+        },
         {
           "ep": 546,
           "title": "The Pre-Arrival Inspection Checklist That Protects Your 5-Star Reviews",
@@ -59,7 +71,7 @@
     },
     {
       "name": "Industry Trends",
-      "count": 80,
+      "count": 81,
       "criticalHighCount": 14,
       "topEpisodes": [
         {
@@ -107,9 +119,15 @@
     },
     {
       "name": "Pricing & Revenue",
-      "count": 59,
-      "criticalHighCount": 45,
+      "count": 61,
+      "criticalHighCount": 47,
       "topEpisodes": [
+        {
+          "ep": 570,
+          "title": "She Doubled Her Airbnb ADR by Finally Trusting the Data",
+          "keyInsight": "Trusting data-driven dynamic pricing tools, even in niche seasonal markets, can double your average daily rate when properly configured.",
+          "priority": "critical"
+        },
         {
           "ep": 3,
           "title": "Pricing Your Airbnb: What You Need to Know",
@@ -155,9 +173,21 @@
     },
     {
       "name": "Marketing",
-      "count": 54,
-      "criticalHighCount": 35,
+      "count": 57,
+      "criticalHighCount": 38,
       "topEpisodes": [
+        {
+          "ep": 571,
+          "title": "How to Become a Booked-Out Airbnb in 4 Simple Steps",
+          "keyInsight": "Low bookings are usually caused by controllable factors in your listing, data, calendar, or past guest strategy—not just price or market saturation.",
+          "priority": "critical"
+        },
+        {
+          "ep": 558,
+          "title": "Why Your Airbnb Isn't Getting Bookings",
+          "keyInsight": "Guests make booking decisions quickly by comparing your property against a full screen of alternatives, so STR-specific photography and strategic presentation matter more than immediate price cuts.",
+          "priority": "critical"
+        },
         {
           "ep": 5,
           "title": "The Importance of Getting Professional Photos for Your Airbnb Property",
@@ -203,9 +233,15 @@
     },
     {
       "name": "Getting Started",
-      "count": 49,
-      "criticalHighCount": 20,
+      "count": 52,
+      "criticalHighCount": 22,
       "topEpisodes": [
+        {
+          "ep": 11,
+          "title": "11 Airbnb Expenses Hosts Never See Coming",
+          "keyInsight": "Standard homeowner's insurance doesn't cover STR activity, and AirCover is not insurance—hosts need STR-specific policies and must account for platform fees based on net income, not gross revenue.",
+          "priority": "critical"
+        },
         {
           "ep": 1,
           "title": "Considering What to Invest When Starting an Airbnb",
@@ -299,8 +335,8 @@
     },
     {
       "name": "Guest Experience",
-      "count": 48,
-      "criticalHighCount": 28,
+      "count": 49,
+      "criticalHighCount": 29,
       "topEpisodes": [
         {
           "ep": 28,
@@ -455,6 +491,48 @@
     }
   ],
   "topInsights": [
+    {
+      "ep": "571",
+      "title": "How to Become a Booked-Out Airbnb in 4 Simple Steps",
+      "keyInsight": "Low bookings are usually caused by controllable factors in your listing, data, calendar, or past guest strategy—not just price or market saturation.",
+      "category": "Marketing",
+      "priority": "critical"
+    },
+    {
+      "ep": "570",
+      "title": "She Doubled Her Airbnb ADR by Finally Trusting the Data",
+      "keyInsight": "Trusting data-driven dynamic pricing tools, even in niche seasonal markets, can double your average daily rate when properly configured.",
+      "category": "Pricing & Revenue",
+      "priority": "critical"
+    },
+    {
+      "ep": "567",
+      "title": "We Made $5 Million From Airbnb Hosting: Here's What We've Learned",
+      "keyInsight": "Track your finances from day one with separated business accounts and professional support—you cannot know if your business actually works without clean numbers.",
+      "category": "Operations",
+      "priority": "critical"
+    },
+    {
+      "ep": "11",
+      "title": "11 Airbnb Expenses Hosts Never See Coming",
+      "keyInsight": "Standard homeowner's insurance doesn't cover STR activity, and AirCover is not insurance—hosts need STR-specific policies and must account for platform fees based on net income, not gross revenue.",
+      "category": "Getting Started",
+      "priority": "critical"
+    },
+    {
+      "ep": "559",
+      "title": "Do This Every Time Airbnb Pays You",
+      "keyInsight": "A payout is information, not just money—it reveals whether Airbnb paid correctly, if revenue matches forecasts, and whether your hosting business is actually profitable.",
+      "category": "Operations",
+      "priority": "critical"
+    },
+    {
+      "ep": "558",
+      "title": "Why Your Airbnb Isn't Getting Bookings",
+      "keyInsight": "Guests make booking decisions quickly by comparing your property against a full screen of alternatives, so STR-specific photography and strategic presentation matter more than immediate price cuts.",
+      "category": "Marketing",
+      "priority": "critical"
+    },
     {
       "ep": "557",
       "title": "How to Beat the Airbnb Algorithm Without Guessing",
@@ -620,19 +698,19 @@
   "tagCloud": [
     {
       "tag": "property management",
-      "count": 43
+      "count": 45
     },
     {
       "tag": "pricing strategy",
-      "count": 38
+      "count": 41
     },
     {
       "tag": "guest experience",
-      "count": 33
+      "count": 34
     },
     {
       "tag": "scaling",
-      "count": 32
+      "count": 34
     },
     {
       "tag": "revenue management",
@@ -640,39 +718,39 @@
     },
     {
       "tag": "insurance",
-      "count": 26
+      "count": 27
     },
     {
       "tag": "revenue optimization",
-      "count": 26
+      "count": 27
     },
     {
       "tag": "direct bookings",
-      "count": 25
+      "count": 26
     },
     {
       "tag": "dynamic pricing",
-      "count": 23
-    },
-    {
-      "tag": "pricelabs",
-      "count": 22
+      "count": 25
     },
     {
       "tag": "co-hosting",
-      "count": 21
+      "count": 24
+    },
+    {
+      "tag": "pricelabs",
+      "count": 23
     },
     {
       "tag": "operations",
+      "count": 22
+    },
+    {
+      "tag": "amenities",
       "count": 21
     },
     {
       "tag": "risk management",
       "count": 21
-    },
-    {
-      "tag": "amenities",
-      "count": 20
     },
     {
       "tag": "liability",
@@ -683,7 +761,19 @@
       "count": 19
     },
     {
+      "tag": "compliance",
+      "count": 18
+    },
+    {
       "tag": "direct booking",
+      "count": 18
+    },
+    {
+      "tag": "occupancy",
+      "count": 18
+    },
+    {
+      "tag": "profitability",
       "count": 18
     },
     {
@@ -691,11 +781,7 @@
       "count": 18
     },
     {
-      "tag": "compliance",
-      "count": 17
-    },
-    {
-      "tag": "occupancy",
+      "tag": "photography",
       "count": 17
     },
     {
@@ -711,10 +797,6 @@
       "count": 16
     },
     {
-      "tag": "photography",
-      "count": 16
-    },
-    {
       "tag": "communication",
       "count": 15
     },
@@ -723,7 +805,7 @@
       "count": 15
     },
     {
-      "tag": "profitability",
+      "tag": "listing optimization",
       "count": 15
     },
     {
@@ -733,11 +815,7 @@
     {
       "tag": "regulations",
       "count": 14
-    },
-    {
-      "tag": "booking strategy",
-      "count": 13
     }
   ],
-  "lastIndexedEpisode": 557
+  "lastIndexedEpisode": 571
 }
