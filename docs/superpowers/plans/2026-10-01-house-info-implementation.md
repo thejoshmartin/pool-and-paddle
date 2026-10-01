@@ -33,6 +33,11 @@
 
 Two of the five (the unrecognized-category case and the no-active-property case) are defensive fixes for conditions that can't currently be reproduced against the live app: the API itself already rejects any category outside `HOUSE_INFO_CATEGORIES` (so no stored item can have an invalid one today — the fix only matters after a *future* category rename leaves old data behind), and `activeProperty` is always set in production since migration already ran. The category-grouping case still gets a real unit test (below) by extracting the grouping into a pure, testable function; the no-active-property case is a one-line, self-evidently-correct guard (`houseInfoLoaded && !!activeProperty`) verified by code review rather than a contrived manual step.
 
+**Post-plan review (Fable, pre-execution):** an independent review of this plan (before any code existed) found two more real issues in the fetch-effect/`loaded` design below, both now folded into Task 3's steps rather than left as findings:
+
+- **Cross-property stale render:** the original effect cleared `houseInfoLoaded` on a property switch but never cleared `houseInfo`, so if the new property's GET resolved with something other than an array (an expired session, a 400/500), the *previous* property's items — including credentials — would render under the new property as if they belonged to it. This is exactly the class of bug CLAUDE.md's 2026-07 property-switch fix exists to prevent. Fixed by resetting `houseInfo` to `[]` at the same point `houseInfoLoaded` resets.
+- **The tab was untestable in local dev:** `vite dev` doesn't run `/api/*` (confirmed: `fetch('/api/properties')` 404s/fails, hits the silent `.catch`, and `activeProperty` never leaves its initial `null`), so gating the *whole* loaded state on `houseInfoLoaded && !!activeProperty` meant the tab would show "Loading…" forever in local dev — unlike every other tab, which has a cache to fall back to. Fixed by splitting it into two props: `loaded` (has the GET attempt settled, success or fail) and `canAdd` (is it actually safe to write, i.e. `loaded && !!activeProperty`) — the loading spinner now clears on `loaded` alone, with a distinct "finish property setup first" message when `loaded && !canAdd`.
+
 ---
 
 ### Task 1: Pure logic — `src/lib/house-info-logic.js`
@@ -111,6 +116,9 @@ console.log('\nhouse-info-logic:');
   assert.equal(r1.item.updatedBy, stamp.updatedBy); // server stamp wins
   assert.equal('evil' in r1.item, false);           // unknown field dropped
   ok('sanitizeHouseInfoItem() whitelists fields, coerces to strings, and always overwrites updatedAt/updatedBy with the server-provided stamp');
+
+  assert.equal(sanitizeHouseInfoItem({ ...raw, name: '  FPL Electric  ' }, stamp).item.name, 'FPL Electric');
+  ok('sanitizeHouseInfoItem() trims the stored name');
 
   assert.equal(sanitizeHouseInfoItem({ ...raw, id: 'not-valid-id' }, stamp).ok, false);
   assert.equal(sanitizeHouseInfoItem({ ...raw, id: 'HI-ABC' }, stamp).ok, false);
@@ -206,7 +214,7 @@ export function sanitizeHouseInfoItem(raw, stamp) {
   if (typeof raw.name !== "string" || !raw.name.trim()) {
     return { ok: false, error: "name is required" };
   }
-  const item = { id: raw.id, category: raw.category, name: raw.name };
+  const item = { id: raw.id, category: raw.category, name: raw.name.trim() };
   for (const f of HOUSE_INFO_STRING_FIELDS) item[f] = String(raw[f] ?? "");
   item.updatedAt = stamp.updatedAt;
   item.updatedBy = stamp.updatedBy;
@@ -235,7 +243,7 @@ export function groupHouseInfoByCategory(items) {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `node scripts/verify-logic.mjs`
-Expected: `house-info-logic:` section prints all 9 `✓` lines, and the file ends with `All N checks passed.` (N = previous total + 9).
+Expected: `house-info-logic:` section prints all 10 `✓` lines, and the file ends with `All N checks passed.` (N = previous total + 10, i.e. 47).
 
 - [ ] **Step 5: Run the full test suite**
 
@@ -428,7 +436,7 @@ EOF
 
 **Interfaces:**
 - Consumes: `HOUSE_INFO_CATEGORIES`, `emptyHouseInfoItem`, `matchesHouseInfoSearch`, `groupHouseInfoByCategory` from `./lib/house-info-logic.js` (Task 1); `GET/PUT/DELETE /api/house-info` from Task 2; existing `apiUrl`, `C`, `font`, `ppInput`, `ppLabel`, `setSyncError`, `activeProperty` already in `App.jsx`.
-- Produces: `HouseInfoView`/`HouseInfoForm` components; `saveHouseInfo`/`deleteHouseInfo` handlers; the `"house-info"` nav tab and view-switch branch. Nothing later in the plan consumes these (this is the last code task).
+- Produces: `HouseInfoView({ houseInfo, loaded, canAdd, onSave, onDelete })`/`HouseInfoForm({ initial, onSave, onCancel, isMobile })` components (`loaded` = the GET attempt has settled; `canAdd` = `loaded && !!activeProperty`, i.e. actually safe to write — kept separate so the tab still renders in local dev); `saveHouseInfo`/`deleteHouseInfo` handlers; the `"house-info"` nav tab and view-switch branch. Nothing later in the plan consumes these (this is the last code task).
 
 This app has no component-level test harness (no React Testing Library / Jest in `package.json`) — UI correctness here is verified by `npm run build` (the compile gate) plus the manual checklist in Step 9, exactly as the existing Purchases/Finishes tabs were verified (see their own specs' "Testing" sections).
 
@@ -519,7 +527,7 @@ function HouseInfoForm({ initial, onSave, onCancel, isMobile }) {
   );
 }
 
-function HouseInfoView({ houseInfo, loaded, onSave, onDelete }) {
+function HouseInfoView({ houseInfo, loaded, canAdd, onSave, onDelete }) {
   const [editingId, setEditingId] = useState(null);   // id | "new" | null
   const [expandedId, setExpandedId] = useState(null);
   const [query, setQuery] = useState("");
@@ -582,7 +590,11 @@ function HouseInfoView({ houseInfo, loaded, onSave, onDelete }) {
 
   const filtered = useMemo(() => {
     const list = houseInfo.filter(item => matchesHouseInfoSearch(item, query));
-    return [...list].sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+    // Null-safe: groupHouseInfoByCategory already tolerates a missing/unrecognized category
+    // (see Task 1), so this sort must too — a record that ever reached storage with no
+    // category (only possible via a direct Redis write, not through the validated API)
+    // must not crash the whole tab.
+    return [...list].sort((a, b) => (a.category || "").localeCompare(b.category || "") || (a.name || "").localeCompare(b.name || ""));
   }, [houseInfo, query]);
 
   // groupHouseInfoByCategory (unit-tested in Task 1) orders every known category first, then
@@ -601,13 +613,19 @@ function HouseInfoView({ houseInfo, loaded, onSave, onDelete }) {
         {editingId !== "new" && (
           <button
             onClick={() => { setEditingId("new"); setExpandedId(null); }}
-            disabled={!loaded}
-            style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: loaded ? C.mint : C.border, color: C.white, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: loaded ? "pointer" : "not-allowed" }}
+            disabled={!canAdd}
+            style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: canAdd ? C.mint : C.border, color: C.white, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: canAdd ? "pointer" : "not-allowed" }}
           >+ Add item</button>
         )}
       </div>
 
+      {/* `loaded` = the GET attempt has settled (success or fail) — clears the spinner.
+          `canAdd` = loaded AND a property is actually active — gates writes. These are
+          deliberately separate: in local dev (no /api/*, activeProperty stays null forever)
+          `loaded` still becomes true immediately, so the tab is visible and testable even
+          though `canAdd` stays false. See the Review Focus addendum above. */}
       {!loaded && <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>Loading…</p>}
+      {loaded && !canAdd && <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>Finish the one-time property setup (see the banner above) before adding house info.</p>}
 
       {editingId === "new" && (
         <HouseInfoForm
@@ -622,7 +640,7 @@ function HouseInfoView({ houseInfo, loaded, onSave, onDelete }) {
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search house info…" style={{ ...ppInput, marginBottom: 16, maxWidth: 320 }} />
       )}
 
-      {loaded && houseInfo.length === 0 && editingId !== "new" && (
+      {loaded && canAdd && houseInfo.length === 0 && editingId !== "new" && (
         <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>Nothing saved yet. Click "+ Add item" to log your first account, ID, or access code.</p>
       )}
 
@@ -637,7 +655,20 @@ function HouseInfoView({ houseInfo, loaded, onSave, onDelete }) {
               const isEditing = editingId === item.id;
               return (
                 <div key={item.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
-                  <button onClick={() => { setExpandedId(isOpen ? null : item.id); setEditingId(null); }} style={{ width: "100%", textAlign: "left", background: "none", border: "none", padding: "14px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                  <button onClick={() => {
+                    // Collapsing re-masks: a revealed password/account number shouldn't stay
+                    // revealed the next time this row is opened (screen-share safety).
+                    if (isOpen) {
+                      setRevealedFields(prev => {
+                        const next = { ...prev };
+                        delete next[`${item.id}:accountNumber`];
+                        delete next[`${item.id}:password`];
+                        return next;
+                      });
+                    }
+                    setExpandedId(isOpen ? null : item.id);
+                    setEditingId(null);
+                  }} style={{ width: "100%", textAlign: "left", background: "none", border: "none", padding: "14px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 15, fontWeight: 700, color: C.charcoal, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</div>
                       <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>{item.updatedBy ? `Updated by ${item.updatedBy}` : ""}</div>
@@ -729,9 +760,15 @@ Add immediately after it:
   // 400s without it (there's no legacy data to fall back to), so pre-migration
   // (activeProperty === null) there is nothing to fetch — show an empty, "loaded" list
   // rather than calling an endpoint guaranteed to fail. No localStorage cache to seed from
-  // (see the HOUSE INFO section banner above `HouseInfoView`).
+  // (see the HOUSE INFO section banner above `HouseInfoView`). houseInfo is cleared at the
+  // START of every run (not just the no-property case) so that if a property switch's GET
+  // ever resolves with something other than an array (an expired session, a 400/500), the
+  // PREVIOUS property's items — including credentials — can never render under the new
+  // property while this settles; there is no cache to safely re-seed from instead (contrast
+  // the purchases effect, which re-seeds from that property's cache on every run).
   useEffect(() => {
-    if (!activeProperty) { setHouseInfo([]); setHouseInfoLoaded(true); return; }
+    setHouseInfo([]);
+    if (!activeProperty) { setHouseInfoLoaded(true); return; }
     setHouseInfoLoaded(false);
     let cancelled = false;
     fetch(apiUrl('/api/house-info', activeProperty))
@@ -790,6 +827,10 @@ Add immediately after it:
       .then(r => { if (!r.ok) setSyncError('Failed to delete house info'); else setSyncError(null); })
       .catch(() => setSyncError('Unable to reach server'));
   };
+  // Whether it's actually safe to write: the initial load has settled AND a property is
+  // active. Passed to HouseInfoView as `canAdd`, kept separate from `houseInfoLoaded`
+  // (passed as `loaded`) so the tab still renders (rather than spinning forever) in local
+  // dev, where activeProperty never leaves null — see the Review Focus addendum above.
   const houseInfoReady = houseInfoLoaded && !!activeProperty;
 ```
 
@@ -833,7 +874,7 @@ Find:
 Add immediately after it:
 
 ```js
-      {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoReady} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
+      {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 ```
 
 - [ ] **Step 7: Run the build**
@@ -855,7 +896,7 @@ Push this branch (or deploy a preview) and, against the deployed URL, confirm:
 3. Add one item per category (all 5): fill Category + Name, optionally the other fields, Save. Each appears under its category heading, grouped and sorted by name.
 4. Reload the page — all 5 items persist, each shows "Updated by JM" or "Updated by KM" (whichever user is logged in).
 5. Edit an item: open it, click Edit, change a field, click Save — confirm the change persists after reload, and that navigating away *without* clicking Save (Cancel, or switching tabs) does **not** persist the in-progress edit.
-6. On an item with an account number and password set: confirm both render masked (`••••••••`) by default, "Reveal" shows the real value, "Hide" re-masks it, and "Copy" copies the value (paste it somewhere to confirm) — or, if clipboard access is blocked by the browser, confirm the `window.prompt` fallback still shows the value.
+6. On an item with an account number and password set: confirm both render masked (`••••••••`) by default, "Reveal" shows the real value, "Hide" re-masks it, and "Copy" copies the value (paste it somewhere to confirm) — or, if clipboard access is blocked by the browser, confirm the `window.prompt` fallback still shows the value. Click "Reveal", then collapse the row and re-open it — confirm it shows masked again (reveal state doesn't survive a collapse).
 7. Set `url` to `https://example.com` — confirm it renders as a clickable link. Edit it to `javascript:alert(1)` and confirm it renders as **plain, non-clickable text**, not a link.
 8. Delete an item, confirm the browser `confirm()` prompt appears, confirm it disappears after confirming and stays gone after reload.
 9. Search box: type a term matching only one item's name/category/notes/account-number — confirm only that item (and its category heading) remains visible; clear the search — confirm everything reappears.
@@ -865,6 +906,7 @@ Push this branch (or deploy a preview) and, against the deployed URL, confirm:
 13. Temporarily break connectivity (e.g. DevTools → Network → offline), attempt to save an edit, confirm the red "Failed to save house info" / "Unable to reach server" banner appears; go back online, retry the save, confirm the banner clears and the edit persists on reload.
 14. With your browser's session cookies (copy them from DevTools → Application → Cookies), run `curl -H "Cookie: pp_session=...; pp_user=..." https://<your-deploy>/api/house-info` (no `?property=`) and confirm it returns `400`.
 15. *(Not currently testable — there is no "add property" UI yet, per CLAUDE.md's multi-property section.)* Once a second property exists, confirm house info added under one property never appears under another.
+16. *(Local dev — `npm run dev`, no deploy needed.)* Open the House Info tab: confirm it does NOT spin on "Loading…" forever — it should settle (almost immediately, since `/api/properties` fails fast in dev) into the "Finish the one-time property setup…" message with "+ Add item" disabled, since `activeProperty` never leaves `null` in local dev. This confirms `loaded` and `canAdd` are actually two different signals, not the same one under two names.
 
 - [ ] **Step 10: Commit**
 
@@ -876,11 +918,17 @@ feat(house-info): add the House Info tab (UI + data wiring)
 New 7th nav tab backed by /api/house-info: category-grouped list,
 free-text search, inline add/edit with explicit-Save commit (no
 per-field autosave), masked/reveal/copy for account numbers and
-passwords, http(s)-only link rendering, and no localStorage cache
-(credentials must not be cached client-side). "Add" stays disabled
-until the initial load resolves AND a property is active, so a save
-attempt can never silently fail against a route that requires
-?property=.
+passwords (re-masked on collapse), http(s)-only link rendering, and
+no localStorage cache (credentials must not be cached client-side).
+
+"loaded" (the GET attempt settled) and "canAdd" (loaded AND a
+property is active) are separate signals: Add disables on canAdd, so
+a save attempt can never silently fail against a route that requires
+?property=, while the tab itself still renders (rather than spinning
+forever) in local dev, where activeProperty never leaves null. The
+fetch effect also clears houseInfo at the start of every run so a
+slow/failed GET during a property switch can never leave the
+previous property's credentials rendered under the new one.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
