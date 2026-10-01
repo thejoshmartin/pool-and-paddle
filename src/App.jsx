@@ -3876,6 +3876,16 @@ function HouseInfoView({ houseInfo, loaded, canAdd, onSave, onDelete }) {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  // Re-mask on ANY row-collapse-or-switch, not just same-row collapse: only one row can ever
+  // be open at a time, so clearing every revealed field whenever expandedId changes (including
+  // to null, e.g. via "+ Add item") is correct and covers the case the row-header onClick's own
+  // reveal-clearing logic (below) misses — switching straight from row A to row B never runs
+  // row A's onClick at all, so without this effect A's revealed password would still show
+  // unmasked if A were reopened later (screen-share safety gap).
+  useEffect(() => {
+    setRevealedFields({});
+  }, [expandedId]);
+
   // Falls back to window.prompt if the Clipboard API is unavailable or denied (e.g. a
   // non-HTTPS context or a browser permission block), so "Copy" never silently does nothing.
   const copyToClipboard = (text, key) => {
