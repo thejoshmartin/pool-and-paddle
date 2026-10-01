@@ -12,6 +12,10 @@ import {
   finishItemField, furnitureField, roomField, tombstone,
   BUDGET_FIELD, MIGRATED_FIELD, partitionFinishFields, blobToFields,
 } from '../src/lib/design-logic.js';
+import {
+  HOUSE_INFO_CATEGORIES, newHouseInfoId, emptyHouseInfoItem,
+  matchesHouseInfoSearch, sanitizeHouseInfoItem, groupHouseInfoByCategory,
+} from '../src/lib/house-info-logic.js';
 
 let passed = 0;
 function ok(name) { passed += 1; console.log(`  ✓ ${name}`); }
@@ -330,6 +334,82 @@ console.log('migrateFinishesToHash():');
   assert.equal(JSON.parse(interrupted.store['finish-records:pp']['item:t1']).item, 'User renamed this'); // edit preserved
   assert.equal(interrupted.store['finish-records:pp']['__migrated'], '1');                                // stamp finished
   ok('interrupted migration + later edit → no re-clobber, stamp completed');
+}
+
+console.log('\nhouse-info-logic:');
+{
+  assert.deepEqual(HOUSE_INFO_CATEGORIES, ['Utility', 'Legal & Financial', 'Access & Security', 'Vendor & Service', 'Other']);
+  ok('HOUSE_INFO_CATEGORIES has the 5 expected categories, in order');
+
+  const id1 = newHouseInfoId();
+  const id2 = newHouseInfoId();
+  assert.match(id1, /^hi-[a-z0-9-]+$/);
+  assert.notEqual(id1, id2);
+  ok('newHouseInfoId() matches the expected shape and is unique per call');
+
+  const item = emptyHouseInfoItem();
+  const expectedKeys = ['id', 'category', 'name', 'accountNumber', 'username', 'password', 'url', 'phone', 'notes', 'updatedAt', 'updatedBy'];
+  for (const k of expectedKeys) assert.ok(k in item, `missing field: ${k}`);
+  assert.match(item.id, /^hi-[a-z0-9-]+$/);
+  assert.equal(item.category, '');
+  assert.equal(item.name, '');
+  assert.equal(item.updatedAt, null);
+  assert.equal(item.updatedBy, null);
+  ok('emptyHouseInfoItem() has all expected fields with blank/null defaults');
+
+  const fpl = { id: 'hi-1', category: 'Utility', name: 'FPL Electric', accountNumber: '12345', username: '', password: '', url: '', phone: '', notes: 'Call before 5pm', updatedAt: null, updatedBy: null };
+  assert.equal(matchesHouseInfoSearch(fpl, ''), true);
+  assert.equal(matchesHouseInfoSearch(fpl, 'fpl'), true);
+  assert.equal(matchesHouseInfoSearch(fpl, 'UTILITY'), true);
+  assert.equal(matchesHouseInfoSearch(fpl, '12345'), true);
+  assert.equal(matchesHouseInfoSearch(fpl, 'before 5pm'), true);
+  assert.equal(matchesHouseInfoSearch(fpl, 'insurance'), false);
+  ok('matchesHouseInfoSearch() matches name/category/accountNumber/notes, case-insensitive; blank term matches all');
+
+  const stamp = { updatedAt: '2026-10-01T00:00:00.000Z', updatedBy: 'JM' };
+  const raw = {
+    id: 'hi-abc123', category: 'Utility', name: 'FPL Electric',
+    accountNumber: 98765, username: 'josh@example.com', password: 'hunter2',
+    url: 'https://fpl.com', phone: '9045551234', notes: 'n',
+    updatedAt: '2000-01-01T00:00:00.000Z', updatedBy: 'KM',   // client-supplied — must be overwritten
+    evil: '<script>alert(1)</script>',                          // unknown field — must be dropped
+  };
+  const r1 = sanitizeHouseInfoItem(raw, stamp);
+  assert.equal(r1.ok, true);
+  assert.deepEqual(Object.keys(r1.item).sort(), ['accountNumber','category','id','name','notes','password','phone','updatedAt','updatedBy','url','username'].sort());
+  assert.equal(r1.item.accountNumber, '98765');     // coerced to string
+  assert.equal(r1.item.updatedAt, stamp.updatedAt); // server stamp wins
+  assert.equal(r1.item.updatedBy, stamp.updatedBy); // server stamp wins
+  assert.equal('evil' in r1.item, false);           // unknown field dropped
+  ok('sanitizeHouseInfoItem() whitelists fields, coerces to strings, and always overwrites updatedAt/updatedBy with the server-provided stamp');
+
+  assert.equal(sanitizeHouseInfoItem({ ...raw, name: '  FPL Electric  ' }, stamp).item.name, 'FPL Electric');
+  ok('sanitizeHouseInfoItem() trims the stored name');
+
+  assert.equal(sanitizeHouseInfoItem({ ...raw, id: 'not-valid-id' }, stamp).ok, false);
+  assert.equal(sanitizeHouseInfoItem({ ...raw, id: 'HI-ABC' }, stamp).ok, false);
+  ok('sanitizeHouseInfoItem() rejects an id that does not match /^hi-[a-z0-9-]+$/');
+
+  assert.equal(sanitizeHouseInfoItem({ ...raw, category: 'Not A Real Category' }, stamp).ok, false);
+  ok('sanitizeHouseInfoItem() rejects a category outside HOUSE_INFO_CATEGORIES');
+
+  assert.equal(sanitizeHouseInfoItem({ ...raw, name: '' }, stamp).ok, false);
+  assert.equal(sanitizeHouseInfoItem({ ...raw, name: '   ' }, stamp).ok, false);
+  ok('sanitizeHouseInfoItem() rejects a blank/whitespace-only name');
+
+  const items = [
+    { id: 'a', category: 'Utility', name: 'FPL' },
+    { id: 'b', category: 'Other', name: 'Spare key' },
+    { id: 'c', category: 'Vintage Category', name: 'Old thing' }, // not in HOUSE_INFO_CATEGORIES
+  ];
+  const { order, groups } = groupHouseInfoByCategory(items);
+  assert.deepEqual(order.slice(0, HOUSE_INFO_CATEGORIES.length), HOUSE_INFO_CATEGORIES);
+  assert.deepEqual(order.slice(HOUSE_INFO_CATEGORIES.length), ['Vintage Category']);
+  assert.equal(groups['Utility'].length, 1);
+  assert.equal(groups['Other'].length, 1);
+  assert.equal(groups['Vintage Category'].length, 1);
+  assert.equal(groupHouseInfoByCategory([]).order.join(','), HOUSE_INFO_CATEGORIES.join(','));
+  ok('groupHouseInfoByCategory() orders every known category first, then any unrecognized category present in the data, so an item can never silently disappear just because its category fell out of the official list');
 }
 
 console.log(`\nAll ${passed} checks passed.`);
