@@ -31,6 +31,9 @@ export default async function handler(req, res) {
       finishRecords: await redis.hgetall(`finish-records:${id}`),
       // purchases are a Redis hash (field = purchaseId); hgetall returns the full record set.
       purchases: await redis.hgetall(`purchases:${id}`),
+      // house info is a Redis hash (field = itemId); includes credentials verbatim — the
+      // backup has always been a full, unmasked snapshot (see house-info design spec).
+      houseInfo: await redis.hgetall(`house-info:${id}`),
     };
   }
 
