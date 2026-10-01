@@ -3863,7 +3863,7 @@ function HouseInfoForm({ initial, onSave, onCancel, isMobile }) {
   );
 }
 
-function HouseInfoView({ houseInfo, loaded, canAdd, onSave, onDelete }) {
+function HouseInfoView({ houseInfo, loaded, canAdd, loadError, onSave, onDelete }) {
   const [editingId, setEditingId] = useState(null);   // id | "new" | null
   const [expandedId, setExpandedId] = useState(null);
   const [query, setQuery] = useState("");
@@ -3897,7 +3897,7 @@ function HouseInfoView({ houseInfo, loaded, canAdd, onSave, onDelete }) {
     }
   };
 
-  const copyBtnStyle = { background: "none", border: "none", color: C.mint, fontSize: 12, fontWeight: 600, cursor: "pointer", padding: "4px 6px", minHeight: 28 };
+  const copyBtnStyle = { background: "none", border: "none", color: C.mint, fontSize: 12, fontWeight: 600, cursor: "pointer", padding: "4px 10px", minHeight: 44 };
 
   // Shared renderer for both masked (accountNumber/password) and plain (username/phone)
   // fields — maskable controls whether a Reveal/Hide toggle is shown.
@@ -3960,18 +3960,21 @@ function HouseInfoView({ houseInfo, loaded, canAdd, onSave, onDelete }) {
           <button
             onClick={() => { setEditingId("new"); setExpandedId(null); }}
             disabled={!canAdd}
-            style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: canAdd ? C.mint : C.border, color: C.white, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: canAdd ? "pointer" : "not-allowed" }}
+            style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: "none", background: canAdd ? C.mint : C.border, color: C.white, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: canAdd ? "pointer" : "not-allowed" }}
           >+ Add item</button>
         )}
       </div>
 
       {/* `loaded` = the GET attempt has settled (success or fail) — clears the spinner.
-          `canAdd` = loaded AND a property is actually active — gates writes. These are
-          deliberately separate: in local dev (no /api/*, activeProperty stays null forever)
-          `loaded` still becomes true immediately, so the tab is visible and testable even
-          though `canAdd` stays false. See the Review Focus addendum above. */}
+          `canAdd` = loaded AND a property is active AND that load didn't fail — gates writes.
+          `loaded` and `canAdd` are kept separate so the tab still renders (rather than
+          spinning forever) in local dev, where activeProperty never leaves null: `loaded`
+          becomes true immediately there even though `canAdd` stays false. `loadError` is
+          checked first below, ahead of both the generic "not ready" message and the "Nothing
+          saved yet" empty-state message, so a failed load can never be mistaken for either. */}
       {!loaded && <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>Loading…</p>}
-      {loaded && !canAdd && <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>Finish the one-time property setup (see the banner above) before adding house info.</p>}
+      {loaded && loadError && <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>Couldn't load house info — reload the page to try again.</p>}
+      {loaded && !loadError && !canAdd && <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>House info isn't available yet — no active property is set. Try reloading the page.</p>}
 
       {editingId === "new" && (
         <HouseInfoForm
@@ -4146,6 +4149,7 @@ export default function App() {
   const purchasesFirstRun = useRef(true);
   const [houseInfo, setHouseInfo] = useState([]);
   const [houseInfoLoaded, setHouseInfoLoaded] = useState(false);
+  const [houseInfoLoadError, setHouseInfoLoadError] = useState(false);
 
   // Load the property registry once. Decides migrated vs. needs-migration.
   useEffect(() => {
@@ -4266,17 +4270,24 @@ export default function App() {
   // the purchases effect, which re-seeds from that property's cache on every run).
   useEffect(() => {
     setHouseInfo([]);
+    setHouseInfoLoadError(false);
     if (!activeProperty) { setHouseInfoLoaded(true); return; }
     setHouseInfoLoaded(false);
     let cancelled = false;
     fetch(apiUrl('/api/house-info', activeProperty))
-      .then(r => r.json())
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error('bad response'))))
       .then(data => {
         if (cancelled) return;
-        if (Array.isArray(data)) setHouseInfo(data);
+        if (Array.isArray(data)) {
+          setHouseInfo(data);
+        } else {
+          // A 200 with a non-array body is still a failure we must surface — leaving
+          // houseInfo as [] here would be indistinguishable from a real empty list.
+          setHouseInfoLoadError(true);
+        }
         setHouseInfoLoaded(true);
       })
-      .catch(() => { if (!cancelled) setHouseInfoLoaded(true); });
+      .catch(() => { if (!cancelled) { setHouseInfoLoadError(true); setHouseInfoLoaded(true); } });
     return () => { cancelled = true; };
   }, [activeProperty]);
 
@@ -4427,27 +4438,28 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(item),
     }).then(async (r) => {
-      if (!r.ok) { setSyncError('Failed to save house info'); return; }
+      if (!r.ok) { setSyncError('Failed to save house info — not saved anywhere; please retry'); return; }
       setSyncError(null);
       const body = await r.json().catch(() => null);
       if (body && body.item) {
         setHouseInfo(prev => prev.map(h => (h.id === body.item.id ? body.item : h)));
       }
-    }).catch(() => setSyncError('Unable to reach server'));
+    }).catch(() => setSyncError('Unable to reach server — house info not saved; please retry'));
   };
   const deleteHouseInfo = (id) => {
     setHouseInfo(prev => prev.filter(h => h.id !== id));
     const base = apiUrl('/api/house-info', activeProperty);
     const url = base + (activeProperty ? '&' : '?') + 'id=' + encodeURIComponent(id);
     fetch(url, { method: 'DELETE' })
-      .then(r => { if (!r.ok) setSyncError('Failed to delete house info'); else setSyncError(null); })
-      .catch(() => setSyncError('Unable to reach server'));
+      .then(r => { if (!r.ok) setSyncError('Failed to delete house info — please retry'); else setSyncError(null); })
+      .catch(() => setSyncError('Unable to reach server — house info change not saved; please retry'));
   };
-  // Whether it's actually safe to write: the initial load has settled AND a property is
-  // active. Passed to HouseInfoView as `canAdd`, kept separate from `houseInfoLoaded`
-  // (passed as `loaded`) so the tab still renders (rather than spinning forever) in local
-  // dev, where activeProperty never leaves null — see the Review Focus addendum above.
-  const houseInfoReady = houseInfoLoaded && !!activeProperty;
+  // Whether it's actually safe to write: the initial load has settled, a property is
+  // active, AND that load didn't fail. Passed to HouseInfoView as `canAdd`, kept separate
+  // from `houseInfoLoaded` (passed as `loaded`) so the tab still renders (rather than
+  // spinning forever) in local dev, where activeProperty never leaves null: `loaded`
+  // becomes true immediately there even though `canAdd` stays false.
+  const houseInfoReady = houseInfoLoaded && !!activeProperty && !houseInfoLoadError;
 
   // ── Finishes — per-record server mutations (HSET/HDEL one field), never a whole-array
   // write. finishesServerLoaded gates writes so loading defaults/cache never persists.
@@ -4645,7 +4657,7 @@ export default function App() {
           fontSize: '14px',
           borderBottom: '1px solid #fecaca',
         }}>
-          {syncError} — changes saved locally only
+          {syncError}{!syncError.includes('house info') ? ' — changes saved locally only' : ''}
         </div>
       )}
       {activeView === "dashboard" && <Dashboard tasks={tasks} podcastData={PODCAST_DATABASE} finishes={finishes} onNavigateToItem={navigateToItem} />}
@@ -4654,7 +4666,7 @@ export default function App() {
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
       {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} focusPurchaseId={focusPurchaseId} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
-      {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
+      {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} loadError={houseInfoLoadError} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 
       {showMigrationModal && migrationNeeded && (
         <div style={modalOverlayStyle}>
