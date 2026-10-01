@@ -137,6 +137,27 @@
   },
   {
     "id": 8,
+    "ep": 10,
+    "title": "Simple But Genius Hacks for a Better Airbnb Setup",
+    "category": "Guest Experience",
+    "priority": "high",
+    "tags": [
+      "guest experience",
+      "property setup",
+      "sleep quality",
+      "mattress protection",
+      "amenities",
+      "reviews",
+      "friction reduction"
+    ],
+    "summary": "Small, inexpensive setup details can dramatically improve guest experience and reviews without requiring renovation. Key hacks include zip encasement mattress protectors to extend product life and protect against damage, and sleep-enhancing amenities like blackout curtains and sound machines in every bedroom. These friction-reducing touches help guests feel cared for throughout their stay.",
+    "keyInsight": "The difference between a good and great Airbnb is usually small setup details guests notice throughout their stay, not massive upgrades.",
+    "isGimmick": false,
+    "processedDate": "2026-10-01",
+    "source": "https://thanksforvisiting.com/podcasts/10/"
+  },
+  {
+    "id": 8,
     "ep": 11,
     "title": "11 Airbnb Expenses Hosts Never See Coming",
     "category": "Getting Started",
@@ -11099,6 +11120,90 @@
     "isGimmick": false,
     "processedDate": "2026-09-01",
     "source": "https://thanksforvisiting.com/podcasts/566/"
+  },
+  {
+    "id": 545,
+    "ep": 567,
+    "title": "We Made $5 Million From Airbnb Hosting: Here's What We've Learned",
+    "category": "Operations",
+    "priority": "critical",
+    "tags": [
+      "financial management",
+      "business systems",
+      "bookkeeping",
+      "profitability",
+      "team building",
+      "professional services",
+      "long-term success"
+    ],
+    "summary": "After generating $5 million through a decade of hosting, the hosts emphasize that success comes from business systems, not just properties. Critical lessons include separating finances from day one with dedicated business bank accounts and clean books, as a full calendar means nothing without knowing your numbers. Investing in professional services like attorneys, CPAs, bookkeepers, and cleaners protects and grows the business rather than being optional expenses.",
+    "keyInsight": "Track your finances from day one with separated business accounts and professional support—you cannot know if your business actually works without clean numbers.",
+    "isGimmick": false,
+    "processedDate": "2026-10-01",
+    "source": "https://thanksforvisiting.com/podcasts/567/"
+  },
+  {
+    "id": 546,
+    "ep": 569,
+    "title": "Why Self-Managing Changed Everything for This Airbnb Host",
+    "category": "Operations",
+    "priority": "high",
+    "tags": [
+      "self-management",
+      "property management",
+      "dynamic pricing",
+      "profitability",
+      "one-night stays",
+      "pet fees",
+      "paid upgrades"
+    ],
+    "summary": "Allie White's property earned only $16,000 under professional management but generated $25,000 in just five months after she took over self-management. She implemented dynamic pricing, allowed one-night stays and pets with fees, and added paid options like early check-in without changing the property itself. The operator, not the property, was the limiting factor.",
+    "keyInsight": "The same property can perform dramatically differently based solely on who operates it—management strategy matters more than physical upgrades.",
+    "isGimmick": false,
+    "processedDate": "2026-10-01",
+    "source": "https://thanksforvisiting.com/podcasts/569/"
+  },
+  {
+    "id": 547,
+    "ep": 570,
+    "title": "She Doubled Her Airbnb ADR by Finally Trusting the Data",
+    "category": "Pricing & Revenue",
+    "priority": "critical",
+    "tags": [
+      "dynamic pricing",
+      "pricelabs",
+      "adr",
+      "data-driven",
+      "seasonal market",
+      "self-management",
+      "revenue optimization"
+    ],
+    "summary": "Shannon Leyh left her resort's rental program to self-manage her Snowshoe ski condo and eventually doubled her ADR by trusting dynamic pricing tools like PriceLabs. Initially skeptical that algorithms could understand her rural seasonal market, she learned that giving the data another chance and proper configuration transformed her pricing strategy. Self-management requires active attention, especially in highly seasonal markets, but provides control and significantly better revenue.",
+    "keyInsight": "Trusting data-driven dynamic pricing tools, even in niche seasonal markets, can double your average daily rate when properly configured.",
+    "isGimmick": false,
+    "processedDate": "2026-10-01",
+    "source": "https://thanksforvisiting.com/podcasts/570/"
+  },
+  {
+    "id": 548,
+    "ep": 571,
+    "title": "How to Become a Booked-Out Airbnb in 4 Simple Steps",
+    "category": "Marketing",
+    "priority": "critical",
+    "tags": [
+      "booking optimization",
+      "listing optimization",
+      "conversion",
+      "photos",
+      "calendar management",
+      "past guests",
+      "pricing strategy"
+    ],
+    "summary": "Before dropping prices, hosts should examine four controllable factors: listing conversion (hero image, photos, description, reviews), data accuracy, calendar availability, and past guest re-engagement. Photo quality and quantity matter significantly—around 40 professional photos is a strong baseline, with the hero image being most critical for winning clicks against competitors. Your listing must answer guest questions before they have to ask them.",
+    "keyInsight": "Low bookings are usually caused by controllable factors in your listing, data, calendar, or past guest strategy—not just price or market saturation.",
+    "isGimmick": false,
+    "processedDate": "2026-10-01",
+    "source": "https://thanksforvisiting.com/podcasts/571/"
   },
   {
     "id": 517,

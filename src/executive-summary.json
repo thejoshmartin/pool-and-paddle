@@ -1,13 +1,19 @@
 {
-  "generatedDate": "2026-09-01",
-  "totalEpisodes": 544,
-  "nonGimmickCount": 541,
+  "generatedDate": "2026-10-01",
+  "totalEpisodes": 549,
+  "nonGimmickCount": 546,
   "categories": [
     {
       "name": "Operations",
-      "count": 146,
-      "criticalHighCount": 77,
+      "count": 148,
+      "criticalHighCount": 79,
       "topEpisodes": [
+        {
+          "ep": 567,
+          "title": "We Made $5 Million From Airbnb Hosting: Here's What We've Learned",
+          "keyInsight": "Track your finances from day one with separated business accounts and professional support—you cannot know if your business actually works without clean numbers.",
+          "priority": "critical"
+        },
         {
           "ep": 559,
           "title": "Do This Every Time Airbnb Pays You",
@@ -113,9 +119,15 @@
     },
     {
       "name": "Pricing & Revenue",
-      "count": 60,
-      "criticalHighCount": 46,
+      "count": 61,
+      "criticalHighCount": 47,
       "topEpisodes": [
+        {
+          "ep": 570,
+          "title": "She Doubled Her Airbnb ADR by Finally Trusting the Data",
+          "keyInsight": "Trusting data-driven dynamic pricing tools, even in niche seasonal markets, can double your average daily rate when properly configured.",
+          "priority": "critical"
+        },
         {
           "ep": 3,
           "title": "Pricing Your Airbnb: What You Need to Know",
@@ -161,9 +173,15 @@
     },
     {
       "name": "Marketing",
-      "count": 56,
-      "criticalHighCount": 37,
+      "count": 57,
+      "criticalHighCount": 38,
       "topEpisodes": [
+        {
+          "ep": 571,
+          "title": "How to Become a Booked-Out Airbnb in 4 Simple Steps",
+          "keyInsight": "Low bookings are usually caused by controllable factors in your listing, data, calendar, or past guest strategy—not just price or market saturation.",
+          "priority": "critical"
+        },
         {
           "ep": 558,
           "title": "Why Your Airbnb Isn't Getting Bookings",
@@ -317,8 +335,8 @@
     },
     {
       "name": "Guest Experience",
-      "count": 48,
-      "criticalHighCount": 28,
+      "count": 49,
+      "criticalHighCount": 29,
       "topEpisodes": [
         {
           "ep": 28,
@@ -473,6 +491,27 @@
     }
   ],
   "topInsights": [
+    {
+      "ep": "571",
+      "title": "How to Become a Booked-Out Airbnb in 4 Simple Steps",
+      "keyInsight": "Low bookings are usually caused by controllable factors in your listing, data, calendar, or past guest strategy—not just price or market saturation.",
+      "category": "Marketing",
+      "priority": "critical"
+    },
+    {
+      "ep": "570",
+      "title": "She Doubled Her Airbnb ADR by Finally Trusting the Data",
+      "keyInsight": "Trusting data-driven dynamic pricing tools, even in niche seasonal markets, can double your average daily rate when properly configured.",
+      "category": "Pricing & Revenue",
+      "priority": "critical"
+    },
+    {
+      "ep": "567",
+      "title": "We Made $5 Million From Airbnb Hosting: Here's What We've Learned",
+      "keyInsight": "Track your finances from day one with separated business accounts and professional support—you cannot know if your business actually works without clean numbers.",
+      "category": "Operations",
+      "priority": "critical"
+    },
     {
       "ep": "11",
       "title": "11 Airbnb Expenses Hosts Never See Coming",
@@ -659,19 +698,19 @@
   "tagCloud": [
     {
       "tag": "property management",
-      "count": 44
+      "count": 45
     },
     {
       "tag": "pricing strategy",
-      "count": 40
+      "count": 41
+    },
+    {
+      "tag": "guest experience",
+      "count": 34
     },
     {
       "tag": "scaling",
       "count": 34
-    },
-    {
-      "tag": "guest experience",
-      "count": 33
     },
     {
       "tag": "revenue management",
@@ -682,19 +721,23 @@
       "count": 27
     },
     {
+      "tag": "revenue optimization",
+      "count": 27
+    },
+    {
       "tag": "direct bookings",
       "count": 26
     },
     {
-      "tag": "revenue optimization",
-      "count": 26
+      "tag": "dynamic pricing",
+      "count": 25
     },
     {
       "tag": "co-hosting",
       "count": 24
     },
     {
-      "tag": "dynamic pricing",
+      "tag": "pricelabs",
       "count": 23
     },
     {
@@ -702,16 +745,12 @@
       "count": 22
     },
     {
-      "tag": "pricelabs",
-      "count": 22
+      "tag": "amenities",
+      "count": 21
     },
     {
       "tag": "risk management",
       "count": 21
-    },
-    {
-      "tag": "amenities",
-      "count": 20
     },
     {
       "tag": "liability",
@@ -731,6 +770,10 @@
     },
     {
       "tag": "occupancy",
+      "count": 18
+    },
+    {
+      "tag": "profitability",
       "count": 18
     },
     {
@@ -754,10 +797,6 @@
       "count": 16
     },
     {
-      "tag": "profitability",
-      "count": 16
-    },
-    {
       "tag": "communication",
       "count": 15
     },
@@ -766,11 +805,11 @@
       "count": 15
     },
     {
-      "tag": "branding",
-      "count": 14
+      "tag": "listing optimization",
+      "count": 15
     },
     {
-      "tag": "listing optimization",
+      "tag": "branding",
       "count": 14
     },
     {
@@ -778,5 +817,5 @@
       "count": 14
     }
   ],
-  "lastIndexedEpisode": 566
+  "lastIndexedEpisode": 571
 }
