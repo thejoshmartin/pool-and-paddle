@@ -9,6 +9,7 @@ import {
   ASSET_CLASSES, suggestAssetClass, buildCostSegCsv, fmtUSD, emptyPurchase,
 } from "./lib/purchases-logic.js";
 import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, furnitureField, roomField, tombstone, BUDGET_FIELD, partitionFinishFields } from "./lib/design-logic.js";
+import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, groupHouseInfoByCategory } from "./lib/house-info-logic.js";
 
 // ─── DATA ───────────────────────────────────────────────────────────────────
 
@@ -219,6 +220,7 @@ function Header({ activeView, setActiveView, properties = [], activeProperty, on
               { key: "tasks", label: "Tasks" },
               { key: "design", label: "Design" },
               { key: "purchases", label: "Purchases" },
+              { key: "house-info", label: "House Info" },
               { key: "summary", label: "Brief" },
               { key: "podcast", label: "Podcast" },
             ].map(v => (
@@ -3809,6 +3811,239 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
   );
 }
 
+// ─── HOUSE INFO ──────────────────────────────────────────────────────────────
+// House reference data (utility accounts, IDs, access codes, vendor contacts) — including
+// real login credentials. Persisted server-side as a Redis hash (one field per item) via
+// /api/house-info, same targeted-write discipline as Purchases. Deliberately NO localStorage
+// cache (unlike Purchases/Tasks/Finishes): caching plaintext credentials client-side is a new
+// exposure that outlives logout, so this tab just shows a brief loading state instead. See
+// docs/superpowers/specs/2026-10-01-house-info-design.md for the full design rationale.
+
+function HouseInfoForm({ initial, onSave, onCancel, isMobile }) {
+  const [d, setD] = useState(initial);
+  const set = (patch) => setD(prev => ({ ...prev, ...patch }));
+  // No draft-recovery to localStorage here (unlike PurchaseForm) — this form can hold a
+  // plaintext password, and persisting that to localStorage is exactly the new exposure
+  // the design spec rules out.
+  const canSave = !!d.category && !!(d.name || "").trim();
+  const field = (label, node) => (
+    <div style={{ flex: 1, minWidth: isMobile ? "100%" : 160 }}><label style={ppLabel}>{label}</label>{node}</div>
+  );
+  return (
+    <div style={{ background: C.offWhite, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 14 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Category", (
+          <select style={ppInput} value={d.category} onChange={e => set({ category: e.target.value })}>
+            <option value="">—</option>
+            {HOUSE_INFO_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        ))}
+        {field("Name", <input autoFocus style={ppInput} value={d.name} onChange={e => set({ name: e.target.value })} placeholder="e.g. FPL Electric" />)}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Account / policy #", <input style={ppInput} value={d.accountNumber} onChange={e => set({ accountNumber: e.target.value })} />)}
+        {field("Phone", <input style={ppInput} value={d.phone} onChange={e => set({ phone: e.target.value })} />)}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Username", <input style={ppInput} value={d.username} onChange={e => set({ username: e.target.value })} />)}
+        {field("Password", <input type="password" style={ppInput} value={d.password} onChange={e => set({ password: e.target.value })} autoComplete="new-password" />)}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Login / payment URL", <input style={ppInput} value={d.url} onChange={e => set({ url: e.target.value })} placeholder="https://…" />)}
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <label style={ppLabel}>Notes</label>
+        <textarea style={{ ...ppInput, minHeight: 60, resize: "vertical" }} value={d.notes} onChange={e => set({ notes: e.target.value })} />
+      </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <button onClick={() => onSave(d)} disabled={!canSave} style={{ padding: "12px 18px", minHeight: 44, borderRadius: 8, border: "none", background: canSave ? C.mint : C.border, color: C.white, fontFamily: font, fontSize: 15, fontWeight: 700, cursor: canSave ? "pointer" : "not-allowed" }}>Save</button>
+        <button onClick={onCancel} style={{ padding: "12px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.textSecondary, fontFamily: font, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function HouseInfoView({ houseInfo, loaded, canAdd, onSave, onDelete }) {
+  const [editingId, setEditingId] = useState(null);   // id | "new" | null
+  const [expandedId, setExpandedId] = useState(null);
+  const [query, setQuery] = useState("");
+  const [revealedFields, setRevealedFields] = useState({});
+  const [copiedKey, setCopiedKey] = useState(null);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Falls back to window.prompt if the Clipboard API is unavailable or denied (e.g. a
+  // non-HTTPS context or a browser permission block), so "Copy" never silently does nothing.
+  const copyToClipboard = (text, key) => {
+    const done = () => { setCopiedKey(key); setTimeout(() => setCopiedKey(prev => (prev === key ? null : prev)), 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => window.prompt("Copy:", text));
+    } else {
+      window.prompt("Copy:", text);
+    }
+  };
+
+  const copyBtnStyle = { background: "none", border: "none", color: C.mint, fontSize: 12, fontWeight: 600, cursor: "pointer", padding: "4px 6px", minHeight: 28 };
+
+  // Shared renderer for both masked (accountNumber/password) and plain (username/phone)
+  // fields — maskable controls whether a Reveal/Hide toggle is shown.
+  const fieldRow = (itemId, field, label, value, maskable) => {
+    if (!value) return null;
+    const key = `${itemId}:${field}`;
+    const revealed = !maskable || !!revealedFields[key];
+    return (
+      <div key={field} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: C.textMuted, minWidth: 90 }}>{label}:</span>
+        <span style={{ fontSize: 13, color: C.charcoal, fontFamily: maskable && revealed ? "monospace" : font }}>{revealed ? value : "••••••••"}</span>
+        {maskable && (
+          <button type="button" onClick={() => setRevealedFields(prev => ({ ...prev, [key]: !prev[key] }))} style={copyBtnStyle}>{revealed ? "Hide" : "Reveal"}</button>
+        )}
+        <button type="button" onClick={() => copyToClipboard(value, key)} style={copyBtnStyle}>{copiedKey === key ? "Copied!" : "Copy"}</button>
+      </div>
+    );
+  };
+
+  // Only http(s) values render as a clickable link — a saved javascript:-scheme (or any
+  // other) value always renders as inert plain text, regardless of how it got there.
+  const urlRow = (itemId, value) => {
+    if (!value) return null;
+    const isLink = /^https?:\/\//i.test(value);
+    const key = `${itemId}:url`;
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: C.textMuted, minWidth: 90 }}>Link:</span>
+        {isLink
+          ? <a href={value} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, color: C.mint, wordBreak: "break-all" }}>{value}</a>
+          : <span style={{ fontSize: 13, color: C.charcoal, wordBreak: "break-all" }}>{value}</span>}
+        <button type="button" onClick={() => copyToClipboard(value, key)} style={copyBtnStyle}>{copiedKey === key ? "Copied!" : "Copy"}</button>
+      </div>
+    );
+  };
+
+  const filtered = useMemo(() => {
+    const list = houseInfo.filter(item => matchesHouseInfoSearch(item, query));
+    // Null-safe: groupHouseInfoByCategory already tolerates a missing/unrecognized category
+    // (see Task 1), so this sort must too — a record that ever reached storage with no
+    // category (only possible via a direct Redis write, not through the validated API)
+    // must not crash the whole tab.
+    return [...list].sort((a, b) => (a.category || "").localeCompare(b.category || "") || (a.name || "").localeCompare(b.name || ""));
+  }, [houseInfo, query]);
+
+  // groupHouseInfoByCategory (unit-tested in Task 1) orders every known category first, then
+  // any category actually present in the data that isn't in today's HOUSE_INFO_CATEGORIES
+  // (e.g. after a future category rename) — so an item never silently disappears just
+  // because its category fell out of the official list.
+  const { order: categoryOrder, groups: grouped } = useMemo(() => groupHouseInfoByCategory(filtered), [filtered]);
+
+  return (
+    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px", fontFamily: font }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
+        <div>
+          <h2 style={{ fontSize: 24, fontWeight: 800, color: C.charcoal, margin: 0 }}>House Info</h2>
+          <p style={{ fontSize: 13, color: C.textMuted, margin: "4px 0 0" }}>Accounts, IDs, access codes & vendor contacts · {houseInfo.length} saved</p>
+        </div>
+        {editingId !== "new" && (
+          <button
+            onClick={() => { setEditingId("new"); setExpandedId(null); }}
+            disabled={!canAdd}
+            style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: canAdd ? C.mint : C.border, color: C.white, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: canAdd ? "pointer" : "not-allowed" }}
+          >+ Add item</button>
+        )}
+      </div>
+
+      {/* `loaded` = the GET attempt has settled (success or fail) — clears the spinner.
+          `canAdd` = loaded AND a property is actually active — gates writes. These are
+          deliberately separate: in local dev (no /api/*, activeProperty stays null forever)
+          `loaded` still becomes true immediately, so the tab is visible and testable even
+          though `canAdd` stays false. See the Review Focus addendum above. */}
+      {!loaded && <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>Loading…</p>}
+      {loaded && !canAdd && <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>Finish the one-time property setup (see the banner above) before adding house info.</p>}
+
+      {editingId === "new" && (
+        <HouseInfoForm
+          initial={emptyHouseInfoItem()}
+          onSave={(item) => { onSave(item); setEditingId(null); setExpandedId(item.id); }}
+          onCancel={() => setEditingId(null)}
+          isMobile={isMobile}
+        />
+      )}
+
+      {loaded && houseInfo.length > 0 && (
+        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search house info…" style={{ ...ppInput, marginBottom: 16, maxWidth: 320 }} />
+      )}
+
+      {loaded && canAdd && houseInfo.length === 0 && editingId !== "new" && (
+        <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>Nothing saved yet. Click "+ Add item" to log your first account, ID, or access code.</p>
+      )}
+
+      {loaded && categoryOrder.map(category => {
+        const items = grouped[category] || [];
+        if (items.length === 0) return null;
+        return (
+          <div key={category} style={{ marginBottom: 24 }}>
+            <h3 style={{ fontSize: 13, fontWeight: 700, color: C.textSecondary, textTransform: "uppercase", letterSpacing: "0.04em", margin: "0 0 10px" }}>{category}</h3>
+            {items.map(item => {
+              const isOpen = expandedId === item.id;
+              const isEditing = editingId === item.id;
+              return (
+                <div key={item.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
+                  <button onClick={() => {
+                    // Collapsing re-masks: a revealed password/account number shouldn't stay
+                    // revealed the next time this row is opened (screen-share safety).
+                    if (isOpen) {
+                      setRevealedFields(prev => {
+                        const next = { ...prev };
+                        delete next[`${item.id}:accountNumber`];
+                        delete next[`${item.id}:password`];
+                        return next;
+                      });
+                    }
+                    setExpandedId(isOpen ? null : item.id);
+                    setEditingId(null);
+                  }} style={{ width: "100%", textAlign: "left", background: "none", border: "none", padding: "14px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: C.charcoal, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</div>
+                      <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>{item.updatedBy ? `Updated by ${item.updatedBy}` : ""}</div>
+                    </div>
+                  </button>
+                  {isOpen && !isEditing && (
+                    <div style={{ padding: "0 16px 16px" }}>
+                      {fieldRow(item.id, "accountNumber", "Account #", item.accountNumber, true)}
+                      {fieldRow(item.id, "username", "Username", item.username, false)}
+                      {fieldRow(item.id, "password", "Password", item.password, true)}
+                      {fieldRow(item.id, "phone", "Phone", item.phone, false)}
+                      {urlRow(item.id, item.url)}
+                      {item.notes && <p style={{ fontSize: 13, color: C.textMuted, marginTop: 8 }}>{item.notes}</p>}
+                      <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                        <button onClick={() => setEditingId(item.id)} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Edit</button>
+                        <button onClick={() => { if (window.confirm(`Delete "${item.name}"?`)) { onDelete(item.id); setExpandedId(null); } }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ocean, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Delete</button>
+                      </div>
+                    </div>
+                  )}
+                  {isOpen && isEditing && (
+                    <div style={{ padding: "0 16px 16px" }}>
+                      <HouseInfoForm
+                        initial={item}
+                        onSave={(updated) => { onSave(updated); setEditingId(null); }}
+                        onCancel={() => setEditingId(null)}
+                        isMobile={isMobile}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── MULTI-PROPERTY (Phase 1) ────────────────────────────────────────────────
 // Data is scoped per property. Pre-migration (activeProperty === null) the app reads
 // and writes the LEGACY global keys, so it behaves exactly as before until the owner
@@ -3899,6 +4134,8 @@ export default function App() {
   const [purchases, setPurchases] = useState(() => loadPurchasesFromCache(activeProperty));
   const purchasesServerLoaded = useRef(false);
   const purchasesFirstRun = useRef(true);
+  const [houseInfo, setHouseInfo] = useState([]);
+  const [houseInfoLoaded, setHouseInfoLoaded] = useState(false);
 
   // Load the property registry once. Decides migrated vs. needs-migration.
   useEffect(() => {
@@ -4004,6 +4241,32 @@ export default function App() {
         if (Array.isArray(data)) setPurchases(data);
       })
       .catch(() => { if (!cancelled) purchasesServerLoaded.current = true; });
+    return () => { cancelled = true; };
+  }, [activeProperty]);
+
+  // Fetch house info for the active property. api/house-info.js REQUIRES ?property= and
+  // 400s without it (there's no legacy data to fall back to), so pre-migration
+  // (activeProperty === null) there is nothing to fetch — show an empty, "loaded" list
+  // rather than calling an endpoint guaranteed to fail. No localStorage cache to seed from
+  // (see the HOUSE INFO section banner above `HouseInfoView`). houseInfo is cleared at the
+  // START of every run (not just the no-property case) so that if a property switch's GET
+  // ever resolves with something other than an array (an expired session, a 400/500), the
+  // PREVIOUS property's items — including credentials — can never render under the new
+  // property while this settles; there is no cache to safely re-seed from instead (contrast
+  // the purchases effect, which re-seeds from that property's cache on every run).
+  useEffect(() => {
+    setHouseInfo([]);
+    if (!activeProperty) { setHouseInfoLoaded(true); return; }
+    setHouseInfoLoaded(false);
+    let cancelled = false;
+    fetch(apiUrl('/api/house-info', activeProperty))
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return;
+        if (Array.isArray(data)) setHouseInfo(data);
+        setHouseInfoLoaded(true);
+      })
+      .catch(() => { if (!cancelled) setHouseInfoLoaded(true); });
     return () => { cancelled = true; };
   }, [activeProperty]);
 
@@ -4140,6 +4403,41 @@ export default function App() {
     const target = purchases.find(p => p.id === id);
     if (target) savePurchase({ ...target, receipts });
   };
+
+  // House info — per-record server mutations (HSET/HDEL one field via api/house-info.js),
+  // never a whole-array write. The PUT response carries the server-stamped item (real
+  // updatedAt/updatedBy), so a successful save reconciles local state with it immediately
+  // instead of waiting for the next reload.
+  const saveHouseInfo = (item) => {
+    setHouseInfo(prev => (prev.some(h => h.id === item.id)
+      ? prev.map(h => (h.id === item.id ? item : h))
+      : [...prev, item]));
+    fetch(apiUrl('/api/house-info', activeProperty), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item),
+    }).then(async (r) => {
+      if (!r.ok) { setSyncError('Failed to save house info'); return; }
+      setSyncError(null);
+      const body = await r.json().catch(() => null);
+      if (body && body.item) {
+        setHouseInfo(prev => prev.map(h => (h.id === body.item.id ? body.item : h)));
+      }
+    }).catch(() => setSyncError('Unable to reach server'));
+  };
+  const deleteHouseInfo = (id) => {
+    setHouseInfo(prev => prev.filter(h => h.id !== id));
+    const base = apiUrl('/api/house-info', activeProperty);
+    const url = base + (activeProperty ? '&' : '?') + 'id=' + encodeURIComponent(id);
+    fetch(url, { method: 'DELETE' })
+      .then(r => { if (!r.ok) setSyncError('Failed to delete house info'); else setSyncError(null); })
+      .catch(() => setSyncError('Unable to reach server'));
+  };
+  // Whether it's actually safe to write: the initial load has settled AND a property is
+  // active. Passed to HouseInfoView as `canAdd`, kept separate from `houseInfoLoaded`
+  // (passed as `loaded`) so the tab still renders (rather than spinning forever) in local
+  // dev, where activeProperty never leaves null — see the Review Focus addendum above.
+  const houseInfoReady = houseInfoLoaded && !!activeProperty;
 
   // ── Finishes — per-record server mutations (HSET/HDEL one field), never a whole-array
   // write. finishesServerLoaded gates writes so loading defaults/cache never persists.
@@ -4346,6 +4644,7 @@ export default function App() {
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
       {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} focusPurchaseId={focusPurchaseId} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
+      {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 
       {showMigrationModal && migrationNeeded && (
         <div style={modalOverlayStyle}>
