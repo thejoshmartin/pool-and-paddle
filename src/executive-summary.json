@@ -1,12 +1,12 @@
 {
-  "generatedDate": "2026-10-01",
-  "totalEpisodes": 549,
-  "nonGimmickCount": 546,
+  "generatedDate": "2026-11-01",
+  "totalEpisodes": 552,
+  "nonGimmickCount": 549,
   "categories": [
     {
       "name": "Operations",
-      "count": 148,
-      "criticalHighCount": 79,
+      "count": 149,
+      "criticalHighCount": 80,
       "topEpisodes": [
         {
           "ep": 567,
@@ -71,9 +71,15 @@
     },
     {
       "name": "Industry Trends",
-      "count": 81,
-      "criticalHighCount": 14,
+      "count": 82,
+      "criticalHighCount": 15,
       "topEpisodes": [
+        {
+          "ep": 573,
+          "title": "Is The Airbnb Market Collapsing In 2026?",
+          "keyInsight": "Market normalization reveals the difference between active hosts who prioritize hospitality and passive hosts who assumed high demand would last forever.",
+          "priority": "critical"
+        },
         {
           "ep": 208,
           "title": "BIG Airbnb Updates For 2023",
@@ -119,8 +125,8 @@
     },
     {
       "name": "Pricing & Revenue",
-      "count": 61,
-      "criticalHighCount": 47,
+      "count": 62,
+      "criticalHighCount": 48,
       "topEpisodes": [
         {
           "ep": 570,
@@ -492,6 +498,13 @@
   ],
   "topInsights": [
     {
+      "ep": "573",
+      "title": "Is The Airbnb Market Collapsing In 2026?",
+      "keyInsight": "Market normalization reveals the difference between active hosts who prioritize hospitality and passive hosts who assumed high demand would last forever.",
+      "category": "Industry Trends",
+      "priority": "critical"
+    },
+    {
       "ep": "571",
       "title": "How to Become a Booked-Out Airbnb in 4 Simple Steps",
       "keyInsight": "Low bookings are usually caused by controllable factors in your listing, data, calendar, or past guest strategy—not just price or market saturation.",
@@ -702,11 +715,11 @@
     },
     {
       "tag": "pricing strategy",
-      "count": 41
+      "count": 42
     },
     {
       "tag": "guest experience",
-      "count": 34
+      "count": 35
     },
     {
       "tag": "scaling",
@@ -717,11 +730,11 @@
       "count": 29
     },
     {
-      "tag": "insurance",
-      "count": 27
+      "tag": "revenue optimization",
+      "count": 28
     },
     {
-      "tag": "revenue optimization",
+      "tag": "insurance",
       "count": 27
     },
     {
@@ -817,5 +830,5 @@
       "count": 14
     }
   ],
-  "lastIndexedEpisode": 571
+  "lastIndexedEpisode": 575
 }
