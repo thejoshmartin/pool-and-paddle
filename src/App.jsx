@@ -15,7 +15,13 @@ import {
 import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, furnitureField, roomField, tombstone, BUDGET_FIELD, partitionFinishFields } from "./lib/design-logic.js";
 import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, groupHouseInfoByCategory } from "./lib/house-info-logic.js";
 import SHOPPING_SEED from "./shopping-seed.json";
-import { normalizeShoppingItem, mergeShopping, partitionShoppingFields, shoppingItemField, SHOPPING_SETTINGS_FIELD } from "./lib/shopping-logic.js";
+import {
+  normalizeShoppingItem, mergeShopping, partitionShoppingFields, shoppingItemField, SHOPPING_SETTINGS_FIELD,
+  SHOPPING_CATEGORIES, ITEM_PRIORITIES, ITEM_STATUSES, ZONES, VENDOR_TYPES, AGENT_ACTIONS, TIERS, QTY_BASES,
+  NON_GLASS_CATEGORIES, emptyShoppingItem, emptyCandidate, computeQty, mealsCovered, landedTotal, perUnit,
+  returnExposure, bestValue, candidateWarnings, forecastSpend, feesFor, taxFor, filterShoppingItems,
+  groupShoppingItems, sanitizeShoppingSettings,
+} from "./lib/shopping-logic.js";
 
 // ─── DATA ───────────────────────────────────────────────────────────────────
 
@@ -103,6 +109,8 @@ const C = {
   oceanLight: "#E3EFF9",
   warnText: "#B7791F",   // warning chips / badges
   warnBg: "#FEFCBF",
+  dangerText: "#E53E3E",   // destructive / shortfall chips
+  dangerBg: "#FED7D7",
   charcoal: "#333333",
   textSecondary: "#666666",
   textMuted: "#999999",
@@ -3955,14 +3963,436 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
 // ─── SHOPPING ────────────────────────────────────────────────────────────────
 // Whole-house shopping list: seeded from src/shopping-seed.json, compared on total landed cost,
 // approved by JM/KM, promoted to Purchases, and round-tripped with the research agent. Persisted as
-// a Redis hash via /api/shopping (per-field writes). Pure logic lives in src/lib/shopping-logic.js.
-function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveItem, onRemoveItem, onSaveSettings }) {
+// a Redis hash via /api/shopping (per-field writes, see App). Pure logic lives in
+// src/lib/shopping-logic.js; this section is UI only.
+
+const SHOP_LEVELS = {
+  "full-day": { label: "covers a full day", color: C.mintDark, bg: C.seafoamFaint },
+  "one-meal": { label: "covers one meal", color: C.warnText, bg: C.warnBg },
+  short: { label: "less than one meal", color: C.dangerText, bg: C.dangerBg },
+};
+const shBtn = { padding: "10px 16px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" };
+const shBtnPrimary = { ...shBtn, border: `1px solid ${C.mint}`, background: C.mint, color: C.white, fontWeight: 700 };
+const shBtnDanger = { ...shBtn, color: C.ocean };
+const shChip = (color, bg) => ({ fontSize: 11, fontWeight: 700, color, background: bg, padding: "3px 9px", borderRadius: 12, whiteSpace: "nowrap" });
+const isReimbursableVendor = (vendor, settings) =>
+  (settings.reimbursableVendors || []).some(v => String(v).trim().toLowerCase() === String(vendor || "").trim().toLowerCase());
+const priorityLabel = { "launch-critical": "Launch-critical", launch: "Launch", "nice-to-have": "Nice to have" };
+
+function ShoppingCandidateForm({ initial, onSave, onCancel, isMobile, userCode }) {
+  const [d, setD] = useState(initial);
+  const set = (patch) => setD(prev => ({ ...prev, ...patch }));
+  const field = (label, node) => (<div style={{ flex: 1, minWidth: isMobile ? "100%" : 150 }}><label style={ppLabel}>{label}</label>{node}</div>);
+  const txt = (k, ph) => <input style={ppInput} value={d[k] ?? ""} placeholder={ph} onChange={e => set({ [k]: e.target.value })} />;
+  const nm = (k, ph) => <input type="number" step="0.01" style={ppInput} value={d[k] ?? ""} placeholder={ph} onChange={e => set({ [k]: e.target.value === "" ? null : Number(e.target.value) })} />;
+  const pct = (k, ph) => <input type="number" step="0.01" style={ppInput} value={d[k] == null ? "" : Math.round(d[k] * 10000) / 100} placeholder={ph} onChange={e => set({ [k]: e.target.value === "" ? null : Number(e.target.value) / 100 })} />;
+  const tri = (k) => (
+    <select style={ppInput} value={d[k] === true ? "yes" : d[k] === false ? "no" : ""} onChange={e => set({ [k]: e.target.value === "" ? null : e.target.value === "yes" })}>
+      <option value="">Unknown</option><option value="yes">Yes</option><option value="no">No</option>
+    </select>
+  );
+  const row = { display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 };
+  return (
+    <div style={{ background: C.offWhite, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginTop: 10 }}>
+      <div style={row}>
+        {field("Vendor (store)", txt("vendor", "e.g. Amazon"))}
+        {field("Vendor type", <select style={ppInput} value={d.vendorType} onChange={e => set({ vendorType: e.target.value })}>{VENDOR_TYPES.map(v => <option key={v} value={v}>{v}</option>)}</select>)}
+        {field("Source vendor (brand behind a marketplace)", txt("sourceVendor", "e.g. Ferguson Home"))}
+      </div>
+      <div style={row}>
+        {field("Product link", txt("url", "https://…"))}
+        {field("Brand", txt("brand"))}
+        {field("Model #", txt("model"))}
+        {field("SKU / ASIN", txt("sku"))}
+      </div>
+      <div style={row}>
+        {field("Unit price ($)", nm("unitPrice"))}
+        {field("Pack size (units per pack)", nm("packSize"))}
+        {field("Packs to buy", nm("qtyToBuy"))}
+        {field("Shipping ($)", nm("shipping"))}
+        {field("Discount ($)", nm("discount"))}
+        {field("Retail price ($, display only)", nm("retailUnitPrice"))}
+      </div>
+      <div style={row}>
+        {field("Fee % (blank = vendor default)", pct("transactionFeePct", "e.g. 3.2"))}
+        {field("Sales tax ($, blank = default rate)", nm("estTax"))}
+        {field("Promo note", txt("promoNote"))}
+      </div>
+      <div style={row}>
+        {field("Return window (days)", nm("returnWindowDays"))}
+        {field("Return by", <input type="date" style={ppInput} value={d.returnByDate || ""} onChange={e => set({ returnByDate: e.target.value })} />)}
+        {field("Return shipping ($)", nm("returnShippingCost"))}
+        {field("Restocking %", pct("restockingPct", "e.g. 15"))}
+        {field("Free returns", <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, minHeight: 44 }}><input type="checkbox" checked={!!d.freeReturns} onChange={e => set({ freeReturns: e.target.checked })} style={{ accentColor: C.mint, width: 16, height: 16 }} /> Free returns</label>)}
+      </div>
+      <div style={row}>
+        {field("Delivery ETA", <input type="date" style={ppInput} value={d.deliveryEta || ""} onChange={e => set({ deliveryEta: e.target.value })} />)}
+        {field("In stock", tri("inStock"))}
+        {field("Open stock (re-buyable by the piece)", tri("openStock"))}
+        {field("Commercial grade", tri("commercialGrade"))}
+        {field("Warranty", txt("warrantyTerm"))}
+      </div>
+      <div style={row}>
+        {field("Rating", nm("rating"))}
+        {field("Rating count", nm("ratingCount"))}
+        {field("Tier", <select style={ppInput} value={d.tier || ""} onChange={e => set({ tier: e.target.value || null })}><option value="">—</option>{TIERS.map(t => <option key={t} value={t}>{t}</option>)}</select>)}
+      </div>
+      <div style={{ marginBottom: 14 }}><label style={ppLabel}>Notes</label><textarea style={{ ...ppInput, minHeight: 56, resize: "vertical" }} value={d.notes || ""} onChange={e => set({ notes: e.target.value })} /></div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <button disabled={!(d.vendor || "").trim()} onClick={() => onSave({ ...d, source: d.source === "agent" ? "agent" : userCode, checkedAt: new Date().toISOString() })} style={{ ...shBtnPrimary, background: (d.vendor || "").trim() ? C.mint : C.border }}>Save candidate</button>
+        <button onClick={onCancel} style={shBtn}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function ShoppingCandidateCard({ c, item, settings, selected, best, canEdit, onSelect, onEdit, onDelete, nowISO }) {
+  const landed = landedTotal(c, settings);
+  const warnings = candidateWarnings(c, item, settings, nowISO);
+  const dim = { fontSize: 12, color: C.textSecondary, lineHeight: 1.6 };
+  return (
+    <div style={{ background: C.white, border: `2px solid ${selected ? C.mint : C.border}`, borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+        <strong style={{ fontSize: 15, color: C.charcoal }}>{c.vendor || "(vendor)"}</strong>
+        {c.sourceVendor && <span style={{ fontSize: 12, color: C.textMuted }}>via {c.sourceVendor}</span>}
+        {best && <span style={shChip(C.mintDark, C.seafoamLight)}>Best Value</span>}
+        {selected && <span style={shChip(C.white, C.mint)}>Selected</span>}
+        {isReimbursableVendor(c.vendor, settings) && <span style={shChip(C.ocean, C.oceanLight)}>Sparrow reimburses (loan)</span>}
+        {c.tier && <span style={shChip(C.textSecondary, C.pageBg)}>{c.tier}</span>}
+        {c.source === "agent" && <span style={shChip(C.textSecondary, C.pageBg)}>agent</span>}
+        {c.standardsCheck && !c.standardsCheck.pass && <span style={shChip(C.warnText, C.warnBg)}>fails standards</span>}
+      </div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: C.charcoal }}>{fmtUSD(landed)} <span style={{ fontSize: 12, fontWeight: 600, color: C.textMuted }}>landed · {fmtUSD(perUnit(c, settings))} / unit</span></div>
+      <div style={dim}>
+        {[c.brand, c.model].filter(Boolean).join(" ")}{(c.brand || c.model) ? " · " : ""}
+        {c.qtyToBuy ?? 1} × {fmtUSD(c.unitPrice)}{Number(c.packSize) > 1 ? ` (pack of ${c.packSize})` : ""}
+        {c.discount ? ` − ${fmtUSD(c.discount)}` : ""} + ship {fmtUSD(c.shipping)} + fees {fmtUSD(feesFor(c, settings))} + tax {fmtUSD(taxFor(c, settings))}
+        {c.promoNote ? ` · ${c.promoNote}` : ""}
+      </div>
+      <div style={dim}>
+        Return by {c.returnByDate || "—"}{c.returnWindowDays ? ` (${c.returnWindowDays} days)` : ""} · exposure {c.freeReturns ? "free returns" : fmtUSD(returnExposure(c))}
+        {" · "}Delivery {c.deliveryEta || "—"} · {c.inStock === true ? "in stock" : c.inStock === false ? "OUT of stock" : "stock unknown"}
+        {c.openStock === true ? " · open stock" : ""}
+        {c.rating ? ` · ${c.rating}★${c.ratingCount ? ` (${c.ratingCount})` : ""}` : ""}
+      </div>
+      <div style={{ ...dim, color: C.textMuted }}>Checked {c.checkedAt ? new Date(c.checkedAt).toLocaleString() : "—"} · by {c.source || "—"}{c.notes ? ` · ${c.notes}` : ""}</div>
+      {warnings.map(w => <div key={w.code} style={{ fontSize: 12, fontWeight: 600, color: C.warnText, background: C.warnBg, padding: "4px 8px", borderRadius: 6 }}>⚠ {w.text}</div>)}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+        <button disabled={!canEdit || selected} onClick={onSelect} style={{ ...shBtnPrimary, background: selected || !canEdit ? C.border : C.mint, border: "none" }}>{selected ? "Selected" : "Select"}</button>
+        {c.url && <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ ...shBtn, display: "inline-flex", alignItems: "center", textDecoration: "none" }}>Open link ↗</a>}
+        <button disabled={!canEdit} onClick={onEdit} style={shBtn}>Edit</button>
+        <button disabled={!canEdit} onClick={onDelete} style={shBtnDanger}>Delete</button>
+      </div>
+    </div>
+  );
+}
+
+function ShoppingItemCard({ item, settings, expanded, onToggle, canEdit, onSave, onRemove, onMarkPurchased, linkedPurchases = [], isMobile, nowISO }) {
+  const [editingCand, setEditingCand] = useState(null);   // candidate id | "new" | null
+  const user = getCurrentUser();
+  const qty = computeQty(item, settings);
+  const best = bestValue(item, settings);
+  const selected = (item.candidates || []).find(c => c.id === item.selectedCandidateId) || null;
+  const selectedLanded = selected ? landedTotal(selected, settings) : null;
+  const patch = (p) => onSave({ ...item, ...p });
+  const rule = item.qtyRule || {};
+  const ruleText = item.qtyOverride != null ? `override (rule would give ${computeQty({ ...item, qtyOverride: null }, settings)})`
+    : rule.basis === "fixed" ? `fixed ${rule.fixedQty}` : `${rule.multiplier} × ${rule.basis} (${settings[rule.basis === "guests" ? "guestCount" : rule.basis]})`;
+  const field = (label, node, w = 150) => (<div style={{ flex: 1, minWidth: isMobile ? "100%" : w }}><label style={ppLabel}>{label}</label>{node}</div>);
+  const row = { display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 };
+  const purchased = (item.purchaseIds || []).length > 0;
+  return (
+    <div id={`shop-${item.id}`} style={{ background: C.white, border: `1px solid ${item.proposed ? C.seafoam : C.border}`, borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
+      <button onClick={onToggle} style={{ width: "100%", textAlign: "left", background: "none", border: "none", padding: "14px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", fontFamily: font }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.charcoal }}>{item.name || "(untitled)"} <span style={{ fontWeight: 600, color: C.textMuted }}>× {qty}</span></div>
+          <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>{[item.category, item.room, item.zone !== "both" ? item.zone : ""].filter(Boolean).join(" · ")}{selected ? ` · ${selected.vendor}` : ""}</div>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center" }}>
+          {item.proposed && <span style={shChip(C.mintDark, C.seafoamLight)}>proposed</span>}
+          {NON_GLASS_CATEGORIES.includes(item.category) && <span style={shChip(C.ocean, C.oceanLight)}>non-glass</span>}
+          <span style={shChip(C.textSecondary, C.pageBg)}>{item.status}</span>
+          <span style={shChip(C.textSecondary, C.pageBg)}>{priorityLabel[item.priority] || item.priority}</span>
+          {item.agentFlag && item.agentFlag.action && <span style={shChip(item.agentFlag.action === "buy-now" ? C.mintDark : C.warnText, item.agentFlag.action === "buy-now" ? C.seafoamLight : C.warnBg)}>{item.agentFlag.action}</span>}
+          {item.claimedBy && <span style={shChip(C.white, item.claimedBy === "JM" ? C.ocean : C.mint)}>{item.claimedBy} buying</span>}
+          {item.approvedBy && <span style={shChip(C.white, C.mint)}>approved {item.approvedBy}</span>}
+          {purchased && <span style={shChip(C.mintDark, C.seafoamLight)}>✓ purchased</span>}
+          {selectedLanded !== null && <span style={{ fontSize: 15, fontWeight: 800, color: C.charcoal }}>{fmtUSD(selectedLanded)}</span>}
+        </div>
+      </button>
+      {expanded && (
+        <div style={{ padding: "0 16px 16px" }}>
+          {item.proposed && (
+            <div style={{ background: C.seafoamFaint, border: `1px solid ${C.seafoam}`, borderRadius: 10, padding: 12, marginBottom: 12, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontSize: 13, color: C.mintDark, fontWeight: 600, flex: 1 }}>The research agent proposed this item.</span>
+              <button disabled={!canEdit} onClick={() => patch({ proposed: false })} style={shBtnPrimary}>Keep</button>
+              <button disabled={!canEdit} onClick={() => { if (window.confirm("Dismiss this proposed item?")) onRemove(item.id); }} style={shBtnDanger}>Dismiss</button>
+            </div>
+          )}
+          {item.agentFlag && item.agentFlag.action && (
+            <div style={{ fontSize: 13, color: C.textSecondary, marginBottom: 10 }}><strong>Agent flag: {item.agentFlag.action}</strong>{item.agentFlag.reason ? ` — ${item.agentFlag.reason}` : ""}</div>
+          )}
+          {(item.qualityTier || item.requirements || item.kerryDecides) && (
+            <div style={{ fontSize: 13, color: C.textSecondary, marginBottom: 10, lineHeight: 1.6 }}>
+              {item.qualityTier && <div><strong>Quality tier:</strong> {item.qualityTier}</div>}
+              {item.requirements && <div><strong>Requirements:</strong> {item.requirements}</div>}
+              {item.kerryDecides && <div><strong>Kerry decides</strong></div>}
+            </div>
+          )}
+          {NON_GLASS_CATEGORIES.includes(item.category) && (
+            <div style={{ fontSize: 12, color: C.textSecondary, background: C.oceanLight, borderRadius: 8, padding: "8px 12px", marginBottom: 12, lineHeight: 1.7 }}>
+              <strong>Pool-deck checklist (no glass):</strong>
+              <div>☐ Plates, bowls, serveware: premium heavy-gauge melamine</div>
+              <div>☐ Dishwasher-safe — required (goes through the same dishwasher)</div>
+              <div>☐ Not microwave-safe — stays in the summer kitchen</div>
+              <div>☐ Drinkware: Tritan or similar shatter-resistant, BPA-free, reads as glass</div>
+              <div>☐ Open stock · ☐ Palette coordinates with the indoor set</div>
+            </div>
+          )}
+          <div style={row}>
+            {field(`Quantity needed — ${ruleText}`, (
+              <div style={{ display: "flex", gap: 8 }}>
+                <input type="number" style={ppInput} disabled={!canEdit} value={item.qtyOverride ?? ""} placeholder={`${computeQty({ ...item, qtyOverride: null }, settings)} (from rule)`} onChange={e => patch({ qtyOverride: e.target.value === "" ? null : Number(e.target.value) })} />
+                {item.qtyOverride != null && <button disabled={!canEdit} onClick={() => patch({ qtyOverride: null })} style={shBtn}>Use rule</button>}
+              </div>
+            ), 240)}
+            {item.suggestedQty != null && item.suggestedQty !== qty && field("Agent suggests", <button disabled={!canEdit} onClick={() => patch({ qtyOverride: item.suggestedQty })} style={shBtn}>Use {item.suggestedQty}</button>)}
+            {field("Status", <select style={ppInput} disabled={!canEdit} value={item.status} onChange={e => patch({ status: e.target.value })}>{ITEM_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>)}
+            {field("Priority", <select style={ppInput} disabled={!canEdit} value={item.priority} onChange={e => patch({ priority: e.target.value })}>{ITEM_PRIORITIES.map(p => <option key={p} value={p}>{priorityLabel[p]}</option>)}</select>)}
+          </div>
+          <div style={row}>
+            {field("Room", <input style={ppInput} disabled={!canEdit} value={item.room || ""} onChange={e => patch({ room: e.target.value })} />)}
+            {field("Zone", <select style={ppInput} disabled={!canEdit} value={item.zone} onChange={e => patch({ zone: e.target.value })}>{ZONES.map(z => <option key={z} value={z}>{z}</option>)}</select>)}
+            {field("Need by", <input type="date" style={ppInput} disabled={!canEdit} value={item.needBy || ""} onChange={e => patch({ needBy: e.target.value || null })} />)}
+            {field("Target price per unit ($)", <input type="number" step="0.01" style={ppInput} disabled={!canEdit} value={item.targetPrice ?? ""} onChange={e => patch({ targetPrice: e.target.value === "" ? null : Number(e.target.value) })} />)}
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <label style={ppLabel}>Notes</label>
+            <textarea style={{ ...ppInput, minHeight: 56, resize: "vertical" }} disabled={!canEdit} value={item.notes || ""} onChange={e => patch({ notes: e.target.value })} />
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+            <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.charcoal }}>Candidates ({(item.candidates || []).length})</h4>
+            <button disabled={!canEdit} onClick={() => setEditingCand("new")} style={shBtn}>+ Add candidate</button>
+          </div>
+          {editingCand === "new" && (
+            <ShoppingCandidateForm initial={{ ...emptyCandidate(), qtyToBuy: Math.max(1, qty) }} isMobile={isMobile} userCode={user.code}
+              onSave={(c) => { patch({ candidates: [...(item.candidates || []), c] }); setEditingCand(null); }} onCancel={() => setEditingCand(null)} />
+          )}
+          {(item.candidates || []).length === 0 && editingCand !== "new" && <p style={{ fontSize: 13, color: C.textMuted, margin: "8px 0 14px" }}>No candidates yet. Add one, or import the research agent's results.</p>}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginBottom: 14 }}>
+            {(item.candidates || []).map(c => editingCand === c.id ? (
+              <ShoppingCandidateForm key={c.id} initial={c} isMobile={isMobile} userCode={user.code}
+                onSave={(next) => { patch({ candidates: item.candidates.map(x => (x.id === c.id ? next : x)) }); setEditingCand(null); }} onCancel={() => setEditingCand(null)} />
+            ) : (
+              <ShoppingCandidateCard key={c.id} c={c} item={item} settings={settings} nowISO={nowISO}
+                selected={item.selectedCandidateId === c.id} best={!!best && best.id === c.id} canEdit={canEdit}
+                onSelect={() => patch({ selectedCandidateId: c.id, status: item.status === "researching" ? "shortlisted" : item.status })}
+                onEdit={() => setEditingCand(c.id)}
+                onDelete={() => { if (window.confirm("Delete this candidate?")) patch({ candidates: item.candidates.filter(x => x.id !== c.id), selectedCandidateId: item.selectedCandidateId === c.id ? null : item.selectedCandidateId }); }} />
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {item.approvedBy
+              ? <button disabled={!canEdit} onClick={() => patch({ status: "shortlisted", approvedBy: null, approvedAt: null })} style={shBtn}>Un-approve ({item.approvedBy})</button>
+              : <button disabled={!canEdit || !selected} title={selected ? "" : "Select a candidate first"} onClick={() => patch({ status: "approved", approvedBy: user.code, approvedAt: new Date().toISOString() })} style={{ ...shBtnPrimary, background: canEdit && selected ? C.mint : C.border, border: "none" }}>Approve as {user.code || "me"}</button>}
+            {item.claimedBy
+              ? <button disabled={!canEdit} onClick={() => patch({ claimedBy: null })} style={shBtn}>Release claim ({item.claimedBy} is buying)</button>
+              : <button disabled={!canEdit} onClick={() => patch({ claimedBy: user.code })} style={shBtn}>I'm buying this</button>}
+            {selected && selected.url && <a href={selected.url} target="_blank" rel="noopener noreferrer" style={{ ...shBtn, display: "inline-flex", alignItems: "center", textDecoration: "none" }}>Open selected link ↗</a>}
+            {onMarkPurchased && selected && !purchased && <button disabled={!canEdit} onClick={() => onMarkPurchased(item, selected.id)} style={shBtnPrimary}>Mark purchased</button>}
+            {purchased && linkedPurchases.length > 0 && <span style={{ ...shChip(C.mintDark, C.seafoamLight), alignSelf: "center", padding: "8px 12px" }}>✓ {linkedPurchases.length} purchase{linkedPurchases.length > 1 ? "s" : ""} logged</span>}
+            <button disabled={!canEdit} onClick={() => { if (window.confirm(`Delete "${item.name}" from the list?`)) onRemove(item.id); }} style={shBtnDanger}>Delete item</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ShoppingSettingsPanel({ settings, canEdit, onSave, onClose }) {
+  const v = settings.vendorDefaults || {};
+  const [d, setD] = useState({
+    guestCount: settings.guestCount, bedrooms: settings.bedrooms, bathrooms: settings.bathrooms,
+    mealsPerDay: settings.mealsPerDay, washesPerDay: settings.washesPerDay, dishwashers: settings.dishwashers,
+    budgetTarget: settings.budgetTarget ?? "", readyDate: settings.readyDate || "",
+    taxPct: Math.round(settings.defaultTaxRate * 10000) / 100,
+    amazonFee: Math.round(((v.amazon || {}).transactionFeePct || 0) * 10000) / 100,
+    amazonReturnBy: (v.amazon || {}).holidayReturnBy || "",
+    minoanFee: Math.round(((v.minoan || {}).transactionFeePct || 0) * 10000) / 100,
+    reimbursable: (settings.reimbursableVendors || []).join(", "),
+  });
+  const [error, setError] = useState("");
+  const set = (patch) => setD(prev => ({ ...prev, ...patch }));
+  const field = (label, node) => (<div style={{ flex: 1, minWidth: 150 }}><label style={ppLabel}>{label}</label>{node}</div>);
+  const int = (k) => <input type="number" style={ppInput} value={d[k]} onChange={e => set({ [k]: e.target.value === "" ? "" : Number(e.target.value) })} />;
+  const save = () => {
+    const raw = {
+      ...settings,
+      guestCount: d.guestCount, bedrooms: d.bedrooms, bathrooms: d.bathrooms,
+      mealsPerDay: d.mealsPerDay, washesPerDay: d.washesPerDay, dishwashers: d.dishwashers,
+      budgetTarget: d.budgetTarget === "" ? null : Number(d.budgetTarget),
+      readyDate: d.readyDate || null,
+      defaultTaxRate: Number(d.taxPct) / 100,
+      vendorDefaults: {
+        ...v,
+        amazon: { ...(v.amazon || {}), transactionFeePct: Number(d.amazonFee) / 100, holidayReturnBy: d.amazonReturnBy },
+        minoan: { ...(v.minoan || {}), transactionFeePct: Number(d.minoanFee) / 100 },
+      },
+      reimbursableVendors: d.reimbursable.split(",").map(x => x.trim()).filter(Boolean),
+    };
+    const r = sanitizeShoppingSettings(raw);
+    if (!r.ok) { setError(`Can't save: ${r.error}. Check the numbers and try again.`); return; }
+    setError("");
+    onSave(r.settings);
+    onClose();
+  };
+  const row = { display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 };
+  return (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 18 }}>
+      <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 700, color: C.charcoal }}>Shopping settings</h3>
+      <div style={row}>{field("Guests eating at once", int("guestCount"))}{field("Bedrooms", int("bedrooms"))}{field("Bathrooms", int("bathrooms"))}</div>
+      <div style={row}>{field("Meals per day", int("mealsPerDay"))}{field("Dishwasher runs per day", int("washesPerDay"))}{field("Dishwashers", int("dishwashers"))}</div>
+      <div style={row}>
+        {field("Budget target ($)", <input type="number" style={ppInput} value={d.budgetTarget} placeholder="Not set" onChange={e => set({ budgetTarget: e.target.value })} />)}
+        {field("House ready (can receive & test items)", <input type="date" style={ppInput} value={d.readyDate} onChange={e => set({ readyDate: e.target.value })} />)}
+        {field("Default sales tax % (confirm)", <input type="number" step="0.01" style={ppInput} value={d.taxPct} onChange={e => set({ taxPct: e.target.value })} />)}
+      </div>
+      <div style={row}>
+        {field("Amazon fee %", <input type="number" step="0.01" style={ppInput} value={d.amazonFee} onChange={e => set({ amazonFee: e.target.value })} />)}
+        {field("Amazon holiday return-by", <input type="date" style={ppInput} value={d.amazonReturnBy} onChange={e => set({ amazonReturnBy: e.target.value })} />)}
+        {field("Minoan fee %", <input type="number" step="0.01" style={ppInput} value={d.minoanFee} onChange={e => set({ minoanFee: e.target.value })} />)}
+        {field("Sparrow reimburses these vendors (comma-separated)", <input style={ppInput} value={d.reimbursable} onChange={e => set({ reimbursable: e.target.value })} />)}
+      </div>
+      {error && <p style={{ color: C.ocean, fontSize: 13, fontWeight: 600 }}>{error}</p>}
+      <div style={{ display: "flex", gap: 10 }}>
+        <button disabled={!canEdit} onClick={save} style={{ ...shBtnPrimary, background: canEdit ? C.mint : C.border }}>Save settings</button>
+        <button onClick={onClose} style={shBtn}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+function ShoppingItemForm({ onSave, onCancel, isMobile }) {
+  const [d, setD] = useState(() => ({ ...emptyShoppingItem(), userCreated: true }));
+  const set = (patch) => setD(prev => ({ ...prev, ...patch }));
+  const field = (label, node) => (<div style={{ flex: 1, minWidth: isMobile ? "100%" : 150 }}><label style={ppLabel}>{label}</label>{node}</div>);
+  const rule = d.qtyRule;
+  return (
+    <div style={{ background: C.offWhite, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Item", <input autoFocus style={ppInput} value={d.name} placeholder="e.g. Cheese board" onChange={e => set({ name: e.target.value })} />)}
+        {field("Category", <select style={ppInput} value={d.category} onChange={e => set({ category: e.target.value })}>{SHOPPING_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select>)}
+        {field("Room", <input style={ppInput} value={d.room} onChange={e => set({ room: e.target.value })} />)}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Zone", <select style={ppInput} value={d.zone} onChange={e => set({ zone: e.target.value })}>{ZONES.map(z => <option key={z} value={z}>{z}</option>)}</select>)}
+        {field("Priority", <select style={ppInput} value={d.priority} onChange={e => set({ priority: e.target.value })}>{ITEM_PRIORITIES.map(p => <option key={p} value={p}>{priorityLabel[p]}</option>)}</select>)}
+        {field("Quantity rule", <select style={ppInput} value={rule.basis} onChange={e => set({ qtyRule: { ...rule, basis: e.target.value } })}>{QTY_BASES.map(b => <option key={b} value={b}>{b === "fixed" ? "fixed number" : `× ${b}`}</option>)}</select>)}
+        {rule.basis === "fixed"
+          ? field("How many", <input type="number" style={ppInput} value={rule.fixedQty} onChange={e => set({ qtyRule: { ...rule, fixedQty: Number(e.target.value) } })} />)
+          : field(`Multiplier (× ${rule.basis})`, <input type="number" step="0.25" style={ppInput} value={rule.multiplier} onChange={e => set({ qtyRule: { ...rule, multiplier: Number(e.target.value) } })} />)}
+      </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <button disabled={!d.name.trim()} onClick={() => onSave({ ...d, name: d.name.trim() })} style={{ ...shBtnPrimary, background: d.name.trim() ? C.mint : C.border }}>Add item</button>
+        <button onClick={onCancel} style={shBtn}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveItem, onRemoveItem, onSaveSettings, onMarkPurchased }) {
+  const { items, settings } = shopping;
+  const [groupBy, setGroupBy] = useState("category");
+  const [filters, setFilters] = useState({ status: "all", category: "all", priority: "all", agentFlag: "all", claimedBy: "all", vendor: "all", search: "" });
+  const [expandedId, setExpandedId] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const nowISO = new Date().toISOString();
+  const setFilter = (k) => (e) => setFilters(prev => ({ ...prev, [k]: e.target.value }));
+  const filtered = useMemo(() => filterShoppingItems(items, filters), [items, filters]);
+  const groups = useMemo(() => groupShoppingItems(filtered, groupBy), [filtered, groupBy]);
+  const meals = useMemo(() => mealsCovered(items, settings, purchases), [items, settings, purchases]);
+  const forecast = useMemo(() => forecastSpend(items, purchases, settings), [items, purchases, settings]);
+  const vendors = useMemo(() => [...new Set(items.flatMap(i => (i.candidates || []).map(c => c.vendor)).filter(Boolean))].sort(), [items]);
+  const purchasesById = useMemo(() => new Map((purchases || []).map(p => [p.id, p])), [purchases]);
+  const count = (status) => items.filter(i => i.status === status).length;
+  const budget = settings.budgetTarget;
+  const cards = [
+    { label: "Items", value: String(items.length), sub: `${filtered.length} shown` },
+    { label: "Approved", value: String(count("approved")), sub: `${count("shortlisted")} shortlisted` },
+    { label: "Ordered", value: String(count("ordered")), sub: `${count("received") + count("kept")} received / kept` },
+    { label: "Forecast vs budget", value: fmtUSD(forecast.forecast),
+      sub: budget == null ? "Set target" : `${fmtUSD(budget - forecast.forecast)} ${budget - forecast.forecast >= 0 ? "under" : "over"} ${fmtUSD(budget)}`,
+      onClick: budget == null ? () => setShowSettings(true) : null },
+  ];
+  const sel = { ...ppInput, maxWidth: 200, width: "auto" };
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px", fontFamily: font }}>
-      <h2 style={{ fontSize: 24, fontWeight: 800, color: C.charcoal, margin: 0 }}>Shopping</h2>
-      <p style={{ fontSize: 13, color: C.textMuted, margin: "4px 0 0" }}>Stocking the house · {shopping.items.length} items</p>
-      {!loaded && <p style={{ color: C.textMuted, fontSize: 14, padding: 24 }}>Loading…</p>}
-      {loaded && loadError && <p style={{ color: C.ocean, fontSize: 14, padding: 24 }}>Couldn’t load saved shopping changes — showing the starter list. Reload to try again.</p>}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
+        <div>
+          <h2 style={{ fontSize: 24, fontWeight: 800, color: C.charcoal, margin: 0 }}>Shopping</h2>
+          <p style={{ fontSize: 13, color: C.textMuted, margin: "4px 0 0" }}>Stocking the house for {settings.guestCount} guests · {items.length} items</p>
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button onClick={() => setShowSettings(s => !s)} style={shBtn}>Settings</button>
+          <button disabled={!canEdit} onClick={() => setShowAdd(true)} style={{ ...shBtnPrimary, background: canEdit ? C.mint : C.border }}>+ Add item</button>
+        </div>
+      </div>
+      {!loaded && <p style={{ color: C.textMuted, fontSize: 14, padding: "8px 0" }}>Loading saved changes…</p>}
+      {loaded && loadError && <p style={{ color: C.ocean, fontSize: 14, fontWeight: 600 }}>Couldn’t load saved shopping changes — showing the starter list, and editing is off. Reload to try again.</p>}
+      {loaded && !loadError && !canEdit && <p style={{ color: C.textMuted, fontSize: 13 }}>Editing is off until this property’s data is set up (open the app from the main address once to finish setup).</p>}
+
+      {showSettings && <ShoppingSettingsPanel key={JSON.stringify(settings)} settings={settings} canEdit={canEdit} onSave={onSaveSettings} onClose={() => setShowSettings(false)} />}
+      {showAdd && <ShoppingItemForm isMobile={isMobile} onCancel={() => setShowAdd(false)} onSave={(item) => { onSaveItem(item); setShowAdd(false); setExpandedId(item.id); }} />}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 14 }}>
+        {cards.map(c => {
+          const style = { background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px", textAlign: "left", fontFamily: font };
+          const body = (<><div style={{ fontSize: 12, color: C.textMuted, fontWeight: 600 }}>{c.label}</div><div style={{ fontSize: 22, fontWeight: 800, color: C.charcoal, marginTop: 4 }}>{c.value}</div><div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{c.sub}</div></>);
+          return c.onClick ? <button key={c.label} onClick={c.onClick} style={{ ...style, cursor: "pointer", minHeight: 44 }}>{body}</button> : <div key={c.label} style={style}>{body}</div>;
+        })}
+      </div>
+
+      {meals.length > 0 && (
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", marginBottom: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.textMuted, marginBottom: 8 }}>NO DISHES AFTER EVERY MEAL — can the {settings.guestCount} guests get through a day on one wash cycle?</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {meals.map(m => { const lv = SHOP_LEVELS[m.level]; return <span key={m.dishType} style={shChip(lv.color, lv.bg)}>{m.dishType}: {m.total} · {m.level === "short" ? `${lv.label} for ${settings.guestCount}` : lv.label}</span>; })}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 14 }}>
+        <input value={filters.search} onChange={setFilter("search")} placeholder="Search items, notes, vendors…" style={{ ...ppInput, maxWidth: 280 }} />
+        <select value={groupBy} onChange={e => setGroupBy(e.target.value)} style={sel} aria-label="Group by"><option value="category">Group: category</option><option value="status">Group: status</option></select>
+        <select value={filters.status} onChange={setFilter("status")} style={sel} aria-label="Status"><option value="all">All statuses</option>{ITEM_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>
+        <select value={filters.category} onChange={setFilter("category")} style={sel} aria-label="Category"><option value="all">All categories</option>{SHOPPING_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select>
+        <select value={filters.priority} onChange={setFilter("priority")} style={sel} aria-label="Priority"><option value="all">All priorities</option>{ITEM_PRIORITIES.map(p => <option key={p} value={p}>{priorityLabel[p]}</option>)}</select>
+        <select value={filters.agentFlag} onChange={setFilter("agentFlag")} style={sel} aria-label="Agent flag"><option value="all">Any agent flag</option><option value="none">No flag</option>{AGENT_ACTIONS.map(a => <option key={a} value={a}>{a}</option>)}</select>
+        <select value={filters.claimedBy} onChange={setFilter("claimedBy")} style={sel} aria-label="Claimed by"><option value="all">Anyone buying</option><option value="unclaimed">Unclaimed</option><option value="JM">JM buying</option><option value="KM">KM buying</option></select>
+        <select value={filters.vendor} onChange={setFilter("vendor")} style={sel} aria-label="Vendor"><option value="all">Any vendor</option>{vendors.map(v => <option key={v} value={v}>{v}</option>)}</select>
+      </div>
+
+      {filtered.length === 0 && <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>{items.length === 0 ? "No items yet." : "No items match your search or filters."}</p>}
+      {groups.map(g => (
+        <div key={g.key} style={{ marginBottom: 18 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 800, color: C.textSecondary, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: "0.04em" }}>{g.key} <span style={{ fontWeight: 600, color: C.textMuted }}>({g.items.length})</span></h3>
+          {g.items.map(item => (
+            <ShoppingItemCard key={item.id} item={item} settings={settings} isMobile={isMobile} nowISO={nowISO}
+              expanded={expandedId === item.id} onToggle={() => setExpandedId(expandedId === item.id ? null : item.id)}
+              canEdit={canEdit} onSave={onSaveItem} onRemove={(id) => { onRemoveItem(id); if (expandedId === id) setExpandedId(null); }}
+              onMarkPurchased={onMarkPurchased} linkedPurchases={(item.purchaseIds || []).map(id => purchasesById.get(id)).filter(Boolean)} />
+          ))}
+        </div>
+      ))}
     </div>
   );
 }

@@ -1126,4 +1126,40 @@ console.log('Phase 2 — seed list (§2.6 tables) and master-list parser:');
   }
 }
 
+console.log('Phase 2 — list helpers (search, filter, group):');
+{
+  const mk = (id, o) => ({ ...SH.emptyShoppingItem(), id, name: id, ...o });
+  const items = [
+    mk('sh-a', { name: 'Dinner plates', category: 'Dinnerware', room: 'Kitchen', status: 'approved', priority: 'launch-critical', claimedBy: 'JM', notes: 'Stoneware', candidates: [{ id: 'c1', vendor: 'Amazon', brand: 'Corelle', model: 'ABC-1' }] }),
+    mk('sh-b', { name: 'Toaster', category: 'Small Appliances', status: 'researching', priority: 'launch', agentFlag: { action: 'buy-now', reason: 'Low', flaggedAt: null }, candidates: [{ id: 'c2', vendor: 'Minoan', brand: 'Breville' }] }),
+    mk('sh-c', { name: 'Hangers', category: 'Supplies & Consumables', status: 'shortlisted', priority: 'nice-to-have', dishType: 'x' }),
+    mk('sh-d', { name: 'Odd thing', category: 'Other', status: 'weird-status' }),
+  ];
+  const ids = (list) => list.map(i => i.id);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, {})), ['sh-a', 'sh-b', 'sh-c', 'sh-d']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { status: 'approved' })), ['sh-a']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { category: 'Small Appliances' })), ['sh-b']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { priority: 'nice-to-have' })), ['sh-c']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { agentFlag: 'buy-now' })), ['sh-b']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { agentFlag: 'none' })), ['sh-a', 'sh-c', 'sh-d']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { claimedBy: 'JM' })), ['sh-a']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { claimedBy: 'unclaimed' })), ['sh-b', 'sh-c', 'sh-d']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { vendor: 'minoan' })), ['sh-b']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { search: 'corelle' })), ['sh-a']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { status: 'all', category: 'all', priority: 'all', agentFlag: 'all', claimedBy: 'all', vendor: 'all', search: '  ' })), ['sh-a', 'sh-b', 'sh-c', 'sh-d']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { status: 'approved', category: 'Small Appliances' })), []);
+  assert.equal(SH.matchesShoppingSearch(items[0], 'stoneware'), true);
+  assert.equal(SH.matchesShoppingSearch(items[0], 'zzz'), false);
+  assert.equal(SH.matchesShoppingSearch({}, 'x'), false);
+  ok('filters (status, category, priority, agent flag, claimed by, vendor) and search combine; "all"/blank mean no filter; search covers name, notes, room and candidate vendor/brand/model');
+
+  const byCat = SH.groupShoppingItems(items, 'category');
+  assert.deepEqual(byCat.map(g => g.key), ['Small Appliances', 'Dinnerware', 'Supplies & Consumables', 'Other']);
+  assert.deepEqual(byCat.map(g => g.items.length), [1, 1, 1, 1]);
+  const byStatus = SH.groupShoppingItems(items, 'status');
+  assert.deepEqual(byStatus.map(g => g.key), ['researching', 'shortlisted', 'approved', 'weird-status']);
+  assert.deepEqual(SH.groupShoppingItems([], 'category'), []);
+  ok('grouping follows the category / status order, drops empty groups, and keeps an unrecognized status instead of hiding the item');
+}
+
 console.log(`\nAll ${passed} checks passed.`);

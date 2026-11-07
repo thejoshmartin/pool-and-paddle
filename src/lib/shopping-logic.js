@@ -477,3 +477,57 @@ export function forecastSpend(items, purchases, settings) {
   planned = round2(planned); committed = round2(committed);
   return { planned, committed, forecast: round2(planned + committed) };
 }
+
+// ── List helpers (search / filter / group) ───────────────────────────────────
+
+// Case-insensitive search over the item and its candidates.
+export function matchesShoppingSearch(item, term) {
+  const t = String(term || "").trim().toLowerCase();
+  if (!t) return true;
+  if (!item) return false;
+  const parts = [item.name, item.category, item.room, item.notes, item.dishType, item.requirements];
+  for (const c of Array.isArray(item.candidates) ? item.candidates : []) {
+    if (c) parts.push(c.vendor, c.brand, c.model, c.sourceVendor);
+  }
+  return parts.filter(Boolean).join(" ").toLowerCase().includes(t);
+}
+
+const isAll = (v) => v === undefined || v === null || v === "" || v === "all";
+
+// Filters: status, category, priority, agentFlag ("none" or an action), claimedBy ("unclaimed" or JM/KM),
+// vendor (any candidate), search. "all"/blank means no filter. Input order is preserved.
+export function filterShoppingItems(items, f = {}) {
+  return (items || []).filter(item => {
+    if (!item) return false;
+    if (!isAll(f.status) && item.status !== f.status) return false;
+    if (!isAll(f.category) && item.category !== f.category) return false;
+    if (!isAll(f.priority) && item.priority !== f.priority) return false;
+    if (!isAll(f.agentFlag)) {
+      const action = (item.agentFlag && item.agentFlag.action) || null;
+      if (f.agentFlag === "none" ? action !== null : action !== f.agentFlag) return false;
+    }
+    if (!isAll(f.claimedBy)) {
+      if (f.claimedBy === "unclaimed" ? item.claimedBy : item.claimedBy !== f.claimedBy) return false;
+    }
+    if (!isAll(f.vendor)) {
+      const v = String(f.vendor).trim().toLowerCase();
+      if (!(Array.isArray(item.candidates) ? item.candidates : []).some(c => c && String(c.vendor || "").trim().toLowerCase() === v)) return false;
+    }
+    return matchesShoppingSearch(item, f.search);
+  });
+}
+
+// Group by category or status in the canonical order; unrecognized keys follow (never hidden); empty
+// groups are dropped. Returns [{ key, items }].
+export function groupShoppingItems(items, by) {
+  const field = by === "status" ? "status" : "category";
+  const order = by === "status" ? ITEM_STATUSES : SHOPPING_CATEGORIES;
+  const buckets = new Map();
+  for (const item of items || []) {
+    const key = item[field];
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(item);
+  }
+  const keys = [...order.filter(k => buckets.has(k)), ...[...buckets.keys()].filter(k => !order.includes(k))];
+  return keys.map(key => ({ key, items: buckets.get(key) }));
+}
