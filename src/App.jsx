@@ -10,7 +10,7 @@ import {
   DELIVERED_TO_OPTIONS, REIMBURSEMENT_STATUSES, DOC_TYPES, CONTRACTOR_SCOPE, assetClassLabel,
   defaultAllowanceFor, reimbursementDefaultsFor, normalizePurchase, netCost, paymentBadge,
   summarizePurchases, fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
-  groupByOrder, newOrderGroupId,
+  groupByOrder, newOrderGroupId, returnsClosingSoon, localISODate, daysBetween,
 } from "./lib/purchases-logic.js";
 import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, furnitureField, roomField, tombstone, BUDGET_FIELD, partitionFinishFields } from "./lib/design-logic.js";
 import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, groupHouseInfoByCategory } from "./lib/house-info-logic.js";
@@ -361,7 +361,7 @@ function StatCard({ label, value, sub, accent }) {
   );
 }
 
-function Dashboard({ tasks, podcastData, finishes, onNavigateToItem }) {
+function Dashboard({ tasks, podcastData, finishes, onNavigateToItem, purchases = [], onOpenPurchase }) {
   const completed = tasks.filter(t => t.done).length;
   const total = tasks.length;
   const critical = tasks.filter(t => t.priority === "critical");
@@ -515,6 +515,35 @@ function Dashboard({ tasks, podcastData, finishes, onNavigateToItem }) {
                       {isOverdue ? "Overdue · " : ""}{new Date(a.dueDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}
                     </span>
                   </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Returns closing — purchases whose return window closes within 14 days */}
+      {(() => {
+        const today = localISODate();
+        const closing = returnsClosingSoon(purchases, today, 14);
+        if (closing.length === 0) return null;
+        return (
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: 28, marginBottom: 32, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+            <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: "0 0 4px 0" }}>Returns closing</h3>
+            <p style={{ fontFamily: font, fontSize: 12, color: C.textMuted, margin: "0 0 16px 0" }}>Return windows closing in the next 14 days. Open one to test it, then keep it or start a return.</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {closing.map(p => {
+                const left = daysBetween(today, p.returnByDate);
+                const label = left === 0 ? "today" : left === 1 ? "1 day left" : `${left} days left`;
+                const urgent = left <= 3;
+                return (
+                  <button key={p.id} onClick={() => onOpenPurchase && onOpenPurchase(p.id)} style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", minHeight: 44, textAlign: "left", background: C.offWhite, border: `1px solid ${C.borderLight}`, borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontFamily: font }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: C.charcoal, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.description || "(untitled)"}</div>
+                      <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{[p.vendor, p.sourceVendor].filter(Boolean).join(" · ") || "—"} · {fmtUSD(netCost(p))}</div>
+                    </div>
+                    <span style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, color: urgent ? "#E53E3E" : "#B7791F", background: urgent ? "#FED7D7" : "#FEFCBF", padding: "3px 10px", borderRadius: 6 }}>{label}</span>
+                  </button>
                 );
               })}
             </div>
@@ -3628,7 +3657,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
   );
 }
 
-function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, onAddLine, focusPurchaseId, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
+function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, onAddLine, focusPurchaseId, focusPurchaseMode, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
   const [editingId, setEditingId] = useState(null);   // id | "new" | null
   const [expandedId, setExpandedId] = useState(null);
   const [query, setQuery] = useState("");
@@ -3652,10 +3681,10 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
     if (focusPurchaseId && purchases.some(p => p.id === focusPurchaseId)) {
       setQuery("");                 // clear any active search so the promoted purchase is visible
       setExpandedId(focusPurchaseId);
-      setEditingId(focusPurchaseId);
+      setEditingId(focusPurchaseMode === "view" ? null : focusPurchaseId);
       if (onFocusHandled) onFocusHandled();
     }
-  }, [focusPurchaseId, purchases, onFocusHandled]);
+  }, [focusPurchaseId, focusPurchaseMode, purchases, onFocusHandled]);
 
   const [dueFilter, setDueFilter] = useState(false);
   const [tradeFilter, setTradeFilter] = useState("");
@@ -4216,6 +4245,7 @@ export default function App() {
   const [focusItemId, setFocusItemId] = useState(null);
   const [focusItemSource, setFocusItemSource] = useState(null);
   const [focusPurchaseId, setFocusPurchaseId] = useState(null);
+  const [focusPurchaseMode, setFocusPurchaseMode] = useState("edit");   // "edit" (promote paths) | "view" (Dashboard deep link)
 
   const navigateToItem = (source, itemId) => {
     setFocusItemId(itemId);
@@ -4723,7 +4753,9 @@ export default function App() {
     setFocusPurchaseId(draft.id);
     setActiveView("purchases");
   };
-  const handlePurchaseFocusCleared = useCallback(() => setFocusPurchaseId(null), []);
+  const handlePurchaseFocusCleared = useCallback(() => { setFocusPurchaseId(null); setFocusPurchaseMode("edit"); }, []);
+  // Dashboard "Returns closing" → open that purchase expanded (not in edit mode) on the Purchases tab.
+  const openPurchase = (id) => { setFocusPurchaseMode("view"); setFocusPurchaseId(id); setActiveView("purchases"); };
 
   // Which room-furniture items already have a purchase (drives the "✓" badge).
   const promotedFurnitureIds = useMemo(
@@ -4777,12 +4809,12 @@ export default function App() {
           {syncError}{!syncError.includes('house info') ? ' — changes saved locally only' : ''}
         </div>
       )}
-      {activeView === "dashboard" && <Dashboard tasks={tasks} podcastData={PODCAST_DATABASE} finishes={finishes} onNavigateToItem={navigateToItem} />}
+      {activeView === "dashboard" && <Dashboard tasks={tasks} podcastData={PODCAST_DATABASE} finishes={finishes} onNavigateToItem={navigateToItem} purchases={purchases} onOpenPurchase={openPurchase} />}
       {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
-      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} focusPurchaseId={focusPurchaseId} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
+      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
       {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} loadError={houseInfoLoadError} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 
       {showMigrationModal && migrationNeeded && (
