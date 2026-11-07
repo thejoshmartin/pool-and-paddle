@@ -7,7 +7,9 @@
  * with saved edits like mergeFinishes: saved wins, seed fills the rest, tombstones hide deletions.
  */
 
-import { netCost } from "./purchases-logic.js";
+import {
+  netCost, emptyPurchase, defaultAllowanceFor, reimbursementDefaultsFor, suggestAssetClass, NOT_IN_ALLOWANCE,
+} from "./purchases-logic.js";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -530,4 +532,40 @@ export function groupShoppingItems(items, by) {
   }
   const keys = [...order.filter(k => buckets.has(k)), ...[...buckets.keys()].filter(k => !order.includes(k))];
   return keys.map(key => ({ key, items: buckets.get(key) }));
+}
+
+// ── Mark purchased: shopping item + chosen candidate → a pre-filled Purchase draft ──────────────
+
+// Non-destructive promote (the shopping item is changed by the caller, never here). Money fields come
+// from the same landed-cost math the comparison used, so the purchase matches what was approved.
+// Returns null when there is no item or candidate.
+export function buildPurchaseFromShopping(item, candidate, settings) {
+  if (!item || !candidate) return null;
+  const s = settings || DEFAULT_SHOPPING_SETTINGS;
+  const trade = CATEGORY_TO_TRADE[item.category] || "Other";
+  const vd = vendorDefaultFor(candidate, s);
+  const amazonReturnBy = candidate.vendorType === "amazon" && vd ? vd.holidayReturnBy : "";
+  const days = numOrNull(candidate.returnWindowDays);
+  const model = [candidate.brand, candidate.model].filter(Boolean).join(" ");
+  const notes = [
+    "Promoted from the Shopping list",
+    candidate.url ? candidate.url : "",
+    numOrNull(candidate.discount) ? `discount ${candidate.discount} applied` : "",
+  ].filter(Boolean).join(" · ");
+  return {
+    ...emptyPurchase(),
+    shoppingItemId: item.id,
+    description: model ? `${item.name} — ${model}` : item.name,
+    trade, room: item.room || "",
+    vendor: candidate.vendor || "", sourceVendor: candidate.sourceVendor || "",
+    qty: qtyOf(candidate), unitPrice: numOrNull(candidate.unitPrice),
+    shipping: numOrNull(candidate.shipping), fees: feesFor(candidate, s), tax: taxFor(candidate, s),
+    totalPaid: landedTotal(candidate, s),
+    allowanceCategory: defaultAllowanceFor(trade, "") || NOT_IN_ALLOWANCE,
+    ...reimbursementDefaultsFor(candidate.vendor, "", s.reimbursableVendors),
+    returnByDate: candidate.returnByDate || amazonReturnBy || "",
+    returnPolicyNote: days ? `${days}-day returns` : "",
+    assetClass: suggestAssetClass(trade),
+    notes,
+  };
 }

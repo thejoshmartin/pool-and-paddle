@@ -20,7 +20,7 @@ import {
   SHOPPING_CATEGORIES, ITEM_PRIORITIES, ITEM_STATUSES, ZONES, VENDOR_TYPES, AGENT_ACTIONS, TIERS, QTY_BASES,
   NON_GLASS_CATEGORIES, emptyShoppingItem, emptyCandidate, computeQty, mealsCovered, landedTotal, perUnit,
   returnExposure, bestValue, candidateWarnings, forecastSpend, feesFor, taxFor, filterShoppingItems,
-  groupShoppingItems, sanitizeShoppingSettings,
+  groupShoppingItems, sanitizeShoppingSettings, buildPurchaseFromShopping,
 } from "./lib/shopping-logic.js";
 
 // ─── DATA ───────────────────────────────────────────────────────────────────
@@ -3473,7 +3473,7 @@ function draftHasContent(parsed) {
     return typeof v === "string" ? v.trim() !== "" : (v !== null && v !== undefined);
   });
 }
-function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKey, fresh = false }) {
+function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKey, fresh = false, reimbursableVendors }) {
   const [d, setD] = useState(() => {
     // Restore an in-progress draft (e.g. after an accidental pull-to-refresh or a
     // backgrounded-tab discard on mobile) so the owner never loses a long form. Only restore
@@ -3559,11 +3559,11 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
         {field("Status", <select style={ppInput} value={d.status} onChange={e => set(statusChangePatch(d, e.target.value))}>{PURCHASE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-        {field("Vendor", <input style={ppInput} value={d.vendor} onChange={e => { const vendor = e.target.value; set(reimbTouched.current ? { vendor } : { vendor, ...reimbursementDefaultsFor(vendor, d.purchasedBy) }); }} placeholder="e.g. Ferguson" />)}
+        {field("Vendor", <input style={ppInput} value={d.vendor} onChange={e => { const vendor = e.target.value; set(reimbTouched.current ? { vendor } : { vendor, ...reimbursementDefaultsFor(vendor, d.purchasedBy, reimbursableVendors) }); }} placeholder="e.g. Ferguson" />)}
         {field("Order / Invoice #", <input style={ppInput} value={d.invoiceNo} onChange={e => set({ invoiceNo: e.target.value })} />)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-        {field("Paid by", <select style={ppInput} value={d.purchasedBy} onChange={e => { const v = e.target.value; const patch = { purchasedBy: v, ownerPurchased: v !== CONTRACTOR_PURCHASER }; if (!allowanceTouched.current) patch.allowanceCategory = allowanceFor(d.trade, v); if (!reimbTouched.current || v === CONTRACTOR_PURCHASER) Object.assign(patch, reimbursementDefaultsFor(d.vendor, v)); set(patch); }}><option value="">—</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
+        {field("Paid by", <select style={ppInput} value={d.purchasedBy} onChange={e => { const v = e.target.value; const patch = { purchasedBy: v, ownerPurchased: v !== CONTRACTOR_PURCHASER }; if (!allowanceTouched.current) patch.allowanceCategory = allowanceFor(d.trade, v); if (!reimbTouched.current || v === CONTRACTOR_PURCHASER) Object.assign(patch, reimbursementDefaultsFor(d.vendor, v, reimbursableVendors)); set(patch); }}><option value="">—</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
         {field("Payment method", <select style={ppInput} value={d.paymentMethod} onChange={e => set({ paymentMethod: e.target.value })}><option value="">—</option>{PAYMENT_METHODS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
         {field("Whose money?", (
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.charcoal, padding: "9px 0" }}>
@@ -3673,7 +3673,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
   );
 }
 
-function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, onAddLine, focusPurchaseId, focusPurchaseMode, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
+function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, onAddLine, reimbursableVendors, focusPurchaseId, focusPurchaseMode, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
   const [editingId, setEditingId] = useState(null);   // id | "new" | null
   const [expandedId, setExpandedId] = useState(null);
   const [query, setQuery] = useState("");
@@ -3754,6 +3754,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
       {editingId === "new" && (
         <div ref={newFormRef}>
           <PurchaseForm
+            reimbursableVendors={reimbursableVendors}
             key={`new-${activeProperty || "base"}`}
             initial={{ ...emptyPurchase(), placedInServiceDate: propertyInServiceDate || "" }}
             fresh
@@ -3929,6 +3930,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
             {isOpen && isEditing && (
               <div style={{ padding: "0 16px 16px" }}>
                 <PurchaseForm
+                  reimbursableVendors={reimbursableVendors}
                   initial={p}
                   fresh={freshEditId === p.id}
                   onSave={(updated) => { onSave(updated); setEditingId(null); setFreshEditId(null); }}
@@ -5359,6 +5361,26 @@ export default function App() {
   // Dashboard "Returns closing" → open that purchase expanded (not in edit mode) on the Purchases tab.
   const openPurchase = (id) => { setFocusPurchaseMode("view"); setFocusPurchaseId(id); setActiveView("purchases"); };
 
+  // Shopping "Mark purchased" → a pre-filled Purchase, non-destructively (the candidate is untouched).
+  // The item moves to "ordered" with the chosen candidate selected and the purchase linked both ways
+  // (item.purchaseIds ↔ purchase.shoppingItemId). If the item already has a live purchase, just open it.
+  const shoppingPromoting = useRef(new Set());   // double-click guard (state lags a render behind)
+  const promoteShoppingItem = (item, candidateId) => {
+    const live = (item.purchaseIds || []).map(id => purchases.find(p => p.id === id)).filter(Boolean);
+    if (live.length > 0) { setFocusPurchaseMode("view"); setFocusPurchaseId(live[0].id); setActiveView("purchases"); return; }
+    if (shoppingPromoting.current.has(item.id)) return;
+    const cand = (item.candidates || []).find(c => c.id === candidateId);
+    const draft = buildPurchaseFromShopping(item, cand, shopping.settings);
+    if (!draft) return;
+    shoppingPromoting.current.add(item.id);
+    setTimeout(() => shoppingPromoting.current.delete(item.id), 1500);
+    savePurchase({ ...draft, placedInServiceDate: activeInServiceDate });
+    saveShoppingItem({ ...item, status: "ordered", selectedCandidateId: cand.id, purchaseIds: [...(item.purchaseIds || []), draft.id] });
+    setFocusPurchaseMode("edit");
+    setFocusPurchaseId(draft.id);
+    setActiveView("purchases");
+  };
+
   // Which room-furniture items already have a purchase (drives the "✓" badge).
   const promotedFurnitureIds = useMemo(
     () => new Set(purchases.filter(p => p.furnitureId).map(p => p.furnitureId)),
@@ -5417,8 +5439,8 @@ export default function App() {
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
-      {activeView === "shopping" && <ShoppingView shopping={shopping} loaded={shoppingLoaded} loadError={shoppingLoadError} canEdit={shoppingReady} purchases={purchases} onSaveItem={saveShoppingItem} onRemoveItem={removeShoppingItem} onSaveSettings={saveShoppingSettings} />}
-      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
+      {activeView === "shopping" && <ShoppingView shopping={shopping} loaded={shoppingLoaded} loadError={shoppingLoadError} canEdit={shoppingReady} purchases={purchases} onSaveItem={saveShoppingItem} onRemoveItem={removeShoppingItem} onSaveSettings={saveShoppingSettings} onMarkPurchased={promoteShoppingItem} />}
+      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} reimbursableVendors={shopping.settings.reimbursableVendors} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
       {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} loadError={houseInfoLoadError} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 
       {showMigrationModal && migrationNeeded && (

@@ -43,7 +43,7 @@ ok('unknown trade → "" (no suggestion)');
 console.log('emptyPurchase():');
 {
   const p = emptyPurchase();
-  const expected = ['id','finishItemId','furnitureId','description','trade','room','vendor','invoiceNo','purchasedBy','ownerPurchased','paymentMethod','qty','unitPrice','tax','shipping','totalPaid','allowanceCategory','status','purchaseDate','receivedDate','placedInServiceDate','assetClass','section','warranty','warrantyTerm','registered','binderPocket','receipts','notes','userCreated','returnByDate','returnPolicyNote','refundAmount','refundDate','restockingFee','returnShippingCost','keepConfirmed','inspected','inspectedDate','deliveredTo','orderGroupId','lineNo','reimbursable','reimbursedBy','reimbursementStatus','reimbursedAmount','reimbursedDate','drawNo','sourceVendor','fees','docType','paymentConfirmed','lienWaiverReceived','refundAutoFilled'];
+  const expected = ['id','finishItemId','furnitureId','description','trade','room','vendor','invoiceNo','purchasedBy','ownerPurchased','paymentMethod','qty','unitPrice','tax','shipping','totalPaid','allowanceCategory','status','purchaseDate','receivedDate','placedInServiceDate','assetClass','section','warranty','warrantyTerm','registered','binderPocket','receipts','notes','userCreated','returnByDate','returnPolicyNote','refundAmount','refundDate','restockingFee','returnShippingCost','keepConfirmed','inspected','inspectedDate','deliveredTo','orderGroupId','lineNo','reimbursable','reimbursedBy','reimbursementStatus','reimbursedAmount','reimbursedDate','drawNo','sourceVendor','fees','docType','paymentConfirmed','lienWaiverReceived','refundAutoFilled','shoppingItemId'];
   for (const k of expected) assert.ok(k in p, `missing field: ${k}`);
   ok('has all expected fields');
   assert.equal(p.allowanceCategory, NOT_IN_ALLOWANCE);
@@ -1160,6 +1160,45 @@ console.log('Phase 2 — list helpers (search, filter, group):');
   assert.deepEqual(byStatus.map(g => g.key), ['researching', 'shortlisted', 'approved', 'weird-status']);
   assert.deepEqual(SH.groupShoppingItems([], 'category'), []);
   ok('grouping follows the category / status order, drops empty groups, and keeps an unrecognized status instead of hiding the item');
+}
+
+console.log('Phase 2 — Mark purchased (buildPurchaseFromShopping):');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const within = (a, b) => Math.round(Math.abs(a - b) * 100) <= 1;
+  const item = { ...SH.emptyShoppingItem(), id: 'sh-bed', name: 'Dunphy platform bed', category: 'Furniture', room: 'Master Suite' };
+  const minoan = { ...SH.emptyCandidate(), id: 'c-m', vendor: 'Minoan', vendorType: 'minoan', sourceVendor: 'Wayfair', url: 'https://m.example/bed', brand: 'Dunphy', model: 'K-1', unitPrice: 535.41, qtyToBuy: 1, shipping: 0, transactionFeePct: 0.032386, returnWindowDays: 30 };
+  const d = SH.buildPurchaseFromShopping(item, minoan, D);
+  assert.match(d.id, /^pur-/);
+  assert.equal(d.trade, 'Furniture / FF&E');
+  assert.equal(d.vendor, 'Minoan'); assert.equal(d.sourceVendor, 'Wayfair');
+  assert.equal(d.reimbursable, true); assert.equal(d.reimbursementStatus, 'pending'); assert.equal(d.reimbursedBy, 'Sparrow (Contractor)');
+  assert.equal(d.allowanceCategory, NOT_IN_ALLOWANCE);
+  assert.equal(d.qty, 1); assert.equal(d.unitPrice, 535.41); assert.equal(d.fees, 17.34); assert.equal(d.tax, 35.93);
+  assert.ok(within(d.totalPaid, 588.67), `totalPaid ${d.totalPaid}`);
+  assert.equal(d.shoppingItemId, 'sh-bed'); assert.equal(d.room, 'Master Suite');
+  assert.equal(d.assetClass, '5-yr'); assert.equal(d.status, 'Ordered'); assert.equal(d.section, '');
+  assert.ok(d.description.startsWith('Dunphy platform bed') && d.description.includes('Dunphy K-1'));
+  assert.equal(d.returnByDate, ''); assert.equal(d.returnPolicyNote, '30-day returns');
+  assert.ok(d.notes.includes('https://m.example/bed'));
+  for (const k of Object.keys(emptyPurchase())) assert.ok(k in d, `draft missing ${k}`);
+  ok('a Minoan candidate becomes a fully pre-filled Purchase: trade from the category map, reimbursable/pending, fee + tax + landed total within a cent of $588.67, linked to the shopping item');
+
+  const amazon = { ...SH.emptyCandidate(), id: 'c-a', vendor: 'Amazon', vendorType: 'amazon', unitPrice: 40, qtyToBuy: 2, shipping: 0 };
+  assert.equal(SH.buildPurchaseFromShopping(item, amazon, D).returnByDate, '2027-01-31');
+  assert.equal(SH.buildPurchaseFromShopping(item, amazon, D).reimbursable, false);
+  assert.equal(SH.buildPurchaseFromShopping(item, { ...amazon, returnByDate: '2026-12-20' }, D).returnByDate, '2026-12-20');
+  assert.equal(SH.buildPurchaseFromShopping(item, minoan, { ...D, reimbursableVendors: [] }).reimbursable, false);
+  assert.equal(SH.buildPurchaseFromShopping({ ...item, category: 'Not a category' }, amazon, D).trade, 'Other');
+  assert.equal(SH.buildPurchaseFromShopping({ ...item, category: 'Dinnerware' }, amazon, D).trade, 'Kitchen & Dining');
+  assert.equal(SH.buildPurchaseFromShopping({ ...item, category: 'Small Appliances' }, amazon, D).assetClass, '5-yr');
+  assert.equal(SH.buildPurchaseFromShopping(item, null, D), null);
+  assert.equal(SH.buildPurchaseFromShopping(null, amazon, D), null);
+  assert.equal(SH.buildPurchaseFromShopping(item, { ...amazon, discount: 10 }, D).notes.includes('discount'), true);
+  ok('Amazon holiday return-by defaults from settings, an explicit return date wins, reimbursement follows the settings vendor list, unknown categories fall back to Other, missing item/candidate → null');
+  assert.equal(emptyPurchase().shoppingItemId, null);
+  assert.equal(normalizePurchase({ id: 'x' }).shoppingItemId, null);
+  ok('purchases carry shoppingItemId (default null) for the two-way link');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

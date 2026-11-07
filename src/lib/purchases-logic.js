@@ -127,6 +127,8 @@ export function purchaseDefaults() {
     reimbursedAmount: null, reimbursedDate: "", drawNo: "",
     // Marketplace / payment proof
     sourceVendor: "", fees: null, docType: "", paymentConfirmed: false, lienWaiverReceived: false,
+    // Shopping tab link (the shopping item this purchase was promoted from)
+    shoppingItemId: null,
   };
 }
 
