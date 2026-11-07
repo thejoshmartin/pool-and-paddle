@@ -181,3 +181,57 @@ export function summarizePurchases(purchases) {
   }
   return { total: round2(total), owner: round2(owner), contractor: round2(contractor), byTrade };
 }
+
+// Where the money came from: paid by Sparrow directly, paid by the owner then reimbursed by
+// Sparrow (loan draws), or owner direct.
+export function fundingSource(p) {
+  if (!p || !p.ownerPurchased) return "Contract (paid by Sparrow)";
+  return p.reimbursable ? "Contract (reimbursed by Sparrow)" : "Owner direct";
+}
+
+const sumNet = (list) => round2(list.reduce((s, p) => s + netCost(p), 0));
+
+// "Due from Sparrow": reimbursable purchases not yet reimbursed, on net cost (fully refunded
+// lines drop out). reimbursedAmount is informational only.
+export function reimbursementsDue(purchases) {
+  const list = purchases.filter(p => p.reimbursable && p.reimbursementStatus !== "reimbursed" && netCost(p) > 0);
+  return { total: sumNet(list), purchases: list };
+}
+
+// Owner-paid purchases charged to an Exhibit B category and NOT reimbursable: a credit the owners
+// should settle with Sparrow in writing.
+export function allowanceCredits(purchases) {
+  const list = purchases.filter(p => p.ownerPurchased && !p.reimbursable && EXHIBIT_B_NAMES.includes(p.allowanceCategory) && netCost(p) > 0);
+  return { total: sumNet(list), purchases: list };
+}
+
+// Exhibit B reconciliation. Each category splits spend by funding source; reimbursed items with
+// no Exhibit B category count against the lump-sum pool; contractor-scope spend is listed
+// separately (confirm it is in the base contract) and is NOT charged to the pool.
+export function allowancePool(purchases, allowances = ALLOWANCE_CATEGORIES) {
+  const names = allowances.map(a => a.name);
+  const rows = allowances.map(a => {
+    const mine = purchases.filter(p => p.allowanceCategory === a.name);
+    const by = (src) => sumNet(mine.filter(p => fundingSource(p) === src));
+    const paidBySparrow = by("Contract (paid by Sparrow)");
+    const reimbursedToOwner = by("Contract (reimbursed by Sparrow)");
+    const ownerDirect = by("Owner direct");
+    const spent = round2(paidBySparrow + reimbursedToOwner + ownerDirect);
+    return {
+      name: a.name, allowance: a.allowance, paidBySparrow, reimbursedToOwner, ownerDirect, spent,
+      remaining: round2(a.allowance - spent),
+      pct: a.allowance ? Math.round((spent / a.allowance) * 100) : 0,
+    };
+  });
+  const noCat = purchases.filter(p => p.reimbursable && !names.includes(p.allowanceCategory));
+  const scope = purchases.filter(p => p.allowanceCategory === CONTRACTOR_SCOPE);
+  const poolTotal = round2(allowances.reduce((s, a) => s + a.allowance, 0));
+  const reimbursedNoCategory = { total: sumNet(noCat), purchases: noCat };
+  const poolCharged = round2(rows.reduce((s, r) => s + r.spent, 0) + reimbursedNoCategory.total);
+  return {
+    rows,
+    contractorScope: { total: sumNet(scope), purchases: scope },
+    reimbursedNoCategory,
+    poolTotal, poolCharged, poolRemaining: round2(poolTotal - poolCharged),
+  };
+}

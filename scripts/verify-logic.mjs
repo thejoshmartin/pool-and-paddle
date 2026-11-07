@@ -8,6 +8,7 @@ import {
   PURCHASE_TRADES, PURCHASE_STATUSES, ASSET_CLASSES, CONTRACTOR_SCOPE, CONTRACTOR_PURCHASER,
   assetClassLabel, defaultAllowanceFor, reimbursementDefaultsFor, purchaseDefaults,
   normalizePurchase, netCost, paymentBadge, summarizePurchases,
+  fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
 } from '../src/lib/purchases-logic.js';
 import { scopedKey, parseReceiptPathname, migrateFinishesToHash } from '../api/_scope.js';
 import {
@@ -515,6 +516,79 @@ console.log('netCost() / paymentBadge() / summarizePurchases():');
   assert.equal(s.byTrade['Linens & Soft Goods'], 20);
   assert.doesNotThrow(() => summarizePurchases([{}]));
   ok('summarizePurchases sums net cost (refund 100 on 120 counts as 20) and tolerates bare records');
+}
+
+console.log('Phase 1 — reimbursements / allowance pool (spec §1.3 fixtures A, B, C):');
+{
+  // Each line's "Total paid" is copied from spec §3.7.
+  const mk = (o) => ({
+    ...emptyPurchase(), ownerPurchased: true, ...o,
+    allowanceCategory: defaultAllowanceFor(o.trade, o.purchasedBy) || NOT_IN_ALLOWANCE,
+    ...reimbursementDefaultsFor(o.vendor, o.purchasedBy),
+  });
+  const A = [['Plumbing', 119.82], ['Electrical', 1512.23], ['Electrical', 3066.99], ['Electrical', 848.59],
+    ['Electrical', 1023.45], ['Electrical', 525.72]]
+    .map(([trade, totalPaid]) => mk({ vendor: 'Minoan', purchasedBy: 'Josh', trade, totalPaid }));
+  const B = [216.46, 200.27, 171.94]
+    .map(totalPaid => mk({ vendor: 'Minoan', purchasedBy: 'Josh', trade: 'Furniture / FF&E', totalPaid }));
+  const all = [...A, ...B];
+  const row = (pool, name) => pool.rows.find(r => r.name === name);
+
+  assert.equal(reimbursementsDue(all).total, 7685.47);
+  assert.equal(reimbursementsDue(all).purchases.length, 9);
+  ok('both Minoan orders as paid by Josh → Due from Sparrow $7,685.47 (exact cents)');
+  const pool = allowancePool(all);
+  assert.equal(row(pool, 'Electrical Fixtures').reimbursedToOwner, 6976.98);
+  assert.equal(row(pool, 'Electrical Fixtures').paidBySparrow, 0);
+  assert.equal(row(pool, 'Electrical Fixtures').ownerDirect, 0);
+  assert.equal(row(pool, 'Plumbing Fixtures').reimbursedToOwner, 119.82);
+  assert.equal(pool.reimbursedNoCategory.total, 588.67);
+  assert.equal(allowanceCredits(all).total, 0);
+  assert.ok(all.every(p => fundingSource(p) === 'Contract (reimbursed by Sparrow)'));
+  assert.equal(pool.poolTotal, 446000);
+  assert.equal(pool.poolCharged, 7685.47);
+  assert.equal(pool.poolRemaining, 438314.53);
+  ok('lighting = Reimbursed to owner under Electrical Fixtures; beds = Reimbursed, no Exhibit B category; owner-paid credits stay $0; pool charged includes both');
+
+  const aDone = A.map(p => ({ ...p, reimbursementStatus: 'reimbursed' }));
+  assert.equal(reimbursementsDue([...aDone, ...B]).total, 588.67);
+  ok('marking fixture A reimbursed drops Due from Sparrow to $588.67');
+
+  const closets = [525, 3525, 1300, 1350, 465, 280, 280, 280, 250, 1000]
+    .map(totalPaid => mk({ vendor: 'First Coast Closets & Window Fashions', purchasedBy: 'Sparrow (Contractor)', ownerPurchased: false, trade: 'Closets & Shelving', totalPaid }));
+  const shades = [mk({ vendor: 'First Coast Closets & Window Fashions', purchasedBy: 'Sparrow (Contractor)', ownerPurchased: false, trade: 'Window Treatments', totalPaid: 9732 })];
+  const C = [...closets, ...shades];
+  const poolC = allowancePool(C);
+  assert.equal(row(poolC, 'Shelving').paidBySparrow, 9255);
+  assert.equal(row(poolC, 'Shelving').remaining, 1245);
+  assert.equal(row(poolC, 'Shelving').pct, 88);
+  assert.equal(poolC.contractorScope.total, 9732);
+  assert.equal(poolC.contractorScope.purchases.length, 1);
+  assert.equal(allowanceCredits(C).total, 0);
+  assert.equal(reimbursementsDue(C).total, 0);
+  assert.ok(C.every(p => fundingSource(p) === 'Contract (paid by Sparrow)'));
+  assert.equal(poolC.poolCharged, 9255);
+  ok('First Coast: closets Paid by Sparrow in Shelving ($1,245 left), shades in Contractor scope (not charged to the pool), no owner credit, nothing due');
+
+  const direct = mk({ vendor: 'Ferguson', purchasedBy: 'Josh', trade: 'Plumbing', totalPaid: 100 });
+  assert.equal(fundingSource(direct), 'Owner direct');
+  assert.equal(allowanceCredits([direct]).total, 100);
+  assert.equal(row(allowancePool([direct]), 'Plumbing Fixtures').ownerDirect, 100);
+  const toaster = mk({ vendor: 'Amazon', purchasedBy: 'Kerry', trade: 'Small Appliances', totalPaid: 40 });
+  const poolT = allowancePool([toaster]);
+  assert.equal(row(poolT, 'Appliances').spent, 0);
+  assert.equal(row(poolT, 'Appliances').remaining, 25000);
+  ok('owner-direct purchase in an Exhibit B category is a credit to settle; a $40 Kerry toaster leaves Appliances at $25,000');
+
+  const refunded = mk({ vendor: 'Minoan', purchasedBy: 'Josh', trade: 'Electrical', totalPaid: 120, refundAmount: 120 });
+  assert.equal(reimbursementsDue([refunded]).total, 0);
+  ok('a fully refunded reimbursable purchase contributes $0 to Due from Sparrow');
+
+  for (const input of [[], [{}]]) {
+    assert.doesNotThrow(() => { reimbursementsDue(input); allowanceCredits(input); allowancePool(input); input.forEach(fundingSource); });
+  }
+  assert.equal(allowancePool([]).poolCharged, 0);
+  ok('every money-flow function tolerates [] and bare legacy records');
 }
 
 console.log(`\nAll ${passed} checks passed.`);
