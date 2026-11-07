@@ -16,6 +16,7 @@ import {
   localISODate, daysBetween, returnsClosingSoon, newOrderGroupId, groupByOrder, statusChangePatch, formDefaultsTouched,
 } from '../src/lib/purchases-logic.js';
 import * as SH from '../src/lib/shopping-logic.js';
+import * as RL from '../src/lib/receipt-logic.js';
 import { scopedKey, parseReceiptPathname, migrateFinishesToHash, purchasesFromHash, isReceiptReferenced } from '../api/_scope.js';
 import {
   matchesFinishSearch, buildRoomCopies, mergeFinishes, migrateRoom,
@@ -1481,6 +1482,100 @@ console.log('Phase 2 — remaining limits resolved (dismissed proposals, price-s
   const forged = SH.mergeResults([approved], mkRes({ updates: [{ itemId: 'sh-a', approvedLanded: 1 }] }), D, ids);
   assert.deepEqual(forged.touched, []);
   ok('an approved item flags when its selected candidate\'s landed price later changes (e.g. an agent re-check); no flag for sub-cent noise, unapproved items or missing data; the approval price can\'t be forged by an import');
+}
+
+console.log('Phase 3 — extraction validation, reconcile, exact cost allocation (spec §3.7 fixtures):');
+{
+  const fx = (n) => JSON.parse(fs.readFileSync(new URL(`./fixtures/receipts/${n}.json`, import.meta.url), 'utf8'));
+  const cents = (n) => Math.round(n * 100);
+  const sum = (xs) => Math.round(xs.reduce((a, b) => a + cents(b), 0)) / 100;
+  const A = fx('minoan-F3F3D4B0'), B = fx('minoan-F088F252'), C = fx('firstcoast-687');
+  const vA = RL.validateExtraction(A), vB = RL.validateExtraction(B), vC = RL.validateExtraction(C);
+  assert.equal(vA.ok, true); assert.equal(vB.ok, true); assert.equal(vC.ok, true);
+  assert.equal(vA.extraction.reconciles, true); assert.equal(vB.extraction.reconciles, true);
+  assert.equal(RL.reconciles(vA.extraction), true);
+  assert.equal(PURCHASE_TRADES.includes(vA.extraction.lines[0].suggestedTrade), true);
+  assert.ok(vA.extraction.lines[0].confidence < 0.9);
+  ok('real Minoan fixtures A and B validate and reconcile; the ambiguous line-1 trade is a valid trade flagged below 0.9 confidence');
+
+  assert.equal(vC.extraction.reconciles, false);
+  assert.deepEqual(vC.extraction.issues.slice(0, 4), C.issues);
+  assert.ok(vC.extraction.lines.every(l => l.confidence <= 0.7));
+  assert.equal(vC.extraction.total, null);
+  assert.equal(vC.extraction.lines[11].lineTotal, null);
+  const closetsSum = sum(vC.extraction.lines.filter(l => l.suggestedTrade === 'Closets & Shelving').map(l => l.lineTotal));
+  assert.equal(closetsSum, 9255);
+  ok('fixture C stays ambiguous (total null, line 12 price null, issues kept verbatim, handwritten caps confidence at 0.7, closets sum $9,255.00) — nothing is guessed');
+
+  for (const [fixture, v] of [[A, vA], [B, vB]]) {
+    const lines = v.extraction.lines;
+    const alloc = RL.allocateOrderCosts(lines, { tax: fixture.tax, shipping: fixture.shipping, fees: fixture.fees, discounts: fixture.discounts });
+    assert.deepEqual(alloc.map(a => a.fees), fixture._expected.fees);
+    assert.deepEqual(alloc.map(a => a.tax), fixture._expected.tax);
+    assert.deepEqual(alloc.map(a => a.totalPaid), fixture._expected.totalPaid);
+    assert.equal(sum(alloc.map(a => a.fees)), fixture.fees);
+    assert.equal(sum(alloc.map(a => a.tax)), fixture.tax);
+    assert.equal(sum(alloc.map(a => a.totalPaid)), fixture.total);
+  }
+  ok('allocation reproduces the spec tables to the cent for both Minoan orders (fees, tax and total paid per line; every column and the grand total sum exactly to the receipt)');
+
+  const L = (...totals) => totals.map((t, i) => ({ lineNo: i + 1, lineTotal: t }));
+  const odd = RL.allocateOrderCosts(L(10, 10, 10), { tax: 0.01, shipping: 0, fees: 0, discounts: 0 });
+  assert.deepEqual(odd.map(a => a.tax), [0.01, 0, 0]);
+  assert.deepEqual(RL.allocateOrderCosts(L(25), { tax: 1.99, shipping: 3.5, fees: 0.75, discounts: 0 })[0], { tax: 1.99, shipping: 3.5, fees: 0.75, discounts: 0, totalPaid: 31.24 });   // 25 + 1.99 + 3.50 + 0.75
+  assert.ok(RL.allocateOrderCosts(L(10, 20), { tax: 0, shipping: 0, fees: 0, discounts: 0 }).every(a => a.tax === 0 && a.shipping === 0 && a.fees === 0));
+  const withNull = RL.allocateOrderCosts(L(100, null, 100), { tax: 7, shipping: 0, fees: 0, discounts: 0 });
+  assert.deepEqual(withNull.map(a => a.tax), [3.5, 0, 3.5]); assert.equal(withNull[1].totalPaid, null);
+  const disc = RL.allocateOrderCosts(L(100, 100, 100), { tax: 0, shipping: 0, fees: 0, discounts: 5 });
+  assert.equal(sum(disc.map(a => a.discounts)), 5); assert.equal(sum(disc.map(a => a.totalPaid)), 295);
+  assert.deepEqual(RL.allocateOrderCosts([], { tax: 1, shipping: 1, fees: 1, discounts: 1 }), []);
+  assert.equal(RL.allocateOrderCosts(L(0, 0), { tax: 2, shipping: 0, fees: 0, discounts: 0 })[0].tax, 2);
+  const messy = RL.allocateOrderCosts(L(33.33, 33.33, 33.34, 0.01, 12.37), { tax: 7.77, shipping: 11.11, fees: 3.03, discounts: 1.01 });
+  assert.equal(sum(messy.map(a => a.tax)), 7.77); assert.equal(sum(messy.map(a => a.shipping)), 11.11);
+  assert.equal(sum(messy.map(a => a.fees)), 3.03); assert.equal(sum(messy.map(a => a.discounts)), 1.01);
+  assert.equal(sum(messy.map(a => a.totalPaid)), Math.round((112.38 + 7.77 + 11.11 + 3.03 - 1.01) * 100) / 100);
+  ok('cent edge cases: odd-cent remainder lands on the largest line, a single line takes everything, zero amounts allocate zeros, null-total lines are skipped, discounts subtract, all-zero lines take the amount on the first, and messy amounts still sum exactly');
+
+  const ex = (o) => ({ lines: [{ lineTotal: 100 }, { lineTotal: 50 }], tax: 10, shipping: 5, fees: 2, discounts: 0, total: 167, ...o });
+  assert.equal(RL.reconciles(ex()), true);
+  assert.equal(RL.reconciles(ex({ total: 167.05 })), true);
+  assert.equal(RL.reconciles(ex({ total: 167.06 })), false);
+  assert.equal(RL.reconciles(ex({ total: null })), false);
+  assert.equal(RL.reconciles(ex({ lines: [{ lineTotal: 100 }, { lineTotal: null }] })), false);
+  assert.equal(RL.reconciles(ex({ tax: null, shipping: null, fees: null, total: 150 })), true);
+  assert.equal(RL.reconciles(ex({ discounts: 7, total: 160 })), true);
+  assert.equal(RL.reconciles({ lines: [], total: 0 }), false);
+  assert.equal(RL.reconciles(null), false);
+  assert.equal(RL.reconciles({ ...A, discounts: 641.23 }), false);
+  ok('reconciles: within $0.05 of the total, false for a null total / null line / no lines, order-level discounts subtract, and Minoan\'s item discount is never subtracted a second time');
+
+  // hostile model output
+  const base = () => ({ docType: 'receipt', vendor: 'Amazon', lines: [{ description: 'Thing', qty: 1, unitPrice: '$1,234.50', lineTotal: '$1,234.50', suggestedTrade: 'Kitchen & Dining', confidence: 0.9 }], total: '$1,234.50' });
+  const m = RL.validateExtraction(base());
+  assert.equal(m.ok, true); assert.equal(m.extraction.lines[0].lineTotal, 1234.5); assert.equal(m.extraction.total, 1234.5);
+  assert.equal(RL.validateExtraction({ ...base(), cardLast4: '4111 1111 1111 1111' }).extraction.cardLast4, '1111');
+  assert.equal(RL.validateExtraction({ ...base(), cardLast4: 'Visa ending 4242' }).extraction.cardLast4, '4242');
+  const card = '4111 1111 1111 1111';
+  const red = RL.validateExtraction({ ...base(), paymentMethod: `Visa ${card}`, issues: [`paid with ${card}`], customerName: `X ${card}`,
+    lines: [{ ...base().lines[0], description: `Item 4111111111111111 here` }] }).extraction;
+  assert.ok(!JSON.stringify(red).includes('4111 1111 1111 1111') && !JSON.stringify(red).includes('4111111111111111'));
+  assert.equal(RL.redactCardNumbers('order 113-1234567-1234567 ok'), 'order 113-1234567-1234567 ok');
+  assert.equal(RL.redactCardNumbers('card 5500 0055 5555 5559 end'), 'card •••• end');
+  const bad = RL.validateExtraction({ ...base(), lines: [{ ...base().lines[0], suggestedTrade: 'Spaceships', confidence: 7 }, { ...base().lines[0], confidence: -1 }, { ...base().lines[0], qty: null }] }).extraction;
+  assert.equal(bad.lines[0].suggestedTrade, 'Other'); assert.equal(bad.lines[0].confidence, 1); assert.equal(bad.lines[1].confidence, 0);
+  assert.equal(bad.lines[2].qty, 1);
+  assert.ok(bad.issues.some(i => /Line 1/.test(i) && /trade/i.test(i)) && bad.issues.some(i => /Line 3/.test(i) && /quantity/i.test(i)));
+  assert.equal(RL.validateExtraction({ ...base(), lines: undefined }).ok, false);
+  for (const junk of [null, 'text', 5, [], undefined]) assert.equal(RL.validateExtraction(junk).ok, false);
+  assert.equal(RL.validateExtraction({ ...base(), docType: 'invoice-ish' }).ok, false);
+  assert.equal(RL.validateExtraction({ ...base(), lines: [5] }).ok, false);
+  assert.ok(RL.validateExtraction({ ...base(), issues: Array.from({ length: 200 }, (_, i) => `issue ${i}`) }).extraction.issues.length <= 25);
+  const again = RL.validateExtraction(RL.validateExtraction({ ...base(), lines: [{ ...base().lines[0], suggestedTrade: 'Spaceships' }] }).extraction).extraction;
+  assert.equal(again.issues.length, 1);
+  assert.match(RL.newInboxId(), /^ri-[a-z0-9]+-[a-z0-9]{6}$/);
+  assert.notEqual(RL.newInboxId(), RL.newInboxId());
+  assert.equal(RL.EXTRACTION_MODEL, 'claude-sonnet-5-5');
+  ok('hostile model output: money strings parse, card numbers reduce to the last 4 and are redacted everywhere (order numbers are not), invalid trades/confidence/quantities are normalized with issues, structural garbage is rejected, issues are capped, and re-validating never duplicates issues');
 }
 
 console.log(`\nAll ${passed} checks passed.`);
