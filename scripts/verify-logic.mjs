@@ -9,7 +9,7 @@ import {
   assetClassLabel, defaultAllowanceFor, reimbursementDefaultsFor, purchaseDefaults,
   normalizePurchase, netCost, paymentBadge, summarizePurchases,
   fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
-  localISODate, daysBetween, returnsClosingSoon, newOrderGroupId, groupByOrder,
+  localISODate, daysBetween, returnsClosingSoon, newOrderGroupId, groupByOrder, statusChangePatch,
 } from '../src/lib/purchases-logic.js';
 import { scopedKey, parseReceiptPathname, migrateFinishesToHash, purchasesFromHash, isReceiptReferenced } from '../api/_scope.js';
 import {
@@ -702,6 +702,33 @@ console.log('Phase 1 — shared receipts (isReceiptReferenced / purchasesFromHas
   assert.deepEqual(purchasesFromHash(null), []);
   assert.deepEqual(purchasesFromHash({ a: JSON.stringify({ id: 'a' }), b: { id: 'b' } }).map(p => p.id).sort(), ['a', 'b']);
   ok('purchasesFromHash handles null and mixed JSON-string / object values');
+}
+
+console.log('Final-review fix — statusChangePatch() (Returned refund prefill must not stick):');
+{
+  const received = { status: 'Received', totalPaid: 1512.23, refundAmount: null };
+  const toReturned = statusChangePatch(received, 'Returned', false);
+  assert.deepEqual(toReturned.patch, { status: 'Returned', refundAmount: 1512.23 });
+  assert.equal(toReturned.autoFilled, true);
+  ok('choosing Returned with no refund pre-fills the refund with the amount paid and remembers it was automatic');
+
+  const back = statusChangePatch({ status: 'Returned', totalPaid: 1512.23, refundAmount: 1512.23 }, 'Received', true);
+  assert.deepEqual(back.patch, { status: 'Received', refundAmount: null });
+  assert.equal(back.autoFilled, false);
+  ok('mis-tap: switching away from Returned undoes the automatic refund so the purchase is not silently zeroed');
+
+  assert.deepEqual(statusChangePatch({ status: 'Returned', totalPaid: 100, refundAmount: 60 }, 'Received', false).patch, { status: 'Received' });
+  assert.deepEqual(statusChangePatch({ status: 'Returned', totalPaid: 100, refundAmount: 100 }, 'Received', false).patch, { status: 'Received' });
+  ok('a refund the owner typed is never cleared, even if it equals the amount paid');
+
+  const keep = statusChangePatch({ status: 'Received', totalPaid: 100, refundAmount: 30 }, 'Returned', false);
+  assert.deepEqual(keep.patch, { status: 'Returned' });
+  assert.equal(keep.autoFilled, false);
+  ok('an existing partial refund is not overwritten when moving to Returned');
+
+  assert.deepEqual(statusChangePatch({ status: 'Ordered', totalPaid: 10, refundAmount: null }, 'Installed', false), { patch: { status: 'Installed' }, autoFilled: false });
+  assert.doesNotThrow(() => statusChangePatch({}, 'Returned', false));
+  ok('other status changes touch only the status; bare records never throw');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

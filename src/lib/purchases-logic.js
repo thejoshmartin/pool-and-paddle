@@ -307,3 +307,20 @@ export function groupByOrder(purchases) {
   }
   return out;
 }
+
+// Patch for a Status change in the purchase form. Moving to Returned pre-fills the refund with the
+// amount paid (when none is entered) and remembers that it was automatic; moving away from Returned
+// undoes ONLY that automatic fill, so a mis-tap never zeroes a purchase and a refund the owner typed
+// is never cleared. Returns { patch, autoFilled } — callers keep `autoFilled` in a ref.
+export function statusChangePatch(d, nextStatus, autoFilled) {
+  const patch = { status: nextStatus };
+  if (nextStatus === "Returned" && d.status !== "Returned" && d.refundAmount == null) {
+    patch.refundAmount = d.totalPaid;
+    return { patch, autoFilled: true };
+  }
+  if (d.status === "Returned" && nextStatus !== "Returned" && autoFilled && d.refundAmount === d.totalPaid) {
+    patch.refundAmount = null;
+    return { patch, autoFilled: false };
+  }
+  return { patch, autoFilled: nextStatus === "Returned" ? autoFilled : false };
+}

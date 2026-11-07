@@ -10,7 +10,7 @@ import {
   DELIVERED_TO_OPTIONS, REIMBURSEMENT_STATUSES, DOC_TYPES, CONTRACTOR_SCOPE, assetClassLabel,
   defaultAllowanceFor, reimbursementDefaultsFor, normalizePurchase, netCost, paymentBadge,
   summarizePurchases, fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
-  groupByOrder, newOrderGroupId, returnsClosingSoon, localISODate, daysBetween,
+  groupByOrder, newOrderGroupId, returnsClosingSoon, localISODate, daysBetween, statusChangePatch,
 } from "./lib/purchases-logic.js";
 import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, furnitureField, roomField, tombstone, BUDGET_FIELD, partitionFinishFields } from "./lib/design-logic.js";
 import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, groupHouseInfoByCategory } from "./lib/house-info-logic.js";
@@ -3514,6 +3514,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
   // starts touched, so editing it never silently overrides what was stored.
   const allowanceTouched = useRef(d.allowanceCategory !== NOT_IN_ALLOWANCE);
   const reimbTouched = useRef(!!d.reimbursable || (d.reimbursementStatus || "none") !== "none" || !!d.drawNo);
+  const refundAutoFilled = useRef(false);   // true while the refund amount was filled in automatically by choosing Returned
   const allowanceFor = (trade, paidBy) => defaultAllowanceFor(trade, paidBy) || NOT_IN_ALLOWANCE;
   const num = (k) => (e) => set({ [k]: e.target.value === "" ? null : Number(e.target.value) });
   const checkRow = (k, text, extra) => (
@@ -3540,7 +3541,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
         {field("Trade", <select style={ppInput} value={d.trade} onChange={e => { const trade = e.target.value; const patch = { trade, assetClass: d.assetClass || suggestAssetClass(trade) }; if (!allowanceTouched.current) patch.allowanceCategory = allowanceFor(trade, d.purchasedBy); set(patch); }}><option value="">—</option>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>)}
         {field("Room / Area", <input style={ppInput} value={d.room} onChange={e => set({ room: e.target.value })} placeholder="e.g. Kitchen" />)}
-        {field("Status", <select style={ppInput} value={d.status} onChange={e => { const status = e.target.value; const patch = { status }; if (status === "Returned" && d.refundAmount == null) patch.refundAmount = d.totalPaid; set(patch); }}>{PURCHASE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>)}
+        {field("Status", <select style={ppInput} value={d.status} onChange={e => { const r = statusChangePatch(d, e.target.value, refundAutoFilled.current); refundAutoFilled.current = r.autoFilled; set(r.patch); }}>{PURCHASE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
         {field("Vendor", <input style={ppInput} value={d.vendor} onChange={e => { const vendor = e.target.value; set(reimbTouched.current ? { vendor } : { vendor, ...reimbursementDefaultsFor(vendor, d.purchasedBy) }); }} placeholder="e.g. Ferguson" />)}
@@ -3611,7 +3612,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
         {field("Return by", <input type="date" style={ppInput} value={d.returnByDate || ""} onChange={e => set({ returnByDate: e.target.value })} />)}
         {field("Return policy note", <input style={ppInput} value={d.returnPolicyNote || ""} onChange={e => set({ returnPolicyNote: e.target.value })} placeholder="e.g. 30 days, brand pays shipping" />)}
-        {field("Refund amount ($)", <input type="number" step="0.01" style={ppInput} value={d.refundAmount ?? ""} onChange={num("refundAmount")} />)}
+        {field("Refund amount ($)", <input type="number" step="0.01" style={ppInput} value={d.refundAmount ?? ""} onChange={e => { refundAutoFilled.current = false; num("refundAmount")(e); }} />)}
         {field("Refund date", <input type="date" style={ppInput} value={d.refundDate || ""} onChange={e => set({ refundDate: e.target.value })} />)}
         {field("Restocking fee ($)", <input type="number" step="0.01" style={ppInput} value={d.restockingFee ?? ""} onChange={num("restockingFee")} />)}
         {field("Return shipping ($)", <input type="number" step="0.01" style={ppInput} value={d.returnShippingCost ?? ""} onChange={num("returnShippingCost")} />)}
@@ -3680,6 +3681,8 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
   useEffect(() => {
     if (focusPurchaseId && purchases.some(p => p.id === focusPurchaseId)) {
       setQuery("");                 // clear any active search so the promoted purchase is visible
+      setTradeFilter("");           // ...and the trade / due-from-Sparrow filters (a new "Add line" has no trade yet)
+      setDueFilter(false);
       setExpandedId(focusPurchaseId);
       setEditingId(focusPurchaseMode === "view" ? null : focusPurchaseId);
       if (onFocusHandled) onFocusHandled();
