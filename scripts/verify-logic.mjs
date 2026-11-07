@@ -3,6 +3,10 @@
  * Run: node scripts/verify-logic.mjs   (or `npm test`, which runs this + the phase-1 checks)
  */
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
   buildCostSegCsv, suggestAssetClass, emptyPurchase, NOT_IN_ALLOWANCE,
   PURCHASE_TRADES, PURCHASE_STATUSES, ASSET_CLASSES, CONTRACTOR_SCOPE, CONTRACTOR_PURCHASER,
@@ -11,6 +15,7 @@ import {
   fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
   localISODate, daysBetween, returnsClosingSoon, newOrderGroupId, groupByOrder, statusChangePatch, formDefaultsTouched,
 } from '../src/lib/purchases-logic.js';
+import * as SH from '../src/lib/shopping-logic.js';
 import { scopedKey, parseReceiptPathname, migrateFinishesToHash, purchasesFromHash, isReceiptReferenced } from '../api/_scope.js';
 import {
   matchesFinishSearch, buildRoomCopies, mergeFinishes, migrateRoom,
@@ -38,7 +43,7 @@ ok('unknown trade → "" (no suggestion)');
 console.log('emptyPurchase():');
 {
   const p = emptyPurchase();
-  const expected = ['id','finishItemId','furnitureId','description','trade','room','vendor','invoiceNo','purchasedBy','ownerPurchased','paymentMethod','qty','unitPrice','tax','shipping','totalPaid','allowanceCategory','status','purchaseDate','receivedDate','placedInServiceDate','assetClass','section','warranty','warrantyTerm','registered','binderPocket','receipts','notes','userCreated','returnByDate','returnPolicyNote','refundAmount','refundDate','restockingFee','returnShippingCost','keepConfirmed','inspected','inspectedDate','deliveredTo','orderGroupId','lineNo','reimbursable','reimbursedBy','reimbursementStatus','reimbursedAmount','reimbursedDate','drawNo','sourceVendor','fees','docType','paymentConfirmed','lienWaiverReceived','refundAutoFilled'];
+  const expected = ['id','finishItemId','furnitureId','description','trade','room','vendor','invoiceNo','purchasedBy','ownerPurchased','paymentMethod','qty','unitPrice','tax','shipping','totalPaid','allowanceCategory','status','purchaseDate','receivedDate','placedInServiceDate','assetClass','section','warranty','warrantyTerm','registered','binderPocket','receipts','notes','userCreated','returnByDate','returnPolicyNote','refundAmount','refundDate','restockingFee','returnShippingCost','keepConfirmed','inspected','inspectedDate','deliveredTo','orderGroupId','lineNo','reimbursable','reimbursedBy','reimbursementStatus','reimbursedAmount','reimbursedDate','drawNo','sourceVendor','fees','docType','paymentConfirmed','lienWaiverReceived','refundAutoFilled','shoppingItemId'];
   for (const k of expected) assert.ok(k in p, `missing field: ${k}`);
   ok('has all expected fields');
   assert.equal(p.allowanceCategory, NOT_IN_ALLOWANCE);
@@ -806,6 +811,676 @@ console.log('Repairs — Sparrow-paid scope defaults, legacy Minoan, fixture cov
   assert.ok(fixC.every(p => paymentBadge(p) === 'Contractor-paid: confirm in draw'));
   assert.ok(fixC.every(p => paymentBadge({ ...p, lienWaiverReceived: true }) === null));
   ok('fixture C: every First Coast statement line shows "Contractor-paid: confirm in draw" until the lien waiver is received');
+}
+
+console.log('Phase 2 — shopping model, quantity rules, sanitizers, seed merge:');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  assert.equal(D.guestCount, 24); assert.equal(D.bedrooms, 5); assert.equal(D.bathrooms, 5);
+  assert.equal(D.mealsPerDay, 3); assert.equal(D.washesPerDay, 1); assert.equal(D.dishwashers, 1);
+  assert.equal(D.budgetTarget, null); assert.equal(D.readyDate, null); assert.equal(D.defaultTaxRate, 0.065);
+  assert.equal(D.vendorDefaults.amazon.holidayReturnBy, '2027-01-31');
+  assert.equal(D.vendorDefaults.minoan.transactionFeePct, 0.032);
+  assert.equal(D.vendorDefaults.minoan.taxIncludesFees, true);
+  assert.deepEqual(D.reimbursableVendors, ['Minoan']);
+  ok('default settings match spec §2.2 (24 guests, 6.5% tax, Minoan 3.2% fee, reimbursable Minoan)');
+
+  assert.equal(SH.SHOPPING_CATEGORIES.length, 19);
+  assert.equal(SH.CATEGORY_TO_TRADE['Dinnerware'], 'Kitchen & Dining');
+  assert.equal(SH.CATEGORY_TO_TRADE['Bath'], 'Linens & Soft Goods');
+  assert.equal(SH.CATEGORY_TO_TRADE['Furniture'], 'Furniture / FF&E');
+  assert.equal(SH.CATEGORY_TO_TRADE['Cleaning & Laundry'], 'Supplies & Consumables');
+  assert.equal(SH.CATEGORY_TO_TRADE['Electronics & Tech'], 'Electronics / AV');
+  assert.equal(SH.CATEGORY_TO_TRADE['Safety & First Aid'], 'Other');
+  for (const c of SH.SHOPPING_CATEGORIES) assert.ok(PURCHASE_TRADES.includes(SH.CATEGORY_TO_TRADE[c]), `no valid trade for ${c}`);
+  ok('every shopping category maps to a real Purchase trade (§2.5)');
+
+  const I = (o) => ({ ...SH.emptyShoppingItem(), id: 'sh-test-1', name: 'x', ...o });
+  const q = (o, g = 24) => SH.computeQty(I(o), { ...D, guestCount: g });
+  assert.equal(q({ qtyRule: { basis: 'guests', multiplier: 1.5 } }), 36);
+  assert.equal(q({ qtyRule: { basis: 'guests', multiplier: 1.5 } }, 20), 30);
+  assert.equal(q({ qtyRule: { basis: 'guests', multiplier: 1.5 }, qtyOverride: 40 }), 40);
+  assert.equal(q({ qtyRule: { basis: 'guests', multiplier: 1.5 }, qtyOverride: 40 }, 20), 40);
+  assert.equal(q({ qtyRule: { basis: 'fixed', fixedQty: 10 } }), 10);
+  assert.equal(q({ qtyRule: { basis: 'bathrooms', multiplier: 3 } }), 15);
+  assert.equal(q({ qtyRule: { basis: 'bedrooms', multiplier: 2 } }), 10);
+  assert.equal(q({ qtyRule: { basis: 'guests', multiplier: 1.25 } }), 30);
+  assert.equal(q({ qtyRule: { basis: 'guests', multiplier: '1.5' } }), 36);
+  assert.equal(SH.computeQty({}, D), 0);
+  assert.doesNotThrow(() => SH.computeQty(null, D));
+  ok('computeQty: rules scale with guests/bedrooms/bathrooms, overrides win, no float drift, blank items → 0 and never throw');
+
+  const plates = (zone, mult, extra = {}) => I({ id: `sh-plates-${zone}`, dishType: 'Dinner plates', zone, usesPerGuestPerDay: 2, qtyRule: { basis: 'guests', multiplier: mult }, ...extra });
+  const mc = (items, g = 24, purchases) => SH.mealsCovered(items, { ...D, guestCount: g }, purchases).find(r => r.dishType === 'Dinner plates');
+  assert.equal(mc([plates('indoor', 1.5), plates('outdoor', 1.25)]).total, 66);
+  assert.equal(mc([plates('indoor', 1.5), plates('outdoor', 1.25)]).level, 'full-day');
+  assert.equal(mc([plates('indoor', 1.5)]).level, 'one-meal');
+  assert.equal(mc([plates('indoor', 0.5)]).level, 'short');
+  assert.equal(mc([plates('indoor', 1.5), plates('outdoor', 1.25)], 20).total, 55);
+  assert.equal(SH.mealsCovered([I({ dishType: 'Kids cups', usesPerGuestPerDay: null })], D).length, 0);
+  const owned = plates('outdoor', 1.25, { status: 'ordered', purchaseIds: ['p1'] });
+  assert.equal(mc([plates('indoor', 1.5), owned], 24, [{ id: 'p1', qty: 70, status: 'Ordered' }]).total, 106);
+  assert.equal(mc([plates('indoor', 1.5), owned], 24, [{ id: 'p1', qty: 70, status: 'Returned' }]).total, 66);
+  ok('mealsCovered: 66 plates at 24 guests and 2 uses/day → green; indoor alone amber; tiny set red; follows guest count; owned quantity replaces the plan; Returned purchases do not count');
+
+  // sanitizers
+  const stamp = { updatedAt: '2026-11-07T00:00:00.000Z', updatedBy: 'JM' };
+  const raw = { ...SH.emptyShoppingItem(), id: 'sh-abc-123', name: 'Plates', category: 'Dinnerware', updatedBy: 'HACK', updatedAt: 'x' };
+  const good = SH.sanitizeShoppingItem(raw, stamp);
+  assert.equal(good.ok, true); assert.equal(good.item.updatedBy, 'JM'); assert.equal(good.item.updatedAt, stamp.updatedAt);
+  for (const bad of [{ id: 'SH-1' }, { id: 'abc' }, { name: '   ' }, { category: 'Nope' }, { status: 'bogus' }, { priority: 'bogus' }, { zone: 'sideways' }, { candidates: 'nope' }, { candidates: [1] }]) {
+    assert.equal(SH.sanitizeShoppingItem({ ...raw, ...bad }, stamp).ok, false, JSON.stringify(bad));
+  }
+  const withExtra = SH.sanitizeShoppingItem({ ...raw, agentExtra: { a: 1 }, candidates: [{ id: 'c-1', vendor: 'Amazon', futureField: 'x' }] }, stamp);
+  assert.deepEqual(withExtra.item.agentExtra, { a: 1 });
+  assert.equal(withExtra.item.candidates[0].futureField, 'x');
+  assert.equal(withExtra.item.candidates[0].vendor, 'Amazon');
+  const hostile = SH.sanitizeShoppingItem(JSON.parse('{"id":"sh-a","name":"n","category":"Other","__proto__":{"polluted":true},"constructor":{"x":1}}'), stamp);
+  assert.equal(hostile.ok, true);
+  assert.equal(Object.keys(hostile.item).includes('__proto__'), false);
+  assert.equal(hostile.item.polluted, undefined); assert.equal(({}).polluted, undefined);
+  assert.equal(Object.prototype.hasOwnProperty.call(hostile.item, 'constructor'), false);
+  assert.equal(SH.sanitizeShoppingItem({ ...raw, notes: 'a'.repeat(100001) }, stamp).ok, false);
+  ok('sanitizeShoppingItem validates known fields, stamps updatedAt/By server-side, preserves unknown fields, drops __proto__/constructor, caps size');
+
+  assert.equal(SH.sanitizeShoppingSettings({ guestCount: 0 }).ok, false);
+  assert.equal(SH.sanitizeShoppingSettings({ guestCount: 201 }).ok, false);
+  assert.equal(SH.sanitizeShoppingSettings({ defaultTaxRate: 0.3 }).ok, false);
+  assert.equal(SH.sanitizeShoppingSettings({ reimbursableVendors: 'Minoan' }).ok, false);
+  assert.equal(SH.sanitizeShoppingSettings({ readyDate: 'soon' }).ok, false);
+  const st = SH.sanitizeShoppingSettings({ guestCount: 20, futureSetting: { z: 1 } });
+  assert.equal(st.ok, true); assert.equal(st.settings.guestCount, 20); assert.equal(st.settings.bedrooms, 5);
+  assert.deepEqual(st.settings.futureSetting, { z: 1 });
+  ok('sanitizeShoppingSettings rejects out-of-range/mistyped values, fills defaults, preserves unknown settings');
+
+  assert.equal(SH.isShoppingField('item:sh-abc-123'), true);
+  assert.equal(SH.isShoppingField('settings'), true);
+  for (const f of ['item:../x', 'foo', 'item:SH-1', 'item:sh-a:b', 'item:' + 'a'.repeat(1000), '__proto__']) assert.equal(SH.isShoppingField(f), false, f);
+  assert.equal(SH.sanitizeShoppingField('item:sh-abc-123', raw, stamp).ok, true);
+  assert.equal(SH.sanitizeShoppingField('item:sh-other-9', raw, stamp).ok, false);
+  assert.equal(SH.sanitizeShoppingField('item:sh-abc-123', null, stamp).ok, false);
+  assert.equal(SH.sanitizeShoppingField('item:sh-abc-123', [raw], stamp).ok, false);
+  assert.deepEqual(SH.sanitizeShoppingField('item:sh-seed-x', { id: 'sh-seed-x', __deleted: true, extra: 1 }, stamp), { ok: true, value: { id: 'sh-seed-x', __deleted: true } });
+  assert.equal(SH.sanitizeShoppingField('item:sh-seed-x', { id: 'sh-other', __deleted: true }, stamp).ok, false);
+  assert.equal(SH.sanitizeShoppingField('settings', { guestCount: 22 }, stamp).ok, true);
+  assert.equal(SH.sanitizeShoppingField('settings', { guestCount: -1 }, stamp).ok, false);
+  ok('field names are strictly validated; item fields must match their id; tombstones are exactly {id,__deleted:true}; settings go through their sanitizer');
+
+  // seed merge
+  const seedItem = (id, o = {}) => ({ ...SH.emptyShoppingItem(), id, name: id, userCreated: false, ...o });
+  const seed = [seedItem('sh-seed-a'), seedItem('sh-seed-b'), seedItem('sh-seed-c')];
+  const none = SH.mergeShopping(SH.partitionShoppingFields({}), seed);
+  assert.deepEqual(none.items.map(i => i.id), ['sh-seed-a', 'sh-seed-b', 'sh-seed-c']);
+  assert.deepEqual(none.settings, { ...D });
+  const map = {
+    'item:sh-seed-a': JSON.stringify({ ...seed[0], status: 'approved' }),
+    'item:sh-seed-b': { id: 'sh-seed-b', __deleted: true },
+    'item:sh-user-1': JSON.stringify(seedItem('sh-user-1', { userCreated: true, name: 'Mine' })),
+    settings: { vendorDefaults: { minoan: { note: 'custom note' } } },
+    'bogus-field': '{"x":1}',
+  };
+  const part = SH.partitionShoppingFields(map);
+  assert.deepEqual(part.deletedIds, ['sh-seed-b']);
+  assert.equal(part.itemsById['sh-seed-a'].status, 'approved');
+  const merged = SH.mergeShopping(part, seed);
+  assert.deepEqual(merged.items.map(i => i.id), ['sh-seed-a', 'sh-seed-c', 'sh-user-1']);
+  assert.equal(merged.items[0].status, 'approved');
+  assert.equal(merged.items[1].status, 'researching');
+  assert.equal(merged.settings.vendorDefaults.amazon.holidayReturnBy, '2027-01-31');
+  assert.equal(merged.settings.vendorDefaults.minoan.note, 'custom note');
+  assert.equal(merged.settings.vendorDefaults.minoan.transactionFeePct, 0.032);
+  const resurrect = SH.mergeShopping({ itemsById: { 'sh-seed-b': seedItem('sh-seed-b') }, deletedIds: ['sh-seed-b'], settings: null }, seed);
+  assert.equal(resurrect.items.some(i => i.id === 'sh-seed-b'), false);
+  const twice = SH.mergeShopping(part, seed);
+  assert.equal(twice.items.filter(i => i.id === 'sh-user-1').length, 1);
+  assert.ok(merged.items.every(i => Array.isArray(i.candidates) && i.agentFlag && i.qtyRule));
+  ok('seed merge: saved edits win, untouched seed fills in, tombstones hide (never resurrect), user-created items kept once, settings overlay defaults per vendor');
+}
+
+console.log('Phase 2 — landed cost, best value, warnings, spend forecast:');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const within = (a, b, cents = 1) => Math.round(Math.abs(a - b) * 100) <= cents;
+  const cand = (o) => ({ ...SH.emptyCandidate(), ...o });
+
+  // Fixture B: three beds, merchandise $535.41, fee 3.2386%, tax 6.5% on goods + fee.
+  const fixB = cand({ vendorType: 'minoan', unitPrice: 535.41, qtyToBuy: 1, shipping: 0, transactionFeePct: 0.032386 });
+  assert.equal(SH.merchandise(fixB), 535.41);
+  assert.equal(SH.feesFor(fixB, D), 17.34);
+  assert.equal(SH.taxFor(fixB, D), 35.93);
+  assert.ok(within(SH.landedTotal(fixB, D), 588.67), `landed ${SH.landedTotal(fixB, D)}`);
+  const minoanDefault = cand({ vendorType: 'minoan', unitPrice: 535.41, qtyToBuy: 1 });
+  assert.equal(SH.feesFor(minoanDefault, D), 17.13);
+  assert.equal(SH.taxFor(minoanDefault, D), 35.92);
+  ok('fixture B (three beds, Minoan): $535.41 + 3.2386% fee + 6.5% tax on goods+fee lands within a cent of $588.67; vendor default fee applies when the candidate has none');
+
+  const amazon = cand({ vendorType: 'amazon', unitPrice: 100, qtyToBuy: 2, shipping: 5, discount: 10 });
+  assert.equal(SH.merchandise(amazon), 190);
+  assert.equal(SH.feesFor(amazon, D), 0);
+  assert.equal(SH.taxFor(amazon, D), 12.35);
+  assert.equal(SH.landedTotal(amazon, D), 207.35);
+  assert.equal(SH.landedTotal({ ...amazon, estTax: 0 }, D), 195);
+  assert.equal(SH.landedTotal({ ...amazon, estTax: '' }, D), 207.35);
+  assert.equal(SH.landedTotal({ ...amazon, estTax: null }, D), 207.35);
+  assert.equal(SH.landedTotal(amazon, { ...D, defaultTaxRate: 0.07 }), 208.3);
+  ok('landed total = merchandise + shipping + fees + tax; an explicit $0 tax is honored while blank tax uses the default rate');
+
+  const byName = cand({ vendor: ' MINOAN ', vendorType: 'other', unitPrice: 100, qtyToBuy: 1 });
+  assert.equal(SH.feesFor(byName, D), 3.2);
+  assert.equal(SH.perUnit({ ...amazon, packSize: 3 }, D), 34.56);
+  ok('vendor defaults are found by vendorType or by a case-insensitive vendor name; per-unit price divides by packs × pack size');
+
+  assert.equal(SH.returnExposure(cand({ freeReturns: true, returnShippingCost: 50, restockingPct: 0.5, unitPrice: 100 })), 0);
+  assert.equal(SH.returnExposure(cand({ returnShippingCost: 12, restockingPct: 0.15, unitPrice: 100, qtyToBuy: 1 })), 27);
+  assert.equal(SH.returnExposure(cand({ returnShippingCost: 12, restockingPct: 15, unitPrice: 100, qtyToBuy: 1 })), 27);
+  assert.equal(SH.returnExposure(cand({ unitPrice: 100 })), 0);
+  ok('return exposure = return shipping + restocking % of merchandise (fraction or percent), zero for free returns');
+
+  // bestValue
+  const mk = (cs, o = {}) => ({ ...SH.emptyShoppingItem(), id: 'sh-bv', name: 'Toaster', candidates: cs, ...o });
+  const A = cand({ id: 'A', vendor: 'Amazon', vendorType: 'amazon', unitPrice: 100, qtyToBuy: 1, shipping: 0, inStock: true, freeReturns: true });
+  const Mdear = cand({ id: 'M', vendor: 'Minoan', vendorType: 'minoan', unitPrice: 90, qtyToBuy: 1, shipping: 15, inStock: true });
+  assert.equal(SH.bestValue(mk([Mdear, A]), D).id, 'A');
+  const Mcheap = { ...Mdear, unitPrice: 80, shipping: 0 };
+  assert.equal(SH.bestValue(mk([A, Mcheap]), D).id, 'M');
+  ok('Best Value ranks on total landed cost (a lower sticker price with shipping + fee can lose to a dearer free-shipping offer)');
+  assert.equal(SH.bestValue(mk([A, { ...Mcheap, inStock: false }]), D).id, 'A');
+  assert.equal(SH.bestValue(mk([A, { ...Mcheap, inStock: null }]), D).id, 'M');
+  assert.equal(SH.bestValue(mk([A, { ...Mcheap, deliveryEta: '2026-12-20' }], { needBy: '2026-12-01' }), D).id, 'A');
+  assert.equal(SH.bestValue(mk([A, { ...Mcheap, deliveryEta: '' }], { needBy: '2026-12-01' }), D).id, 'M');
+  ok('out-of-stock and too-late candidates are skipped; unknown stock or a missing ETA does not disqualify');
+  const T1 = cand({ id: 'T1', vendorType: 'other', unitPrice: 100, estTax: 0, shipping: 0, returnShippingCost: 10, inStock: true });
+  const T2 = cand({ id: 'T2', vendorType: 'other', unitPrice: 100, estTax: 0, shipping: 0, freeReturns: true, inStock: true, deliveryEta: '2026-12-05' });
+  const T3 = cand({ id: 'T3', vendorType: 'other', unitPrice: 100, estTax: 0, shipping: 0, freeReturns: true, inStock: true, deliveryEta: '2026-12-01' });
+  assert.equal(SH.bestValue(mk([T1, T2]), D).id, 'T2');
+  assert.equal(SH.bestValue(mk([T1, T2, T3]), D).id, 'T3');
+  assert.equal(SH.bestValue(mk([]), D), null);
+  const noisy = { ...A, retailUnitPrice: 9999 };
+  assert.equal(SH.bestValue(mk([noisy, Mcheap]), D).id, 'M');
+  const before = JSON.stringify(mk([A, Mcheap]));
+  SH.bestValue(JSON.parse(before), D);
+  assert.equal(JSON.stringify(JSON.parse(before)), before);
+  assert.equal(SH.bestValue({}, D), null);
+  ok('ties break on lower return exposure then earlier delivery; retail "list price" is ignored; empty/bare items → null');
+
+  // warnings
+  const wn = (c, item, now = '2026-11-25T12:00:00Z', settings = D) => SH.candidateWarnings(c, item, settings, now).map(w => w.code);
+  const dn = { category: 'Dinnerware', targetPrice: 20 };
+  assert.deepEqual(wn(cand({ returnByDate: '2026-12-01' }), { category: 'Small Appliances' }, undefined, { ...D, readyDate: '2026-12-15' }), ['return-before-ready']);
+  assert.deepEqual(wn(cand({ returnByDate: '2026-12-01' }), { category: 'Small Appliances' }), []);
+  assert.ok(wn(cand({ unitPrice: 50, packSize: 2, openStock: true }), dn).includes('over-target'));
+  assert.ok(!wn(cand({ unitPrice: 50, packSize: 2, openStock: true }), { ...dn, targetPrice: 25 }).includes('over-target'));
+  assert.ok(wn(cand({ openStock: false }), dn).includes('not-open-stock'));
+  assert.ok(wn(cand({ openStock: null }), dn).includes('not-open-stock'));
+  assert.ok(!wn(cand({ openStock: true }), dn).includes('not-open-stock'));
+  assert.ok(!wn(cand({ openStock: false }), { category: 'Small Appliances' }).includes('not-open-stock'));
+  assert.ok(wn(cand({ checkedAt: '2026-11-21T08:00:00Z' }), { category: 'Other' }).includes('stale-price'));
+  assert.ok(!wn(cand({ checkedAt: '2026-11-25T02:00:00Z' }), { category: 'Other' }).includes('stale-price'));
+  assert.ok(!wn(cand({ checkedAt: '2026-10-06T08:00:00Z' }), { category: 'Other' }, '2026-10-10T12:00:00Z').includes('stale-price'));
+  assert.ok(!wn(cand({ checkedAt: '' }), { category: 'Other' }).includes('stale-price'));
+  assert.doesNotThrow(() => SH.candidateWarnings({}, {}, D, 'not-a-date'));
+  assert.ok(SH.candidateWarnings(cand({ returnByDate: '2026-12-01' }), { category: 'Other' }, { ...D, readyDate: '2026-12-15' }, '2026-11-25T12:00:00Z')[0].text.includes("can't test in the house"));
+  ok('warnings: return closes before the house is ready, over per-unit target, not open stock (dinnerware/flatware/glassware), stale price only Nov 20–Dec 2');
+
+  // forecast
+  const lc = (id, price) => cand({ id, vendorType: 'other', unitPrice: price, qtyToBuy: 1, estTax: 0, shipping: 0 });
+  const items = [
+    mk([lc('c1', 100)], { id: 'sh-a', selectedCandidateId: 'c1' }),
+    mk([lc('c2', 500)], { id: 'sh-b', selectedCandidateId: 'c2', purchaseIds: ['p1'] }),
+    mk([lc('c3', 70)], { id: 'sh-c' }),
+    mk([lc('c4', 300)], { id: 'sh-d', selectedCandidateId: 'c4', status: 'returned' }),
+    mk([lc('c5', 50)], { id: 'sh-e', selectedCandidateId: 'c5', purchaseIds: ['gone'] }),
+  ];
+  const f = SH.forecastSpend(items, [{ id: 'p1', totalPaid: 25, refundAmount: 5, status: 'Received' }], D);
+  assert.deepEqual(f, { planned: 150, committed: 20, forecast: 170 });
+  assert.deepEqual(SH.forecastSpend([], [], D), { planned: 0, committed: 0, forecast: 0 });
+  assert.doesNotThrow(() => SH.forecastSpend([{}, null], [null], D));
+  ok('forecast = selected-candidate landed totals for unpurchased items + net cost of linked purchases (returned items and dangling links handled)');
+}
+
+console.log('Phase 2 — shopping API write rules (regression pins for api/shopping.js):');
+{
+  const stamp = { updatedAt: '2026-11-07T00:00:00.000Z', updatedBy: 'KM' };
+  const item = { ...SH.emptyShoppingItem(), id: 'sh-api-1', name: 'Kettle', category: 'Small Appliances' };
+  const withCand = SH.sanitizeShoppingField('item:sh-api-1', { ...item, candidates: [{ vendor: 'Amazon', unitPrice: '24.99', futureField: [1, 2] }] }, stamp);
+  assert.equal(withCand.ok, true);
+  assert.equal(withCand.value.candidates[0].unitPrice, 24.99);
+  assert.deepEqual(withCand.value.candidates[0].futureField, [1, 2]);
+  assert.match(withCand.value.candidates[0].id, /^c-/);
+  assert.equal(withCand.value.updatedBy, 'KM');
+  for (const bad of [null, 'str', 5, [item]]) assert.equal(SH.sanitizeShoppingField('item:sh-api-1', bad, stamp).ok, false);
+  assert.equal(SH.sanitizeShoppingField('item:sh-api-1', { ...item, candidates: [null] }, stamp).ok, false);
+  for (const f of ['item:sh-a:b', 'item:' + 'x'.repeat(1000), '__proto__', 'constructor', 'item:', 'ITEM:sh-a', '']) {
+    assert.equal(SH.sanitizeShoppingField(f, item, stamp).ok, false, f);
+  }
+  ok('a PUT body is typed per field, keeps unknown candidate fields, stamps the server user, and every malformed field name or value shape is rejected');
+}
+
+console.log('Phase 2 — seed list (§2.6 tables) and master-list parser:');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const seed = JSON.parse(fs.readFileSync(new URL('../src/shopping-seed.json', import.meta.url), 'utf8'));
+  const items = seed.items;
+  const stamp = { updatedAt: null, updatedBy: null };
+  assert.ok(Array.isArray(items) && items.length >= 40);
+  assert.equal(new Set(items.map(i => i.id)).size, items.length);
+  for (const i of items) {
+    assert.match(i.id, /^sh-seed-[a-z0-9-]+$/);
+    assert.equal(SH.sanitizeShoppingItem(i, stamp).ok, true, `seed item invalid: ${i.id}`);
+    assert.equal(i.proposed, false); assert.equal(i.status, 'researching'); assert.equal(i.approvedBy, null); assert.equal(i.userCreated, false);
+  }
+  ok('seed items are unique, valid, un-approved, not proposed and marked as seed (not user-created)');
+
+  const byId = Object.fromEntries(items.map(i => [i.id, i]));
+  const qty = (id, g = 24) => SH.computeQty(byId[id], { ...D, guestCount: g });
+  const expect24 = { 'sh-seed-dinner-plates-indoor': 36, 'sh-seed-dinner-plates-outdoor': 30, 'sh-seed-everyday-tumblers-indoor': 36, 'sh-seed-everyday-tumblers-outdoor': 48,
+    'sh-seed-coffee-mugs-indoor': 36, 'sh-seed-wine-glasses-indoor': 30, 'sh-seed-juice-small-glasses-indoor': 24, 'sh-seed-kids-cups-with-lids-outdoor': 12,
+    'sh-seed-serving-platters-indoor': 6, 'sh-seed-serving-platters-outdoor': 4, 'sh-seed-serving-bowls-indoor': 8, 'sh-seed-serving-utensils-indoor': 16, 'sh-seed-serving-utensils-outdoor': 8,
+    'sh-seed-dinner-forks': 72, 'sh-seed-salad-dessert-forks': 48, 'sh-seed-dinner-knives': 48, 'sh-seed-steak-knives': 24, 'sh-seed-teaspoons': 72, 'sh-seed-soup-dessert-spoons': 36,
+    'sh-seed-drip-coffee-maker': 2, 'sh-seed-toaster': 2, 'sh-seed-electric-griddle': 2, 'sh-seed-slow-cooker': 2, 'sh-seed-blender-indoor': 1, 'sh-seed-blender-outdoor': 1,
+    'sh-seed-ice-maker': 1, 'sh-seed-drink-dispenser': 2 };
+  for (const [id, n] of Object.entries(expect24)) { assert.ok(byId[id], `missing seed item ${id}`); assert.equal(qty(id), n, id); }
+  ok('seed quantities at 24 guests match the §2.6 tables (plates 36/30, tumblers 36/48, flatware 72/48/48/24/72/36, serving pieces, appliance counts)');
+  assert.equal(qty('sh-seed-dinner-plates-indoor', 20), 30);
+  assert.equal(qty('sh-seed-steak-knives', 20), 24);
+  const overridden = items.filter(i => i.qtyOverride !== null && i.qtyOverride !== undefined);
+  assert.ok(overridden.length >= 2);
+  for (const i of overridden) assert.equal(SH.computeQty(i, { ...D, guestCount: 10 }), i.qtyOverride);
+  ok('24 → 20 guests recomputes rule-based seed quantities but not fixed counts or overrides (linen placeholders)');
+
+  const levels = SH.mealsCovered(items, D);
+  assert.ok(levels.length >= 12);   // 7 dish types + 5 flatware pieces that scale with guests
+  for (const r of levels) assert.equal(r.level, 'full-day', `${r.dishType} is ${r.level}`);
+  assert.equal(levels.find(r => r.dishType === 'Dinner plates').total, 66);
+  assert.equal(levels.find(r => r.dishType === 'Everyday tumblers').total, 84);
+  ok('the seeded indoor + outdoor sets cover a full day at 24 guests for every dish type (66 plates, 84 tumblers)');
+  for (const i of items.filter(x => x.category === 'Outdoor / Pool Dining')) assert.equal(i.zone, 'outdoor', i.id);
+  assert.ok(items.some(i => i.category === 'Outdoor / Pool Dining'));
+  ok('every Outdoor / Pool Dining seed item is zone: outdoor');
+
+  // master-list parser (CSV → seed shape). Skipped when python3 is unavailable.
+  const py = spawnSync('python3', ['--version']);
+  if (py.error) { ok('parse-shopping-list.py check skipped (python3 not installed)'); }
+  else {
+    const src = fs.readFileSync(new URL('../scripts/parse-shopping-list.py', import.meta.url), 'utf8');
+    const catStart = src.indexOf('CATEGORIES = [');
+    const catBlock = src.slice(catStart, src.indexOf(']', catStart));
+    const pyCats = [...catBlock.matchAll(/"([^"]+)"/g)].map(m => m[1]);
+    assert.deepEqual(pyCats, SH.SHOPPING_CATEGORIES);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-parse-'));
+    const out = path.join(tmp, 'seed.json');
+    const run = spawnSync('python3', ['scripts/parse-shopping-list.py', 'scripts/fixtures/shopping-list-sample.csv', '--out', out], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    const parsed = JSON.parse(fs.readFileSync(out, 'utf8')).items;
+    assert.ok(parsed.length >= 5);
+    for (const i of parsed) assert.equal(SH.sanitizeShoppingItem(i, stamp).ok, true, `parsed item invalid: ${i.id}`);
+    const withTier = parsed.find(i => i.qualityTier === 'Premium');
+    assert.ok(withTier && withTier.requirements && typeof withTier.kerryDecides === 'boolean');
+    assert.equal(SH.computeQty(parsed[0], D), parsed[0].qtyRule.fixedQty);
+    assert.equal(parsed.find(i => i.name === 'Dinner plates (indoor)').dishType, 'Dinner plates');
+    assert.equal(parsed.find(i => i.name === 'Shatter-resistant tumblers (outdoor)').dishType, 'Shatter-resistant tumblers');
+    const drip = parsed.find(i => i.masterId === 'MS-0102');
+    assert.ok(drip && drip.id === 'sh-seed-ms-0102');
+    const mugs = parsed.find(i => i.name === 'Coffee mugs');
+    assert.deepEqual([mugs.qtyRule.basis, mugs.qtyRule.multiplier], ['guests', 1.5]);
+    assert.equal(SH.computeQty(mugs, { ...D, guestCount: 20 }), 30);
+    const bad = path.join(tmp, 'bad.csv');
+    fs.writeFileSync(bad, 'Item,Category,Final qty\nGood item,Dinnerware,4\nBad item,Not A Category,2\n');
+    const badRun = spawnSync('python3', ['scripts/parse-shopping-list.py', bad, '--check'], { encoding: 'utf8' });
+    assert.notEqual(badRun.status, 0);
+    assert.match(badRun.stderr + badRun.stdout, /row 3/i);
+    ok('parse-shopping-list.py turns a master-list CSV into valid seed items (keeping quality tier / requirements / Kerry-decides) and rejects a bad category with the row number');
+  }
+}
+
+console.log('Phase 2 — list helpers (search, filter, group):');
+{
+  const mk = (id, o) => ({ ...SH.emptyShoppingItem(), id, name: id, ...o });
+  const items = [
+    mk('sh-a', { name: 'Dinner plates', category: 'Dinnerware', room: 'Kitchen', status: 'approved', priority: 'launch-critical', claimedBy: 'JM', notes: 'Stoneware', candidates: [{ id: 'c1', vendor: 'Amazon', brand: 'Corelle', model: 'ABC-1' }] }),
+    mk('sh-b', { name: 'Toaster', category: 'Small Appliances', status: 'researching', priority: 'launch', agentFlag: { action: 'buy-now', reason: 'Low', flaggedAt: null }, candidates: [{ id: 'c2', vendor: 'Minoan', brand: 'Breville' }] }),
+    mk('sh-c', { name: 'Hangers', category: 'Supplies & Consumables', status: 'shortlisted', priority: 'nice-to-have', dishType: 'x' }),
+    mk('sh-d', { name: 'Odd thing', category: 'Other', status: 'weird-status' }),
+  ];
+  const ids = (list) => list.map(i => i.id);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, {})), ['sh-a', 'sh-b', 'sh-c', 'sh-d']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { status: 'approved' })), ['sh-a']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { category: 'Small Appliances' })), ['sh-b']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { priority: 'nice-to-have' })), ['sh-c']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { agentFlag: 'buy-now' })), ['sh-b']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { agentFlag: 'none' })), ['sh-a', 'sh-c', 'sh-d']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { claimedBy: 'JM' })), ['sh-a']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { claimedBy: 'unclaimed' })), ['sh-b', 'sh-c', 'sh-d']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { vendor: 'minoan' })), ['sh-b']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { search: 'corelle' })), ['sh-a']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { status: 'all', category: 'all', priority: 'all', agentFlag: 'all', claimedBy: 'all', vendor: 'all', search: '  ' })), ['sh-a', 'sh-b', 'sh-c', 'sh-d']);
+  assert.deepEqual(ids(SH.filterShoppingItems(items, { status: 'approved', category: 'Small Appliances' })), []);
+  assert.equal(SH.matchesShoppingSearch(items[0], 'stoneware'), true);
+  assert.equal(SH.matchesShoppingSearch(items[0], 'zzz'), false);
+  assert.equal(SH.matchesShoppingSearch({}, 'x'), false);
+  ok('filters (status, category, priority, agent flag, claimed by, vendor) and search combine; "all"/blank mean no filter; search covers name, notes, room and candidate vendor/brand/model');
+
+  const byCat = SH.groupShoppingItems(items, 'category');
+  assert.deepEqual(byCat.map(g => g.key), ['Small Appliances', 'Dinnerware', 'Supplies & Consumables', 'Other']);
+  assert.deepEqual(byCat.map(g => g.items.length), [1, 1, 1, 1]);
+  const byStatus = SH.groupShoppingItems(items, 'status');
+  assert.deepEqual(byStatus.map(g => g.key), ['researching', 'shortlisted', 'approved', 'weird-status']);
+  assert.deepEqual(SH.groupShoppingItems([], 'category'), []);
+  ok('grouping follows the category / status order, drops empty groups, and keeps an unrecognized status instead of hiding the item');
+}
+
+console.log('Phase 2 — Mark purchased (buildPurchaseFromShopping):');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const within = (a, b) => Math.round(Math.abs(a - b) * 100) <= 1;
+  const item = { ...SH.emptyShoppingItem(), id: 'sh-bed', name: 'Dunphy platform bed', category: 'Furniture', room: 'Master Suite' };
+  const minoan = { ...SH.emptyCandidate(), id: 'c-m', vendor: 'Minoan', vendorType: 'minoan', sourceVendor: 'Wayfair', url: 'https://m.example/bed', brand: 'Dunphy', model: 'K-1', unitPrice: 535.41, qtyToBuy: 1, shipping: 0, transactionFeePct: 0.032386, returnWindowDays: 30 };
+  const d = SH.buildPurchaseFromShopping(item, minoan, D);
+  assert.match(d.id, /^pur-/);
+  assert.equal(d.trade, 'Furniture / FF&E');
+  assert.equal(d.vendor, 'Minoan'); assert.equal(d.sourceVendor, 'Wayfair');
+  assert.equal(d.reimbursable, true); assert.equal(d.reimbursementStatus, 'pending'); assert.equal(d.reimbursedBy, 'Sparrow (Contractor)');
+  assert.equal(d.allowanceCategory, NOT_IN_ALLOWANCE);
+  assert.equal(d.qty, 1); assert.equal(d.unitPrice, 535.41); assert.equal(d.fees, 17.34); assert.equal(d.tax, 35.93);
+  assert.ok(within(d.totalPaid, 588.67), `totalPaid ${d.totalPaid}`);
+  assert.equal(d.shoppingItemId, 'sh-bed'); assert.equal(d.room, 'Master Suite');
+  assert.equal(d.assetClass, '5-yr'); assert.equal(d.status, 'Ordered'); assert.equal(d.section, '');
+  assert.ok(d.description.startsWith('Dunphy platform bed') && d.description.includes('Dunphy K-1'));
+  assert.equal(d.returnByDate, ''); assert.equal(d.returnPolicyNote, '30-day returns');
+  assert.ok(d.notes.includes('https://m.example/bed'));
+  for (const k of Object.keys(emptyPurchase())) assert.ok(k in d, `draft missing ${k}`);
+  ok('a Minoan candidate becomes a fully pre-filled Purchase: trade from the category map, reimbursable/pending, fee + tax + landed total within a cent of $588.67, linked to the shopping item');
+
+  const amazon = { ...SH.emptyCandidate(), id: 'c-a', vendor: 'Amazon', vendorType: 'amazon', unitPrice: 40, qtyToBuy: 2, shipping: 0 };
+  assert.equal(SH.buildPurchaseFromShopping(item, amazon, D).returnByDate, '2027-01-31');
+  assert.equal(SH.buildPurchaseFromShopping(item, amazon, D).reimbursable, false);
+  assert.equal(SH.buildPurchaseFromShopping(item, { ...amazon, returnByDate: '2026-12-20' }, D).returnByDate, '2026-12-20');
+  assert.equal(SH.buildPurchaseFromShopping(item, minoan, { ...D, reimbursableVendors: [] }).reimbursable, false);
+  assert.equal(SH.buildPurchaseFromShopping({ ...item, category: 'Not a category' }, amazon, D).trade, 'Other');
+  assert.equal(SH.buildPurchaseFromShopping({ ...item, category: 'Dinnerware' }, amazon, D).trade, 'Kitchen & Dining');
+  assert.equal(SH.buildPurchaseFromShopping({ ...item, category: 'Small Appliances' }, amazon, D).assetClass, '5-yr');
+  assert.equal(SH.buildPurchaseFromShopping(item, null, D), null);
+  assert.equal(SH.buildPurchaseFromShopping(null, amazon, D), null);
+  assert.equal(SH.buildPurchaseFromShopping(item, { ...amazon, discount: 10 }, D).notes.includes('discount'), true);
+  ok('Amazon holiday return-by defaults from settings, an explicit return date wins, reimbursement follows the settings vendor list, unknown categories fall back to Other, missing item/candidate → null');
+  assert.equal(emptyPurchase().shoppingItemId, null);
+  assert.equal(normalizePurchase({ id: 'x' }).shoppingItemId, null);
+  ok('purchases carry shoppingItemId (default null) for the two-way link');
+}
+
+console.log('Phase 2 — agent export/import (§2.9) and Print for Kerry:');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const deepFreeze = (o) => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); Object.values(o).forEach(deepFreeze); } return o; };
+
+  // ── export bundle ──
+  const podcast = [
+    { ep: 1, title: 'A', keyInsight: 'ka', tags: ['x'], category: 'Operations', priority: 'critical', isGimmick: false, summary: 'long text' },
+    { ep: 2, title: 'B', keyInsight: 'kb', tags: [], category: 'Marketing', priority: 'critical', isGimmick: false },
+    { ep: 3, title: 'C', keyInsight: 'kc', tags: [], category: 'Guest Experience', priority: 'medium', isGimmick: false },
+    { ep: 4, title: 'D', keyInsight: 'kd', tags: [], category: 'Guest Experience', priority: 'high', isGimmick: true },
+    { ep: 5, title: 'E', keyInsight: 'ke', tags: ['bed'], category: 'Furnishing & Design', priority: 'high', isGimmick: false },
+  ];
+  const tools = { tools: [{ name: 'Minut', category: 'Smart Home & Security' }, { name: 'PriceLabs', category: 'Dynamic Pricing' }, { name: 'Breezeway', category: 'Operations & Cleaning' }, { name: 'StayFi', category: 'Guest Experience' }] };
+  const plates = { ...SH.emptyShoppingItem(), id: 'sh-seed-plates', name: 'Plates', category: 'Dinnerware', qtyRule: { basis: 'guests', multiplier: 1.5, fixedQty: 0 }, qtyNeeded: 36, mystery: { keep: true } };
+  const frozenItems = deepFreeze([plates]);
+  const bundle = SH.buildExportBundle({ items: frozenItems, settings: { ...D, guestCount: 20 }, propertyId: 'pp', podcast, tools, now: '2026-11-21T10:00:00Z' });
+  assert.deepEqual(Object.keys(bundle).sort(), ['exportedAt', 'items', 'propertyId', 'research', 'schema', 'settings']);
+  assert.equal(bundle.schema, 'pp-shopping-export/v1');
+  assert.equal(bundle.exportedAt, '2026-11-21T10:00:00Z'); assert.equal(bundle.propertyId, 'pp');
+  assert.deepEqual(Object.keys(bundle.research).sort(), ['episodes', 'tools']);
+  assert.deepEqual(bundle.research.episodes.map(e => e.ep), [1, 5]);
+  assert.deepEqual(Object.keys(bundle.research.episodes[0]).sort(), ['ep', 'keyInsight', 'tags', 'title']);
+  assert.deepEqual(bundle.research.tools.map(t => t.name), ['Minut', 'Breezeway', 'StayFi']);
+  assert.equal(bundle.items[0].qtyNeeded, 30);
+  assert.deepEqual(bundle.items[0].mystery, { keep: true });
+  assert.equal(plates.qtyNeeded, 36);
+  assert.equal(bundle.settings.guestCount, 20);
+  assert.deepEqual(SH.buildExportBundle({ items: [], settings: D, propertyId: 'pp', podcast: [], tools: [], now: 'x' }).research, { episodes: [], tools: [] });
+  ok('export bundle matches §2.9 exactly (schema, keys, filtered episodes/tools), refreshes qtyNeeded for the current guest count, keeps unknown item fields, never mutates the items');
+
+  // ── validateResults ──
+  const mkRes = (extra) => ({ schema: 'pp-shopping-results/v1', generatedAt: '2026-11-20T09:00:00Z', propertyId: 'pp', updates: [], newItems: [], ...extra });
+  assert.deepEqual(SH.validateResults(mkRes(), 'pp'), { ok: true });
+  assert.equal(SH.validateResults(mkRes({ schema: 'pp-shopping-results/v1.2' }), 'pp').ok, true);
+  assert.equal(SH.validateResults(mkRes({ schema: 'pp-shopping-results/v2' }), 'pp').ok, false);
+  assert.equal(SH.validateResults(mkRes({ schema: 'pp-shopping-export/v1' }), 'pp').ok, false);
+  assert.equal(SH.validateResults(mkRes({ propertyId: 'other' }), 'pp').ok, false);
+  assert.equal(SH.validateResults(mkRes({ updates: 'nope' }), 'pp').ok, false);
+  assert.equal(SH.validateResults(mkRes({ newItems: {} }), 'pp').ok, false);
+  assert.equal(SH.validateResults(mkRes({ generatedAt: undefined }), 'pp').ok, false);
+  assert.equal(SH.validateResults(null, 'pp').ok, false);
+  assert.equal(SH.validateResults('text', 'pp').ok, false);
+  const noArrays = { schema: 'pp-shopping-results/v1', generatedAt: 'x', propertyId: 'pp' };
+  assert.equal(SH.validateResults(noArrays, 'pp').ok, true);
+  assert.match(SH.validateResults(mkRes({ propertyId: 'other' }), 'pp').error, /property/i);
+  ok('results validation: v1 (and additive v1.x) accepted; /v2, the export schema, another property, malformed arrays or a missing generatedAt rejected');
+
+  // ── mergeResults ──
+  let cn = 0, sn = 0;
+  const ids = { candidate: () => `c-gen-${++cn}`, item: () => `sh-gen-${++sn}` };
+  const keep = { ...SH.emptyCandidate(), id: 'c-keep', vendor: 'Amazon', sku: 'OLD', unitPrice: 30, inStock: true };
+  const toaster = { ...SH.emptyShoppingItem(), id: 'sh-1', name: 'Toaster', category: 'Small Appliances', candidates: [keep], selectedCandidateId: 'c-keep', approvedBy: 'JM', approvedAt: '2026-11-19T00:00:00Z', claimedBy: 'KM', qtyOverride: 3, status: 'approved', notes: 'Kerry likes chrome' };
+  const cA = { vendor: 'Amazon', vendorType: 'amazon', sku: 'B0TEST', url: 'https://a.example/x', unitPrice: 25, qtyToBuy: 2, shipping: 0, inStock: true, checkedAt: '2026-11-20T08:00:00Z', tier: 'best-value', futureField: { z: 1 } };
+  const cB = { vendor: 'Minoan', vendorType: 'minoan', sku: 'M-1', unitPrice: 20, qtyToBuy: 2, checkedAt: '2026-11-20T08:00:00Z' };
+  const sneaky = { itemId: 'sh-1', addCandidates: [cA, cB], agentFlag: { action: 'buy-now', reason: '90-day low' }, suggestedQty: 4, notes: 'Good price',
+    status: 'ordered', approvedBy: 'KM', approvedAt: 'x', claimedBy: 'JM', selectedCandidateId: 'zzz', qtyOverride: 99, qtyNeeded: 5, name: 'HACKED', purchaseIds: ['p9'], qualityTier: 'Premium', delete: true };
+  const results1 = deepFreeze(mkRes({ updates: [sneaky] }));
+  const r1 = SH.mergeResults(deepFreeze([toaster]), results1, D, ids);
+  assert.equal(r1.touched.length, 1);
+  const t1 = r1.touched[0];
+  assert.equal(t1.candidates.length, 3);
+  assert.deepEqual(t1.candidates.map(c => c.vendor), ['Amazon', 'Amazon', 'Minoan']);
+  assert.ok(t1.candidates.slice(1).every(c => /^c-gen-/.test(c.id) && c.source === 'agent'));
+  assert.deepEqual(t1.candidates[1].futureField, { z: 1 });
+  assert.equal(t1.status, 'approved'); assert.equal(t1.approvedBy, 'JM'); assert.equal(t1.approvedAt, '2026-11-19T00:00:00Z');
+  assert.equal(t1.claimedBy, 'KM'); assert.equal(t1.selectedCandidateId, 'c-keep'); assert.equal(t1.qtyOverride, 3);
+  assert.equal(t1.name, 'Toaster'); assert.deepEqual(t1.purchaseIds, []);
+  assert.deepEqual(t1.agentFlag, { action: 'buy-now', reason: '90-day low', flaggedAt: '2026-11-20T09:00:00Z' });
+  assert.equal(t1.suggestedQty, 4); assert.equal(t1.qtyNeeded, toaster.qtyNeeded);
+  assert.equal(t1.qualityTier, 'Premium');
+  assert.equal(t1.delete, undefined);
+  assert.ok(t1.notes.startsWith('Kerry likes chrome') && t1.notes.endsWith('[agent 2026-11-20] Good price'));
+  assert.equal(r1.changes.length, 1);
+  assert.deepEqual([r1.changes[0].kind, r1.changes[0].itemId, r1.changes[0].addedCandidates, r1.changes[0].updatedCandidates, r1.changes[0].noteAdded], ['update', 'sh-1', 2, 0, true]);
+  ok('import adds candidates, flag, suggested qty and an agent note — and ignores status, approval, claim, selection, quantities, name, purchase links and "delete" even when the file includes them; additive unknown fields survive');
+
+  const after1 = [t1];
+  const again = SH.mergeResults(after1, results1, D, ids);
+  assert.deepEqual(again.touched, []); assert.deepEqual(again.changes, []);
+  ok('importing the same file twice changes nothing');
+
+  const repriced = mkRes({ generatedAt: '2026-11-21T09:00:00Z', updates: [{ itemId: 'sh-1', addCandidates: [{ ...cA, url: 'https://a.example/other', unitPrice: 22, checkedAt: '2026-11-21T08:00:00Z', rating: null, inStock: null, brand: 'NewBrand' }] }] });
+  const r2 = SH.mergeResults(after1, repriced, D, ids);
+  assert.equal(r2.touched.length, 1);
+  const c2 = r2.touched[0].candidates.find(c => c.sku === 'B0TEST');
+  assert.equal(c2.unitPrice, 22); assert.equal(c2.checkedAt, '2026-11-21T08:00:00Z');
+  assert.equal(c2.inStock, true); assert.equal(c2.url, 'https://a.example/x'); assert.equal(c2.brand, '');
+  assert.equal(r2.touched[0].candidates.length, 3);
+  assert.equal(r2.changes[0].updatedCandidates, 1); assert.equal(r2.changes[0].addedCandidates, 0);
+  ok('a duplicate candidate (vendor + sku) updates price/stock fields and checkedAt, keeps its id/url/plan fields, and a null from the agent never wipes a known value');
+
+  const noSku = { vendor: 'Wayfair', url: 'https://w.example/1', unitPrice: 50 };
+  const s1 = SH.mergeResults([toaster], mkRes({ updates: [{ itemId: 'sh-1', addCandidates: [noSku] }] }), D, ids).touched[0];
+  assert.equal(s1.candidates.length, 2);
+  assert.equal(SH.mergeResults([s1], mkRes({ updates: [{ itemId: 'sh-1', addCandidates: [noSku] }] }), D, ids).touched.length, 0);
+  const s2 = SH.mergeResults([s1], mkRes({ updates: [{ itemId: 'sh-1', addCandidates: [{ ...noSku, unitPrice: 45 }] }] }), D, ids).touched[0];
+  assert.equal(s2.candidates.length, 2); assert.equal(s2.candidates[1].unitPrice, 45);
+  ok('candidates without a SKU dedupe on vendor + URL');
+
+  const newItem = { name: 'Cheese board', category: 'Serveware & Entertaining', room: 'Kitchen', qtyRule: { basis: 'fixed', fixedQty: 2 }, priority: 'nice-to-have', candidates: [cB],
+    agentFlag: { action: 'needs-review', reason: 'idea' }, notes: 'hosting idea', status: 'approved', approvedBy: 'JM', claimedBy: 'KM', selectedCandidateId: 'zz', qtyOverride: 5, purchaseIds: ['p1'], mystery: 'kept' };
+  const resNew = deepFreeze(mkRes({ newItems: [newItem, { name: 'Odd gadget', category: 'Not A Category' }, { category: 'Other' }] }));
+  const rn = SH.mergeResults([toaster], resNew, D, ids);
+  assert.equal(rn.touched.length, 2);
+  const n1 = rn.touched[0];
+  assert.match(n1.id, /^sh-gen-/); assert.equal(n1.proposed, true); assert.equal(n1.status, 'researching'); assert.equal(n1.userCreated, true);
+  assert.equal(n1.approvedBy, null); assert.equal(n1.claimedBy, null); assert.equal(n1.selectedCandidateId, null); assert.equal(n1.qtyOverride, null); assert.deepEqual(n1.purchaseIds, []);
+  assert.equal(n1.name, 'Cheese board'); assert.equal(n1.priority, 'nice-to-have'); assert.equal(n1.mystery, 'kept');
+  assert.equal(n1.candidates.length, 1); assert.equal(n1.candidates[0].source, 'agent');
+  assert.equal(n1.agentFlag.action, 'needs-review');
+  assert.equal(rn.touched[1].category, 'Other');
+  assert.equal(rn.skipped.length, 1);
+  assert.equal(rn.changes.filter(c => c.kind === 'new').length, 2);
+  const rnAgain = SH.mergeResults([toaster, ...rn.touched], resNew, D, ids);
+  assert.deepEqual(rnAgain.touched, []);
+  ok('new items land proposed/researching with no approval, claim, selection or override; invalid category → Other; nameless rows are skipped; re-importing adds no duplicates');
+
+  const unknown = SH.mergeResults([toaster], mkRes({ updates: [{ itemId: 'sh-nope', addCandidates: [cA] }] }), D, ids);
+  assert.deepEqual(unknown.touched, []); assert.equal(unknown.skipped.length, 1);
+  assert.doesNotThrow(() => SH.mergeResults([toaster, null, {}], mkRes({ updates: [null, {}, { itemId: 'sh-1' }], newItems: [null] }), D, ids));
+  ok('an update for an unknown item is reported as skipped; junk rows never throw');
+
+  // ── Print for Kerry ──
+  const mkSel = (id, name, category, status, vendor, price, extra = {}) => ({ ...SH.emptyShoppingItem(), id, name, category, status, selectedCandidateId: `c-${id}`, approvedBy: status === 'approved' ? 'JM' : null,
+    candidates: [{ ...SH.emptyCandidate(), id: `c-${id}`, vendor, vendorType: 'other', unitPrice: price, qtyToBuy: 1, estTax: 0, shipping: 0, returnByDate: '2027-01-31' }], ...extra });
+  const printItems = [
+    mkSel('a', '<script>alert(1)</script> & Co', 'Small Appliances', 'approved', 'Ama&zon', 100, { notes: 'say "hi" <b>bold</b>' }),
+    mkSel('b', 'Toaster', 'Small Appliances', 'shortlisted', 'Costco', 50),   // (a vendor named Minoan would pick up its 3.2% default fee)
+    mkSel('c', 'Researching thing', 'Dinnerware', 'researching', 'X', 1),
+    mkSel('d', 'Ordered thing', 'Dinnerware', 'ordered', 'X', 1),
+    { ...SH.emptyShoppingItem(), id: 'e', name: 'No pick', category: 'Flatware', status: 'shortlisted', qtyRule: { basis: 'guests', multiplier: 3, fixedQty: 0 } },
+  ];
+  const html = SH.buildPrintHtml(printItems, D, '2026-11-25T12:00:00Z');
+  assert.ok(html.startsWith('<!doctype html>'));
+  assert.ok(!html.includes('<script') && !html.includes('<b>bold</b>'));
+  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt; &amp; Co'));
+  assert.ok(html.includes('Ama&amp;zon') && html.includes('say &quot;hi&quot; &lt;b&gt;bold&lt;/b&gt;'));
+  assert.ok(html.includes('Toaster') && html.includes('No pick'));
+  assert.ok(!html.includes('Researching thing') && !html.includes('Ordered thing'));
+  assert.ok(html.indexOf('Small Appliances') < html.indexOf('Flatware'));
+  assert.ok(html.includes('$100.00') && html.includes('$50.00') && html.includes('2027-01-31'));
+  assert.ok(html.includes('72'));
+  assert.ok(html.includes('2026-11-25'));
+  for (const bad of ['<link', '<style', '@import', 'src=', 'href=', 'http://', 'https://']) assert.ok(!html.includes(bad), `print html must not contain ${bad}`);
+  assert.ok(html.includes('—'));
+  ok('Print for Kerry lists only approved + shortlisted items grouped by category with qty, chosen vendor, landed total and return-by; every value is escaped; no scripts, styles or external references');
+}
+
+console.log('Phase 2 review fixes — agent value robustness, Best Value, packs, master ids:');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const mkRes = (extra) => ({ schema: 'pp-shopping-results/v1', generatedAt: '2026-11-21T09:00:00Z', propertyId: 'pp', updates: [], newItems: [], ...extra });
+  let n = 0;
+  const ids = { candidate: () => `c-r-${++n}`, item: () => `sh-r-${++n}` };
+  const existing = { ...SH.emptyCandidate(), id: 'c-1', vendor: 'Amazon', vendorType: 'amazon', sku: 'B0X', unitPrice: 50, qtyToBuy: 1, inStock: true, freeReturns: true, returnByDate: '2026-12-30', rating: 4.6, checkedAt: '2026-11-20T08:00:00Z' };
+  const item = { ...SH.emptyShoppingItem(), id: 'sh-1', name: 'Kettle', category: 'Small Appliances', candidates: [existing], selectedCandidateId: 'c-1', requirements: 'Original requirement', kerryDecides: false, masterId: 'MS-0102' };
+  const upd = (cands, extra = {}) => mkRes({ updates: [{ itemId: 'sh-1', addCandidates: cands, ...extra }] });
+  const run = (items, res) => SH.mergeResults(items, res, D, ids);
+
+  // placeholders never wipe known values (the agent is told to write "n/a"/"unverified" instead of blanks)
+  const placeholder = run([item], upd([{ vendor: 'Amazon', sku: 'B0X', unitPrice: 'n/a', inStock: 'unverified', returnByDate: 'n/a', freeReturns: 'unknown', rating: 'unverified', retailUnitPrice: '—', checkedAt: '2026-11-21T08:00:00Z' }]));
+  const c = placeholder.touched[0].candidates[0];
+  assert.equal(c.unitPrice, 50); assert.equal(c.inStock, true); assert.equal(c.returnByDate, '2026-12-30');
+  assert.equal(c.freeReturns, true); assert.equal(c.rating, 4.6); assert.equal(c.checkedAt, '2026-11-21T08:00:00Z');
+  ok('placeholder values ("n/a", "unverified", "unknown", "—") never overwrite known prices, stock, dates or flags on a re-check');
+
+  // strict booleans and ISO-only dates
+  const typed = run([item], upd([{ vendor: 'Target', sku: 'T1', unitPrice: 10, inStock: 'false', freeReturns: 'no', openStock: 'N', commercialGrade: 'maybe', returnByDate: 'next week', deliveryEta: '2026-12-01' },
+    { vendor: 'Target', sku: 'T2', unitPrice: 11, inStock: 'Yes', freeReturns: 'true', openStock: 1 }])).touched[0].candidates;
+  const t1 = typed.find(x => x.sku === 'T1'), t2 = typed.find(x => x.sku === 'T2');
+  assert.equal(t1.inStock, false); assert.equal(t1.freeReturns, false); assert.equal(t1.openStock, false); assert.equal(t1.commercialGrade, null);
+  assert.equal(t1.returnByDate, ''); assert.equal(t1.deliveryEta, '2026-12-01');
+  assert.equal(t2.inStock, true); assert.equal(t2.freeReturns, true); assert.equal(t2.openStock, true);
+  assert.equal(SH.landedTotal({ ...t1, qtyToBuy: 1 }, D) > 0, true);
+  assert.equal(SH.returnExposure({ ...t1, returnShippingCost: 12 }), 12);
+  ok('"false"/"no"/"N" are false (not truthy), "maybe" is unknown, free-text is not stored as a date');
+
+  // Good / Better / Best with no sku/url stay separate; identical re-import adds nothing
+  const gbb = [{ vendor: 'Amazon', sku: 'n/a', unitPrice: 40, brand: '', model: '' }, { vendor: 'Amazon', sku: 'n/a', unitPrice: 60 }, { vendor: 'Amazon', sku: 'n/a', unitPrice: 90 }];
+  const g1 = run([item], upd(gbb)).touched[0];
+  assert.equal(g1.candidates.length, 4);
+  assert.deepEqual(g1.candidates.slice(1).map(x => x.unitPrice), [40, 60, 90]);
+  assert.deepEqual(run([g1], upd(gbb)).touched, []);
+  ok('options from one vendor with placeholder/blank identifiers stay separate candidates, and re-importing them is still a no-op');
+
+  // agent-supplied source is ignored; null never clears; flag labels are normalized; unknown flag is ignored
+  const withSrc = run([item], upd([{ vendor: 'Wayfair', sku: 'W1', unitPrice: 5, source: 'JM' }, { vendor: 'Wayfair', sku: 'W2', unitPrice: 6, source: 'KM' }])).touched[0];
+  assert.ok(withSrc.candidates.slice(1).every(x => x.source === 'agent'));
+  const flagged = { ...item, suggestedQty: 4, agentFlag: { action: 'buy-now', reason: 'low', flaggedAt: '2026-11-01T00:00:00Z' } };
+  assert.equal(run([flagged], upd([], { suggestedQty: null, agentFlag: { action: 'banana', reason: 'x' } })).touched.length, 0);
+  for (const [label, action] of [['BUY NOW', 'buy-now'], ['Wait', 'wait-for-sale'], ['wait for sale', 'wait-for-sale'], ['REVIEW', 'needs-review'], ['needs_review', 'needs-review']]) {
+    assert.equal(run([item], upd([], { agentFlag: { action: label, reason: 'r' } })).touched[0].agentFlag.action, action, label);
+  }
+  ok('imported candidates are always labelled "agent"; a null suggested qty or an unrecognized flag never clears what is there; BUY NOW / WAIT / REVIEW map to the app flags');
+
+  // human master-list fields and delete-like keys are protected; blanks can still be filled in
+  const protect = run([item], upd([], { requirements: 'HACK', kerryDecides: true, masterId: 'EVIL', isDeleted: true, deleted: true, removeMe: true, masterNote: 'x' }));
+  assert.deepEqual(protect.touched, []);
+  const fill = run([{ ...item, requirements: undefined }], upd([], { requirements: 'Agent filled', qualityTier: 'Premium' })).touched[0];
+  assert.equal(fill.requirements, 'Agent filled'); assert.equal(fill.qualityTier, 'Premium');
+  ok('an update can fill a missing master-list field but never overwrite one, never touch master ids, and delete/remove-style keys are ignored');
+
+  // master ids resolve
+  const byMaster = run([item], mkRes({ updates: [{ itemId: 'MS-0102', addCandidates: [{ vendor: 'Costco', sku: 'C1', unitPrice: 20 }] }] }));
+  assert.equal(byMaster.touched.length, 1); assert.equal(byMaster.touched[0].id, 'sh-1'); assert.deepEqual(byMaster.skipped, []);
+  ok('results keyed by the master-list Item ID resolve to the right shopping item');
+
+  // Best Value ignores unpriced / zero-quantity candidates
+  const priced = { ...SH.emptyCandidate(), id: 'P', vendor: 'Amazon', vendorType: 'amazon', unitPrice: 49.99, qtyToBuy: 2, inStock: true };
+  const unpriced = { ...SH.emptyCandidate(), id: 'U', vendor: 'Target', vendorType: 'retail', unitPrice: null, qtyToBuy: 2, shipping: 0, inStock: true };
+  const zeroQty = { ...priced, id: 'Z', unitPrice: 1, qtyToBuy: 0 };
+  assert.equal(SH.bestValue({ candidates: [unpriced, priced] }, D).id, 'P');
+  assert.equal(SH.bestValue({ candidates: [zeroQty, priced] }, D).id, 'P');
+  assert.equal(SH.bestValue({ candidates: [unpriced, zeroQty] }, D), null);
+  ok('Best Value never recommends a candidate with no price or zero quantity');
+
+  // packs: the purchase records pieces so mealsCovered counts forks, not packs
+  const forksItem = { ...SH.emptyShoppingItem(), id: 'sh-forks', name: 'Dinner forks', category: 'Flatware', dishType: 'Dinner forks', usesPerGuestPerDay: 3, qtyRule: { basis: 'guests', multiplier: 3, fixedQty: 0 } };
+  const packCand = { ...SH.emptyCandidate(), id: 'c-p', vendor: 'Costco', vendorType: 'retail', unitPrice: 36, packSize: 12, qtyToBuy: 6, estTax: 0, shipping: 0 };
+  const draft = SH.buildPurchaseFromShopping(forksItem, packCand, D);
+  assert.equal(draft.qty, 72); assert.equal(draft.unitPrice, 3);
+  assert.equal(Math.round(draft.qty * draft.unitPrice * 100) / 100, SH.merchandise(packCand));
+  const boughtForks = { ...forksItem, status: 'ordered', purchaseIds: [draft.id] };
+  const forks = SH.mealsCovered([boughtForks], D, [draft]).find(r => r.dishType === 'Dinner forks');
+  assert.equal(forks.total, 72); assert.equal(forks.level, 'full-day');
+  assert.equal(SH.buildPurchaseFromShopping(forksItem, { ...packCand, packSize: 1, qtyToBuy: 2, unitPrice: 5 }, D).qty, 2);
+  ok('buying 6 packs of 12 records 72 pieces at $3 each (quantity × price still equals the goods total), so the meals-covered badge counts forks, not packs');
+}
+
+console.log('Phase 2 — remaining limits resolved (dismissed proposals, price-since-approval):');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const mkRes = (extra) => ({ schema: 'pp-shopping-results/v1', generatedAt: '2026-11-21T09:00:00Z', propertyId: 'pp', updates: [], newItems: [], ...extra });
+  let n = 0;
+  const ids = { candidate: () => `c-d-${++n}`, item: () => `sh-d-${++n}` };
+  const proposal = { name: 'Cheese board', category: 'Serveware & Entertaining', candidates: [{ vendor: 'Minoan', sku: 'M1', unitPrice: 20 }], notes: 'idea' };
+  const first = SH.mergeResults([], mkRes({ newItems: [proposal] }), D, ids).touched[0];
+  assert.equal(first.proposed, true);
+  // Dismiss = keep the record hidden (not deleted), so a re-import can't resurrect it.
+  const dismissed = { ...first, dismissed: true, proposed: false };
+  const again = SH.mergeResults([dismissed], mkRes({ newItems: [proposal] }), D, ids);
+  assert.deepEqual(again.touched, []);
+  assert.equal(again.touched.length + [dismissed].length, 1);
+  const withNewOption = SH.mergeResults([dismissed], mkRes({ newItems: [{ ...proposal, candidates: [...proposal.candidates, { vendor: 'Amazon', sku: 'A1', unitPrice: 18 }] }] }), D, ids);
+  assert.equal(withNewOption.touched.length, 1); assert.equal(withNewOption.touched[0].id, dismissed.id); assert.equal(withNewOption.touched[0].dismissed, true);
+  assert.equal(withNewOption.changes.filter(c => c.kind === 'new').length, 0);
+  // an agent can never un-dismiss (or dismiss) anything
+  const flip = SH.mergeResults([dismissed], mkRes({ updates: [{ itemId: dismissed.id, dismissed: false, proposed: true }] }), D, ids);
+  assert.deepEqual(flip.touched, []);
+  const flipNew = SH.mergeResults([], mkRes({ newItems: [{ ...proposal, dismissed: true }] }), D, ids).touched[0];
+  assert.equal(flipNew.dismissed, undefined);
+  ok('a dismissed proposal stays hidden when the same file is imported again (no duplicate, nothing resurrected), and an import can never dismiss or restore items');
+
+  // price changed since approval
+  const cand = { ...SH.emptyCandidate(), id: 'c1', vendor: 'Amazon', vendorType: 'amazon', unitPrice: 100, qtyToBuy: 1, estTax: 0, shipping: 0 };
+  const approved = { ...SH.emptyShoppingItem(), id: 'sh-a', name: 'x', candidates: [cand], selectedCandidateId: 'c1', approvedBy: 'JM', approvedLanded: 100 };
+  assert.equal(SH.priceChangedSinceApproval(approved, D), null);
+  const repriced = { ...approved, candidates: [{ ...cand, unitPrice: 112.5 }] };
+  assert.deepEqual(SH.priceChangedSinceApproval(repriced, D), { from: 100, to: 112.5 });
+  assert.equal(SH.priceChangedSinceApproval({ ...repriced, approvedBy: null }, D), null);
+  assert.equal(SH.priceChangedSinceApproval({ ...repriced, approvedLanded: null }, D), null);
+  assert.equal(SH.priceChangedSinceApproval({ ...repriced, selectedCandidateId: null }, D), null);
+  assert.equal(SH.priceChangedSinceApproval({ ...approved, candidates: [{ ...cand, unitPrice: 100.004 }] }, D), null);
+  assert.equal(SH.priceChangedSinceApproval({}, D), null);
+  assert.equal(SH.priceChangedSinceApproval(null, D), null);
+  const saved = SH.sanitizeShoppingItem({ ...approved, approvedLanded: '104.5', name: 'x', category: 'Other' }, { updatedAt: null, updatedBy: null });
+  assert.equal(saved.item.approvedLanded, 104.5);
+  assert.equal(SH.emptyShoppingItem().approvedLanded, null);
+  // an agent import cannot set the recorded approval price
+  const forged = SH.mergeResults([approved], mkRes({ updates: [{ itemId: 'sh-a', approvedLanded: 1 }] }), D, ids);
+  assert.deepEqual(forged.touched, []);
+  ok('an approved item flags when its selected candidate\'s landed price later changes (e.g. an agent re-check); no flag for sub-cent noise, unapproved items or missing data; the approval price can\'t be forged by an import');
 }
 
 console.log(`\nAll ${passed} checks passed.`);
