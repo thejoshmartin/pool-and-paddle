@@ -126,7 +126,7 @@ export function purchaseDefaults() {
     reimbursable: false, reimbursedBy: "", reimbursementStatus: "none",
     reimbursedAmount: null, reimbursedDate: "", drawNo: "",
     // Marketplace / payment proof
-    sourceVendor: "", fees: null, docType: "", paymentConfirmed: false, lienWaiverReceived: false,
+    sourceVendor: "", fees: null, discount: null, docType: "", paymentConfirmed: false, lienWaiverReceived: false,
     // Shopping tab link (the shopping item this purchase was promoted from)
     shoppingItemId: null,
   };
@@ -349,4 +349,15 @@ export function formDefaultsTouched(d, fresh) {
     allowance: !!d.allowanceCategory && d.allowanceCategory !== NOT_IN_ALLOWANCE,
     reimb: !!d.reimbursable || (d.reimbursementStatus || "none") !== "none" || !!d.drawNo,
   };
+}
+
+// What qty × unit price + tax + shipping + fees − discount comes to (dollars, cent-rounded) — the form's "total paid" hint.
+export function purchaseComputedTotal(d) {
+  const n = (v) => Number(v) || 0;
+  return Math.round((n(d.qty) * n(d.unitPrice) + n(d.tax) + n(d.shipping) + n(d.fees) - n(d.discount)) * 100) / 100;
+}
+// Offer "use $X" only when the total really differs — not for a one-cent rounding gap (e.g. 22 × $442.3636).
+export function totalSuggestionNeeded(d) {
+  const c = purchaseComputedTotal(d);
+  return c > 0 && Math.abs((Number(d.totalPaid) || 0) - c) > 0.011;
 }

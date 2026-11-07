@@ -19,13 +19,18 @@ export function scopedKey(base, property) {
   return `${base}:${property}`;
 }
 
-// Receipt blob pathnames are `receipts/<propertyId>/<purchaseId>/<file>`. Parse + validate
-// (rejects traversal, wrong prefix, and extra path levels). Returns { propertyId, purchaseId }
-// or null. Callers must ALSO confirm the pathname is referenced by a real purchase before
-// serving — this only validates shape.
+// Receipt blob pathnames are `receipts/<propertyId>/<purchaseId>/<file>` (purchases) or
+// `receipts/<propertyId>/inbox/<inboxId>/<file>` (Receipt Inbox uploads). Parse + validate (rejects
+// traversal, wrong prefix, and extra path levels). Returns { propertyId, purchaseId } or
+// { propertyId, inboxId } or null. Callers must ALSO confirm the pathname is referenced by a real
+// purchase or inbox record before serving — this only validates shape.
 export function parseReceiptPathname(pathname) {
   if (typeof pathname !== 'string') return null;
-  const m = pathname.match(/^receipts\/([a-z0-9-]+)\/([a-z0-9-]+)\/[^/]+$/);
+  // Receipt Inbox uploads: receipts/<propertyId>/inbox/<inboxId>/<file>
+  const inbox = pathname.match(/^receipts\/([a-z0-9-]+)\/inbox\/(ri-[a-z0-9-]+)\/[^/]+$/);
+  if (inbox) return { propertyId: inbox[1], inboxId: inbox[2] };
+  // Purchase receipts: receipts/<propertyId>/<purchaseId>/<file> ("inbox" is a reserved segment, never a purchase id)
+  const m = pathname.match(/^receipts\/([a-z0-9-]+)\/(?!inbox\/)([a-z0-9-]+)\/[^/]+$/);
   if (!m) return null;
   return { propertyId: m[1], purchaseId: m[2] };
 }
@@ -141,4 +146,16 @@ export function isReceiptReferenced(purchases, pathname, excludePurchaseId) {
   return purchases.some((p) =>
     p && p.id !== excludePurchaseId && Array.isArray(p.receipts) &&
     p.receipts.some((r) => r && r.pathname === pathname));
+}
+
+// True if any inbox record other than `excludeInboxId` points at this receipt pathname.
+export function isInboxReceiptReferenced(records, pathname, excludeInboxId) {
+  return (records || []).some((r) => r && r.id !== excludeInboxId && r.receipt && r.receipt.pathname === pathname);
+}
+
+// A receipt blob may be shared by several purchases AND by its inbox record (filing never copies the blob). It may only be
+// deleted — or declared unviewable — when no purchase and no inbox record (other than the ones being removed) references it.
+export function blobIsReferenced({ purchases, inbox, pathname, excludePurchaseId, excludeInboxId }) {
+  return isReceiptReferenced(purchases || [], pathname, excludePurchaseId)
+    || isInboxReceiptReferenced(inbox || [], pathname, excludeInboxId);
 }

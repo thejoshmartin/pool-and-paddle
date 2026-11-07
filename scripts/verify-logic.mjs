@@ -16,7 +16,10 @@ import {
   localISODate, daysBetween, returnsClosingSoon, newOrderGroupId, groupByOrder, statusChangePatch, formDefaultsTouched,
 } from '../src/lib/purchases-logic.js';
 import * as SH from '../src/lib/shopping-logic.js';
-import { scopedKey, parseReceiptPathname, migrateFinishesToHash, purchasesFromHash, isReceiptReferenced } from '../api/_scope.js';
+import * as RL from '../src/lib/receipt-logic.js';
+import { extractReceipt, buildExtractionPrompt } from '../api/_extract.js';
+import { processInboxRecord } from '../api/_extract-record.js';
+import { scopedKey, parseReceiptPathname, migrateFinishesToHash, purchasesFromHash, isReceiptReferenced, isInboxReceiptReferenced, blobIsReferenced } from '../api/_scope.js';
 import {
   matchesFinishSearch, buildRoomCopies, mergeFinishes, migrateRoom,
   finishItemField, furnitureField, roomField, tombstone,
@@ -1481,6 +1484,660 @@ console.log('Phase 2 — remaining limits resolved (dismissed proposals, price-s
   const forged = SH.mergeResults([approved], mkRes({ updates: [{ itemId: 'sh-a', approvedLanded: 1 }] }), D, ids);
   assert.deepEqual(forged.touched, []);
   ok('an approved item flags when its selected candidate\'s landed price later changes (e.g. an agent re-check); no flag for sub-cent noise, unapproved items or missing data; the approval price can\'t be forged by an import');
+}
+
+console.log('Phase 3 — extraction validation, reconcile, exact cost allocation (spec §3.7 fixtures):');
+{
+  const fx = (n) => JSON.parse(fs.readFileSync(new URL(`./fixtures/receipts/${n}.json`, import.meta.url), 'utf8'));
+  const cents = (n) => Math.round(n * 100);
+  const sum = (xs) => Math.round(xs.reduce((a, b) => a + cents(b), 0)) / 100;
+  const A = fx('minoan-F3F3D4B0'), B = fx('minoan-F088F252'), C = fx('firstcoast-687');
+  const vA = RL.validateExtraction(A), vB = RL.validateExtraction(B), vC = RL.validateExtraction(C);
+  assert.equal(vA.ok, true); assert.equal(vB.ok, true); assert.equal(vC.ok, true);
+  assert.equal(vA.extraction.reconciles, true); assert.equal(vB.extraction.reconciles, true);
+  assert.equal(RL.reconciles(vA.extraction), true);
+  assert.equal(PURCHASE_TRADES.includes(vA.extraction.lines[0].suggestedTrade), true);
+  assert.ok(vA.extraction.lines[0].confidence < 0.9);
+  ok('real Minoan fixtures A and B validate and reconcile; the ambiguous line-1 trade is a valid trade flagged below 0.9 confidence');
+
+  assert.equal(vC.extraction.reconciles, false);
+  assert.deepEqual(vC.extraction.issues.slice(0, 4), C.issues);
+  assert.ok(vC.extraction.lines.every(l => l.confidence <= 0.7));
+  assert.equal(vC.extraction.total, null);
+  assert.equal(vC.extraction.lines[11].lineTotal, null);
+  const closetsSum = sum(vC.extraction.lines.filter(l => l.suggestedTrade === 'Closets & Shelving').map(l => l.lineTotal));
+  assert.equal(closetsSum, 9255);
+  ok('fixture C stays ambiguous (total null, line 12 price null, issues kept verbatim, handwritten caps confidence at 0.7, closets sum $9,255.00) — nothing is guessed');
+
+  for (const [fixture, v] of [[A, vA], [B, vB]]) {
+    const lines = v.extraction.lines;
+    const alloc = RL.allocateOrderCosts(lines, { tax: fixture.tax, shipping: fixture.shipping, fees: fixture.fees, discounts: fixture.discounts });
+    assert.deepEqual(alloc.map(a => a.fees), fixture._expected.fees);
+    assert.deepEqual(alloc.map(a => a.tax), fixture._expected.tax);
+    assert.deepEqual(alloc.map(a => a.totalPaid), fixture._expected.totalPaid);
+    assert.equal(sum(alloc.map(a => a.fees)), fixture.fees);
+    assert.equal(sum(alloc.map(a => a.tax)), fixture.tax);
+    assert.equal(sum(alloc.map(a => a.totalPaid)), fixture.total);
+  }
+  ok('allocation reproduces the spec tables to the cent for both Minoan orders (fees, tax and total paid per line; every column and the grand total sum exactly to the receipt)');
+
+  const L = (...totals) => totals.map((t, i) => ({ lineNo: i + 1, lineTotal: t }));
+  const odd = RL.allocateOrderCosts(L(10, 10, 10), { tax: 0.01, shipping: 0, fees: 0, discounts: 0 });
+  assert.deepEqual(odd.map(a => a.tax), [0.01, 0, 0]);
+  assert.deepEqual(RL.allocateOrderCosts(L(25), { tax: 1.99, shipping: 3.5, fees: 0.75, discounts: 0 })[0], { tax: 1.99, shipping: 3.5, fees: 0.75, discounts: 0, totalPaid: 31.24 });   // 25 + 1.99 + 3.50 + 0.75
+  assert.ok(RL.allocateOrderCosts(L(10, 20), { tax: 0, shipping: 0, fees: 0, discounts: 0 }).every(a => a.tax === 0 && a.shipping === 0 && a.fees === 0));
+  const withNull = RL.allocateOrderCosts(L(100, null, 100), { tax: 7, shipping: 0, fees: 0, discounts: 0 });
+  assert.deepEqual(withNull.map(a => a.tax), [3.5, 0, 3.5]); assert.equal(withNull[1].totalPaid, null);
+  const disc = RL.allocateOrderCosts(L(100, 100, 100), { tax: 0, shipping: 0, fees: 0, discounts: 5 });
+  assert.equal(sum(disc.map(a => a.discounts)), 5); assert.equal(sum(disc.map(a => a.totalPaid)), 295);
+  assert.deepEqual(RL.allocateOrderCosts([], { tax: 1, shipping: 1, fees: 1, discounts: 1 }), []);
+  assert.equal(RL.allocateOrderCosts(L(0, 0), { tax: 2, shipping: 0, fees: 0, discounts: 0 })[0].tax, 2);
+  const messy = RL.allocateOrderCosts(L(33.33, 33.33, 33.34, 0.01, 12.37), { tax: 7.77, shipping: 11.11, fees: 3.03, discounts: 1.01 });
+  assert.equal(sum(messy.map(a => a.tax)), 7.77); assert.equal(sum(messy.map(a => a.shipping)), 11.11);
+  assert.equal(sum(messy.map(a => a.fees)), 3.03); assert.equal(sum(messy.map(a => a.discounts)), 1.01);
+  assert.equal(sum(messy.map(a => a.totalPaid)), Math.round((112.38 + 7.77 + 11.11 + 3.03 - 1.01) * 100) / 100);
+  ok('cent edge cases: odd-cent remainder lands on the largest line, a single line takes everything, zero amounts allocate zeros, null-total lines are skipped, discounts subtract, all-zero lines take the amount on the first, and messy amounts still sum exactly');
+
+  const ex = (o) => ({ lines: [{ lineTotal: 100 }, { lineTotal: 50 }], tax: 10, shipping: 5, fees: 2, discounts: 0, total: 167, ...o });
+  assert.equal(RL.reconciles(ex()), true);
+  assert.equal(RL.reconciles(ex({ total: 167.05 })), true);
+  assert.equal(RL.reconciles(ex({ total: 167.06 })), false);
+  assert.equal(RL.reconciles(ex({ total: null })), false);
+  assert.equal(RL.reconciles(ex({ lines: [{ lineTotal: 100 }, { lineTotal: null }] })), false);
+  assert.equal(RL.reconciles(ex({ tax: null, shipping: null, fees: null, total: 150 })), true);
+  assert.equal(RL.reconciles(ex({ discounts: 7, total: 160 })), true);
+  assert.equal(RL.reconciles({ lines: [], total: 0 }), false);
+  assert.equal(RL.reconciles(null), false);
+  assert.equal(RL.reconciles({ ...A, discounts: 641.23 }), false);
+  ok('reconciles: within $0.05 of the total, false for a null total / null line / no lines, order-level discounts subtract, and Minoan\'s item discount is never subtracted a second time');
+
+  // hostile model output
+  const base = () => ({ docType: 'receipt', vendor: 'Amazon', lines: [{ description: 'Thing', qty: 1, unitPrice: '$1,234.50', lineTotal: '$1,234.50', suggestedTrade: 'Kitchen & Dining', confidence: 0.9 }], total: '$1,234.50' });
+  const m = RL.validateExtraction(base());
+  assert.equal(m.ok, true); assert.equal(m.extraction.lines[0].lineTotal, 1234.5); assert.equal(m.extraction.total, 1234.5);
+  assert.equal(RL.validateExtraction({ ...base(), cardLast4: '4111 1111 1111 1111' }).extraction.cardLast4, '1111');
+  assert.equal(RL.validateExtraction({ ...base(), cardLast4: 'Visa ending 4242' }).extraction.cardLast4, '4242');
+  const card = '4111 1111 1111 1111';
+  const red = RL.validateExtraction({ ...base(), paymentMethod: `Visa ${card}`, issues: [`paid with ${card}`], customerName: `X ${card}`,
+    lines: [{ ...base().lines[0], description: `Item 4111111111111111 here` }] }).extraction;
+  assert.ok(!JSON.stringify(red).includes('4111 1111 1111 1111') && !JSON.stringify(red).includes('4111111111111111'));
+  assert.equal(RL.redactCardNumbers('order 113-1234567-1234567 ok'), 'order 113-1234567-1234567 ok');
+  assert.equal(RL.redactCardNumbers('card 5500 0055 5555 5559 end'), 'card •••• end');
+  const bad = RL.validateExtraction({ ...base(), lines: [{ ...base().lines[0], suggestedTrade: 'Spaceships', confidence: 7 }, { ...base().lines[0], confidence: -1 }, { ...base().lines[0], qty: null }] }).extraction;
+  assert.equal(bad.lines[0].suggestedTrade, 'Other'); assert.equal(bad.lines[0].confidence, 1); assert.equal(bad.lines[1].confidence, 0);
+  assert.equal(bad.lines[2].qty, 1);
+  assert.ok(bad.issues.some(i => /Line 1/.test(i) && /trade/i.test(i)) && bad.issues.some(i => /Line 3/.test(i) && /quantity/i.test(i)));
+  assert.equal(RL.validateExtraction({ ...base(), lines: undefined }).ok, false);
+  for (const junk of [null, 'text', 5, [], undefined]) assert.equal(RL.validateExtraction(junk).ok, false);
+  assert.equal(RL.validateExtraction({ ...base(), docType: 'invoice-ish' }).ok, false);
+  assert.equal(RL.validateExtraction({ ...base(), lines: [5] }).ok, false);
+  assert.ok(RL.validateExtraction({ ...base(), issues: Array.from({ length: 200 }, (_, i) => `issue ${i}`) }).extraction.issues.length <= 25);
+  const again = RL.validateExtraction(RL.validateExtraction({ ...base(), lines: [{ ...base().lines[0], suggestedTrade: 'Spaceships' }] }).extraction).extraction;
+  assert.equal(again.issues.length, 1);
+  assert.match(RL.newInboxId(), /^ri-[a-z0-9]+-[a-z0-9]{6}$/);
+  assert.notEqual(RL.newInboxId(), RL.newInboxId());
+  assert.equal(RL.EXTRACTION_MODEL, 'claude-sonnet-5-5');
+  ok('hostile model output: money strings parse, card numbers reduce to the last 4 and are redacted everywhere (order numbers are not), invalid trades/confidence/quantities are normalized with issues, structural garbage is rejected, issues are capped, and re-validating never duplicates issues');
+}
+
+console.log('Phase 3 — matching, duplicates, address check, merge, filing (fixtures through Phase 1 accounting):');
+{
+  const fx = (n) => JSON.parse(fs.readFileSync(new URL(`./fixtures/receipts/${n}.json`, import.meta.url), 'utf8'));
+  const accept = (ex) => ({ ...ex, lines: ex.lines.map(l => ({ ...l, decision: 'accept' })) });
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const receipt = (id) => ({ pathname: `receipts/pp/inbox/${id}/receipt-abc.pdf`, name: 'r.pdf', contentType: 'application/pdf', uploadedAt: '2026-11-07T00:00:00Z', hash: `hash-${id}` });
+  const rec = (id, ex) => ({ id, status: 'extracted', receipt: receipt(id), extraction: ex, error: null, purchaseIds: [] });
+  const PROP = '6401 Broward St, St. Augustine, FL 32080';
+
+  assert.equal(RL.addressMatches('6401 Broward Street, Anastasia Island FL 32080', PROP), true);
+  assert.equal(RL.addressMatches('6401 BROWARD ST.', PROP), true);
+  assert.equal(RL.addressMatches('3401 Broward', PROP), false);
+  assert.equal(RL.addressMatches('6401 Ocean Blvd', PROP), false);
+  assert.equal(RL.addressMatches('123 N Main St', '123 Main Street, Town'), true);
+  assert.equal(RL.addressMatches('', PROP), null);
+  assert.equal(RL.addressMatches(null, PROP), null);
+  assert.equal(RL.addressMatches('PO Box 12', PROP), null);
+  assert.equal(RL.addressMatches('6401 Broward St', ''), null);
+  ok('address check compares street number + street name (case/punctuation/suffix/direction tolerant); a blank or unparseable address is "unknown" (null), not a mismatch');
+
+  const items = [
+    { ...SH.emptyShoppingItem(), id: 'sh-toast', name: '4-slice toaster', candidates: [{ ...SH.emptyCandidate(), id: 'c1', sku: 'B0CPT142', brand: 'Cuisinart', model: 'CPT-142' }] },
+    { ...SH.emptyShoppingItem(), id: 'sh-kettle', name: 'Electric kettle', candidates: [] },
+    { ...SH.emptyShoppingItem(), id: 'sh-gone', name: 'Dismissed thing', dismissed: true, candidates: [] },
+  ];
+  const ml = RL.matchLines([{ sku: 'b0cpt142', description: 'whatever' }, { sku: null, description: 'Cuisinart 4-Slice Toaster CPT-142 Chrome' }, { sku: null, description: 'Bamboo cutting board' }, { sku: 'ZZZ', description: 'Dismissed thing' }], items);
+  assert.deepEqual([ml[0].matchItemId, ml[0].matchScore], ['sh-toast', 1]);
+  assert.equal(ml[1].matchItemId, 'sh-toast'); assert.ok(ml[1].matchScore >= 0.6 && ml[1].matchScore < 1);
+  assert.equal(ml[2].matchItemId, null); assert.ok(ml[2].matchScore < 0.6);
+  assert.equal(ml[3].matchItemId, null);
+  assert.deepEqual(RL.matchLines([], items), []);
+  assert.deepEqual(RL.matchLines([{ description: 'x' }], []), [{ matchItemId: null, matchScore: 0 }]);
+  ok('line matching: exact SKU first (score 1), then name similarity at ≥ 0.6, nothing for unrelated lines, dismissed items never match, empty inputs are safe');
+
+  const exA = RL.validateExtraction(fx('minoan-F3F3D4B0')).extraction;
+  const pur = [{ id: 'p-old', vendor: 'minoan', invoiceNo: 'f3f3d4b0', description: 'earlier' }, { id: 'p-self', vendor: 'Minoan', invoiceNo: 'F3F3D4B0' }, { id: 'p-other', vendor: 'Amazon', invoiceNo: 'F3F3D4B0' }];
+  const inbox = [{ id: 'ri-1', status: 'extracted', extraction: exA, receipt: { hash: 'h1' } }, { id: 'ri-2', status: 'dismissed', extraction: exA, receipt: { hash: 'h1' } }, { id: 'ri-3', status: 'extracted', extraction: { vendor: 'X', orderNo: '1' }, receipt: { hash: 'h-same' } }];
+  const dups = RL.findDuplicates(exA, { hash: 'h-same' }, pur, inbox, 'ri-self', ['p-self']);
+  assert.deepEqual(dups.map(d => `${d.kind}:${d.id}`).sort(), ['inbox:ri-1', 'inbox:ri-3', 'purchase:p-old']);
+  assert.deepEqual(RL.findDuplicates({ vendor: 'Minoan', orderNo: '' }, null, pur, inbox, 'x'), []);
+  assert.deepEqual(RL.findDuplicates(exA, { hash: 'h-same' }, [], [{ id: 'ri-3', status: 'extracted', extraction: null, receipt: { hash: 'h-same' } }], 'ri-3'), []);
+  ok('duplicates: same vendor + order # (any case) in purchases or another inbox record, or the same file hash; self, linked purchases and dismissed records are ignored; a blank order # never matches');
+
+  const exC = RL.validateExtraction(fx('firstcoast-687')).extraction;
+  const merged = RL.mergeLines(exC.lines, 11);
+  assert.equal(merged.length, 11);
+  assert.deepEqual([merged[10].qty, merged[10].lineTotal, merged[10].lineNo], [22, 9732, 11]);
+  assert.ok(merged[10].description.includes('light-filtering') && merged[10].description.includes('Room-darkening'));
+  assert.equal(exC.lines.length, 12);
+  assert.equal(RL.mergeLines(exC.lines, 0), exC.lines); assert.equal(RL.mergeLines(exC.lines, 99), exC.lines);
+  assert.equal(RL.mergeLines([{ qty: 1, lineTotal: null, description: 'a' }, { qty: 1, lineTotal: null, description: 'b' }], 1)[0].lineTotal, null);
+  ok('merging fixture C\'s two shade lines gives one 22-unit $9,732 line, renumbers the rest, and never mutates the input');
+
+  assert.equal(RL.canAcceptAll(exC), false);
+  assert.equal(RL.canAcceptAll(exA), true);
+  assert.equal(RL.canAcceptAll({ ...exA, issues: ['x'] }), false);
+  assert.equal(RL.canAcceptAll(null), false);
+  assert.deepEqual(RL.fileProblems(exA, { purchasedBy: 'Josh' }), ['Accept at least one line']);
+  const accA = accept(exA);
+  assert.deepEqual(RL.fileProblems(accA, { purchasedBy: '' }), ['Choose who paid']);
+  assert.deepEqual(RL.fileProblems(accA, { purchasedBy: 'Josh' }), []);
+  const accC = accept(exC);
+  const pc = RL.fileProblems(accC, { purchasedBy: 'Sparrow (Contractor)' });
+  assert.ok(pc.length === 1 && /Line 12/.test(pc[0]) && /line total/i.test(pc[0]));
+  ok('Accept-all is blocked by issues or null prices; filing reports each missing piece (nothing accepted, who paid, a null line total)');
+
+  const orderJ = { purchasedBy: 'Josh', paymentMethod: 'Credit Card' };
+  const buildFor = (ex, id, order, extra = {}) => RL.buildPurchasesFromInbox({ record: rec(id, ex), order, shoppingItems: [], settings: D, propertyInServiceDate: '2026-11-01', ...extra });
+  const pA = buildFor(accA, 'ri-a', orderJ), pB = buildFor(accept(RL.validateExtraction(fx('minoan-F088F252')).extraction), 'ri-b', orderJ);
+  assert.deepEqual(pA.map(p => p.totalPaid), fx('minoan-F3F3D4B0')._expected.totalPaid);
+  assert.deepEqual(pB.map(p => p.totalPaid), [216.46, 200.27, 171.94]);
+  assert.ok([...pA, ...pB].every(p => p.reimbursable && p.reimbursementStatus === 'pending' && p.vendor === 'Minoan' && p.section === '' && p.paymentConfirmed === true && p.docType === 'receipt'));
+  assert.deepEqual(pA.map(p => p.allowanceCategory), ['Plumbing Fixtures', 'Electrical Fixtures', 'Electrical Fixtures', 'Electrical Fixtures', 'Electrical Fixtures', 'Electrical Fixtures']);
+  assert.ok(pB.every(p => p.allowanceCategory === NOT_IN_ALLOWANCE));
+  assert.equal(new Set(pA.map(p => p.orderGroupId)).size, 1); assert.ok(pA[0].orderGroupId);
+  assert.deepEqual(pA.map(p => p.lineNo), [1, 2, 3, 4, 5, 6]);
+  assert.ok(pA.every(p => p.receipts.length === 1 && p.receipts[0].pathname === 'receipts/pp/inbox/ri-a/receipt-abc.pdf'));
+  assert.equal(pA[1].invoiceNo, 'F3F3D4B0'); assert.equal(pA[1].sourceVendor, 'Ferguson Home'); assert.equal(pA[1].purchaseDate, '2026-10-23'); assert.equal(pA[1].qty, 11);
+  assert.equal(pA[1].assetClass, '27.5-yr'); assert.equal(pA[1].placedInServiceDate, '2026-11-01');
+  assert.equal(RL.suggestPaymentMethod('credit card'), 'Credit Card'); assert.equal(RL.suggestPaymentMethod('Visa ending 4242'), 'Credit Card');
+  assert.equal(RL.suggestPaymentMethod('ACH transfer'), 'ACH / Bank Transfer'); assert.equal(RL.suggestPaymentMethod(null), '');
+  const both = [...pA, ...pB];
+  assert.equal(reimbursementsDue(both).total, 7685.47);
+  assert.equal(allowanceCredits(both).total, 0);
+  assert.equal(allowancePool(both).reimbursedNoCategory.total, 588.67);
+  ok('fixtures A + B filed as Josh match the spec tables line by line, are reimbursable/pending, share one order group and one receipt each, and feed Phase 1\'s accounting exactly: Due from Sparrow $7,685.47, owner credits $0, beds $588.67 in "no Exhibit B category"');
+
+  // fixture C after Josh's resolution
+  const resolved = { ...exC, lines: RL.mergeLines(exC.lines, 11), total: 18987 };
+  assert.equal(RL.reconciles(resolved), true);
+  const cPurchases = buildFor(accept(resolved), 'ri-c', { purchasedBy: 'Sparrow (Contractor)', paymentMethod: '' });
+  assert.equal(cPurchases.length, 11);
+  const closets = cPurchases.filter(p => p.trade === 'Closets & Shelving'), shades = cPurchases.filter(p => p.trade === 'Window Treatments');
+  assert.equal(closets.length, 10); assert.equal(shades.length, 1);
+  assert.equal(Math.round(closets.reduce((s, p) => s + p.totalPaid, 0) * 100) / 100, 9255);
+  assert.ok(closets.every(p => p.allowanceCategory === 'Shelving' && p.assetClass === '27.5-yr' && p.room));
+  assert.deepEqual([shades[0].qty, shades[0].totalPaid, shades[0].allowanceCategory, shades[0].assetClass], [22, 9732, CONTRACTOR_SCOPE, '5-yr']);
+  assert.ok(cPurchases.every(p => p.docType === 'statement' && p.paymentConfirmed === false && p.lienWaiverReceived === false && p.ownerPurchased === false && p.reimbursable === false && p.tax === 0 && p.shipping === 0 && p.fees === 0));
+  assert.equal(new Set(cPurchases.map(p => p.orderGroupId)).size, 1);
+  assert.ok(cPurchases.every(p => p.receipts[0].pathname === 'receipts/pp/inbox/ri-c/receipt-abc.pdf'));
+  assert.ok(cPurchases.every(p => paymentBadge(p) === 'Contractor-paid: confirm in draw'));
+  const poolC = allowancePool(cPurchases);
+  const shelving = poolC.rows.find(r => r.name === 'Shelving');
+  assert.deepEqual([shelving.paidBySparrow, shelving.remaining], [9255, 1245]);
+  assert.equal(poolC.contractorScope.total, 9732);
+  assert.equal(allowanceCredits(cPurchases).total, 0);
+  ok('fixture C after Josh\'s resolution (merge shades, enter $18,987): reconciles; 10 closets in Shelving as Paid by Sparrow ($1,245 left) + one 22-unit $9,732 shades purchase in Contractor scope; statements are unpaid-until-draw; no owner credit; one order group; one shared receipt');
+
+  // personal items on a shared Amazon order, and nothing silently filed
+  const amazonLines = Array.from({ length: 12 }, (_, i) => ({ lineNo: i + 1, description: `Item ${i + 1}`, sourceVendor: null, sku: null, qty: 1, retailUnitPrice: null, unitPrice: 10 + i, lineTotal: 10 + i, roomHint: null, suggestedTrade: 'Kitchen & Dining', suggestedCategory: 'Other', confidence: 0.9, matchItemId: null, matchScore: null, decision: i < 10 ? 'accept' : 'skip' }));
+  const exAm = { docType: 'receipt', vendor: 'Amazon', orderNo: '113-0000000-1111111', orderDate: '2026-11-03', paidDate: null, paymentMethod: 'Visa', cardLast4: '4242', customerName: null, shipTo: null, handwritten: false, lines: amazonLines, tax: 9.99, shipping: 5.01, fees: 0, discounts: 0, total: 0, issues: [], reconciles: false };
+  const total = amazonLines.reduce((s, l) => s + l.lineTotal, 0) + 9.99 + 5.01;
+  exAm.total = Math.round(total * 100) / 100;
+  const pAm = buildFor(exAm, 'ri-am', { purchasedBy: 'Kerry', paymentMethod: 'Credit Card' });
+  assert.equal(pAm.length, 10);
+  const allocAm = RL.allocateOrderCosts(amazonLines, { tax: 9.99, shipping: 5.01, fees: 0, discounts: 0 });
+  const taxAll = Math.round((pAm.reduce((s, p) => s + p.tax, 0) + allocAm.slice(10).reduce((s, a) => s + a.tax, 0)) * 100) / 100;
+  const shipAll = Math.round((pAm.reduce((s, p) => s + p.shipping, 0) + allocAm.slice(10).reduce((s, a) => s + a.shipping, 0)) * 100) / 100;
+  assert.equal(taxAll, 9.99); assert.equal(shipAll, 5.01);
+  assert.ok(pAm.every(p => p.purchasedBy === 'Kerry' && p.ownerPurchased === true && p.reimbursable === false));
+  assert.deepEqual(buildFor({ ...exAm, lines: amazonLines.map(l => ({ ...l, decision: null })) }, 'ri-am', { purchasedBy: 'Kerry' }), []);
+  assert.deepEqual(buildFor({ ...exAm, lines: amazonLines.map(l => ({ ...l, decision: 'skip' })) }, 'ri-am', { purchasedBy: 'Kerry' }), []);
+  assert.equal(buildFor({ ...exAm, lines: [amazonLines[0]] }, 'ri-am', { purchasedBy: 'Kerry' })[0].orderGroupId, null);
+  ok('a 12-line Amazon order with 2 personal items skipped files exactly 10 purchases whose tax and shipping, plus the skipped lines\' shares, equal the receipt exactly; undecided or skipped lines file nothing; a single accepted line has no order group');
+
+  // matched shopping item supplies the link and the return-by date
+  const withItem = { ...SH.emptyShoppingItem(), id: 'sh-toast', name: 'toaster', selectedCandidateId: 'c9', candidates: [{ ...SH.emptyCandidate(), id: 'c1', sku: 'B0CPT142', returnByDate: '2027-01-31' }, { ...SH.emptyCandidate(), id: 'c9', sku: 'OTHER', returnByDate: '2026-12-15' }] };
+  const line = { ...amazonLines[0], sku: 'b0cpt142', matchItemId: 'sh-toast', decision: 'accept' };
+  const linked = RL.buildPurchasesFromInbox({ record: rec('ri-l', { ...exAm, lines: [line] }), order: { purchasedBy: 'Kerry' }, shoppingItems: [withItem], settings: D, propertyInServiceDate: '' })[0];
+  assert.equal(linked.shoppingItemId, 'sh-toast'); assert.equal(linked.returnByDate, '2027-01-31');
+  const fallback = RL.buildPurchasesFromInbox({ record: rec('ri-l', { ...exAm, lines: [{ ...line, sku: 'nomatch' }] }), order: { purchasedBy: 'Kerry' }, shoppingItems: [withItem], settings: D, propertyInServiceDate: '' })[0];
+  assert.equal(fallback.returnByDate, '2026-12-15');
+  ok('a line linked to a shopping item carries shoppingItemId and the matching candidate\'s return-by date (the selected candidate\'s when no SKU matches)');
+}
+
+console.log('Phase 3 — Claude extraction helper (fake client, no network):');
+{
+  const fixA = JSON.parse(fs.readFileSync(new URL('./fixtures/receipts/minoan-F3F3D4B0.json', import.meta.url), 'utf8'));
+  const modelReply = Object.fromEntries(Object.entries(fixA).filter(([k]) => !k.startsWith('_')));
+  const calls = [];
+  const fake = (impl) => ({ messages: { create: async (req) => { calls.push(req); return impl(req); } } });
+  const reply = (text, extra = {}) => ({ stop_reason: 'end_turn', content: [{ type: 'text', text }], model: 'claude-sonnet-5-5', ...extra });
+  const PROP = '6401 Broward St, St. Augustine, FL 32080';
+  const run = (client, o = {}) => extractReceipt({ client, mediaType: 'application/pdf', base64: 'JVBERi0=', propertyAddress: PROP, now: '2026-11-07T00:00:00.000Z', ...o });
+
+  const good = await run(fake(() => reply('```json\n' + JSON.stringify(modelReply) + '\n```')));
+  assert.equal(good.ok, true); assert.equal(good.extraction.reconciles, true); assert.equal(good.extraction.lines.length, 6);
+  assert.equal(good.extraction.model, 'claude-sonnet-5-5');
+  const prose = await run(fake(() => reply(`Here is the receipt you asked for:\n${JSON.stringify({ ...modelReply, lines: modelReply.lines.map((l, i) => i === 0 ? { ...l, description: 'Rod } 60" with a brace' } : l) })}\nHope that helps!`)));
+  assert.equal(prose.ok, true); assert.ok(prose.extraction.lines[0].description.includes('Rod } 60'));
+  assert.equal((await run(fake(() => reply(JSON.stringify(modelReply))))).ok, true);
+  ok('fenced JSON, bare JSON and JSON wrapped in prose (with braces inside strings) all parse and validate; reconciles is recomputed');
+
+  const failure = async (impl, re) => { const r = await run(fake(impl)); assert.equal(r.ok, false); assert.match(r.error, re); assert.equal(typeof r.error, 'string'); };
+  await failure(() => reply('', { stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'general_harms' } }), /declined/i);
+  await failure(() => reply('{"docType":"receipt"', { stop_reason: 'max_tokens' }), /too long|cut off/i);
+  await failure(() => ({ stop_reason: 'end_turn', content: [{ type: 'thinking', thinking: '' }] }), /no text|nothing/i);
+  await failure(() => reply('I could not read this receipt, sorry.'), /valid JSON/i);
+  await failure(() => reply('{"docType": "receipt", "lines": ['), /valid JSON/i);
+  await failure(() => reply(JSON.stringify({ ...modelReply, docType: 'napkin' })), /not usable/i);
+  await failure(() => { throw Object.assign(new Error('401 invalid x-api-key'), { status: 401 }); }, /ANTHROPIC_API_KEY|authentication/i);
+  await failure(() => { throw Object.assign(new Error('Request timed out.'), { name: 'APIConnectionTimeoutError' }); }, /timed out/i);
+  await failure(() => { throw Object.assign(new Error('rate limited'), { status: 429 }); }, /busy|rate/i);
+  await failure(() => { throw new Error('socket hang up'); }, /socket hang up/);
+  await failure(() => null, /no text|nothing|valid/i);
+  const leaked = await run(fake(() => { throw new Error('boom card 4111 1111 1111 1111'); }));
+  assert.ok(!leaked.error.includes('4111 1111 1111 1111'));
+  ok('every failure mode — refusal, truncation, empty reply, prose-only reply, bad JSON, unusable shape, 401, timeout, 429, network error, null — comes back as a readable { ok:false, error } and never throws');
+
+  calls.length = 0;
+  await run(fake(() => reply(JSON.stringify(modelReply))));
+  await run(fake(() => reply(JSON.stringify(modelReply))), { mediaType: 'image/jpeg' });
+  const [pdfReq, imgReq] = calls;
+  for (const req of [pdfReq, imgReq]) {
+    assert.equal(req.model, RL.EXTRACTION_MODEL);
+    assert.ok(req.max_tokens >= 4096);
+    for (const bad of ['temperature', 'top_p', 'top_k', 'tool_choice', 'thinking', 'betas', 'fallbacks']) assert.ok(!(bad in req), `request must not send ${bad}`);
+    assert.equal(req.messages[req.messages.length - 1].role, 'user');
+    assert.equal(req.messages.length, 1);
+    assert.equal(typeof req.system, 'string');
+    const kinds = req.messages[0].content.map(b => b.type);
+    assert.equal(kinds[kinds.length - 1], 'text');
+  }
+  assert.deepEqual(pdfReq.messages[0].content[0], { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' } });
+  assert.deepEqual(imgReq.messages[0].content[0], { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'JVBERi0=' } });
+  ok('the request is a single user turn (no prefill) with the file as a base64 document (PDF) or image block before the text, the pinned model, and none of the parameters Sonnet 5.5 rejects');
+
+  const prompt = buildExtractionPrompt({ propertyAddress: PROP });
+  for (const t of PURCHASE_TRADES) assert.ok(prompt.includes(t), `prompt must list trade ${t}`);
+  assert.equal(PURCHASE_TRADES.length, 22);
+  for (const must of [PROP, 'last 4', 'guess', 'issues', 'sourceVendor', 'statement', 'JSON', 'asset class', 'handwritten', 'fees']) assert.ok(prompt.toLowerCase().includes(must.toLowerCase()), `prompt must mention "${must}"`);
+  for (const c of SH.SHOPPING_CATEGORIES) assert.ok(prompt.includes(c), `prompt must list category ${c}`);
+  ok('the prompt lists all 22 trades and the shopping categories and carries the spec rules (last 4 only, never guess → null + issues, fees separate, statement ≠ paid, marketplace vendor, no asset class) and the property address');
+
+  const withCard = await run(fake(() => reply(JSON.stringify({ ...modelReply, paymentMethod: 'Visa 4111 1111 1111 1111', cardLast4: '4111111111111111', issues: ['paid with 5500 0055 5555 5559'] }))));
+  assert.equal(withCard.ok, true);
+  assert.ok(!JSON.stringify(withCard.extraction).includes('4111 1111 1111 1111') && !JSON.stringify(withCard.extraction).includes('5500 0055 5555 5559'));
+  assert.equal(withCard.extraction.cardLast4, '1111');
+  ok('a model reply containing a full card number comes back with only the last 4 and the rest redacted');
+}
+
+console.log('Phase 3 — extraction route logic (fake redis / blob / client):');
+{
+  const fixA = JSON.parse(fs.readFileSync(new URL('./fixtures/receipts/minoan-F3F3D4B0.json', import.meta.url), 'utf8'));
+  const modelReply = JSON.stringify(Object.fromEntries(Object.entries(fixA).filter(([k]) => !k.startsWith('_'))));
+  const mkRedis = (records = {}, registry = null) => {
+    const hash = Object.fromEntries(Object.entries(records).map(([k, v]) => [k, JSON.stringify(v)]));
+    return { hash, hget: async (_k, id) => hash[id] ?? null, hset: async (_k, obj) => { Object.assign(hash, obj); }, get: async () => registry };
+  };
+  const pending = (o = {}) => ({ id: 'ri-1', status: 'pending', receipt: { pathname: 'receipts/pp/inbox/ri-1/receipt.pdf', name: 'r.pdf', contentType: 'application/pdf', uploadedAt: 'x', hash: 'h' }, extraction: null, error: null, purchaseIds: [], ...o });
+  const goodClient = () => ({ messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: modelReply }], model: 'claude-sonnet-5-5' }) } });
+  const base = (over) => ({ redis: mkRedis({ 'ri-1': pending() }), key: 'receipt-inbox:pp', inboxId: 'ri-1', readBlob: async () => 'JVBERi0=', createClient: goodClient, apiKey: 'sk-test', user: 'JM', now: '2026-11-07T00:00:00.000Z', propertyId: 'pp', defaultAddress: '6401 Broward St', ...over });
+  const saved = (r) => JSON.parse(r.hash['ri-1']);
+
+  const okRun = await processInboxRecord(base());
+  assert.equal(okRun.status, 200); assert.equal(okRun.body.ok, true);
+  assert.equal(okRun.body.record.status, 'extracted'); assert.equal(okRun.body.record.extraction.reconciles, true); assert.equal(okRun.body.record.error, null);
+  assert.equal(okRun.body.record.updatedBy, 'JM');
+  ok('a pending upload is read from storage, extracted, validated and saved as "extracted" with the server stamp');
+
+  const redis1 = mkRedis({ 'ri-1': pending() });
+  let built = 0;
+  const noKey = await processInboxRecord(base({ redis: redis1, apiKey: '', createClient: () => { built += 1; return goodClient(); } }));
+  assert.equal(noKey.status, 200); assert.equal(noKey.body.ok, false);
+  assert.equal(noKey.body.record.status, 'needs-manual'); assert.match(noKey.body.record.error, /ANTHROPIC_API_KEY/);
+  assert.equal(saved(redis1).status, 'needs-manual'); assert.equal(built, 0);
+  const noKey2 = await processInboxRecord(base({ apiKey: undefined }));
+  assert.equal(noKey2.body.record.status, 'needs-manual');
+  ok('with no API key the record becomes "needs-manual" with a clear message (saved, not a crash), and no client is ever constructed');
+
+  const unreadable = await processInboxRecord(base({ readBlob: async () => null }));
+  assert.equal(unreadable.body.record.status, 'needs-manual'); assert.match(unreadable.body.record.error, /read the uploaded file/i);
+  const blobThrows = await processInboxRecord(base({ readBlob: async () => { throw new Error('blob store down'); } }));
+  assert.equal(blobThrows.status, 200); assert.equal(blobThrows.body.record.status, 'needs-manual'); assert.match(blobThrows.body.record.error, /blob store down/);
+  const noFile = await processInboxRecord(base({ redis: mkRedis({ 'ri-1': pending({ receipt: null }) }) }));
+  assert.equal(noFile.body.record.status, 'needs-manual');
+  ok('an unreadable, missing or throwing blob read also lands as needs-manual with the receipt untouched');
+
+  // Review Focus 3: API failure → needs-manual; Retry succeeds and clears the error
+  const redis2 = mkRedis({ 'ri-1': pending() });
+  const failing = await processInboxRecord(base({ redis: redis2, createClient: () => ({ messages: { create: async () => { throw Object.assign(new Error('nope'), { status: 401 }); } } }) }));
+  assert.equal(failing.body.record.status, 'needs-manual'); assert.match(failing.body.record.error, /authenticate|ANTHROPIC_API_KEY/i);
+  const retry = await processInboxRecord(base({ redis: redis2 }));
+  assert.equal(retry.body.record.status, 'extracted'); assert.equal(retry.body.record.error, null);
+  assert.equal(saved(redis2).status, 'extracted');
+  const badJson = await processInboxRecord(base({ createClient: () => ({ messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'sorry' }] }) } }) }));
+  assert.equal(badJson.body.record.status, 'needs-manual');
+  const createThrows = await processInboxRecord(base({ createClient: () => { throw new Error('sdk init failed'); } }));
+  assert.equal(createThrows.status, 200); assert.equal(createThrows.body.record.status, 'needs-manual');
+  ok('an API error, bad reply or SDK failure → needs-manual; pressing Retry afterwards extracts successfully and clears the error');
+
+  assert.equal((await processInboxRecord(base({ redis: mkRedis({}) }))).status, 404);
+  const filed = await processInboxRecord(base({ redis: mkRedis({ 'ri-1': pending({ status: 'filed' }) }) }));
+  assert.equal(filed.status, 409);
+  assert.equal((await processInboxRecord(base({ redis: mkRedis({ 'ri-1': pending({ status: 'dismissed' }) }) }))).status, 409);
+  const fromRegistry = [];
+  await processInboxRecord(base({ redis: mkRedis({ 'ri-1': pending() }, { properties: [{ id: 'pp', address: '99 Test Ln' }] }), createClient: () => ({ messages: { create: async (req) => { fromRegistry.push(req.system); return { stop_reason: 'end_turn', content: [{ type: 'text', text: modelReply }] }; } } }) }));
+  assert.ok(fromRegistry[0].includes('99 Test Ln'));
+  ok('a missing record is 404, an already filed or dismissed receipt is 409 (never re-extracted), and the property address for the prompt comes from the registry');
+}
+
+console.log('Phase 3 — inbox storage rules (paths, sanitizer, shared-blob safety):');
+{
+  const fx = (n) => JSON.parse(fs.readFileSync(new URL(`./fixtures/receipts/${n}.json`, import.meta.url), 'utf8'));
+  const stamp = { updatedAt: '2026-11-07T10:00:00.000Z', updatedBy: 'JM' };
+  assert.deepEqual(parseReceiptPathname('receipts/pp/inbox/ri-abc-123/receipt-x9.jpg'), { propertyId: 'pp', inboxId: 'ri-abc-123' });
+  assert.deepEqual(parseReceiptPathname('receipts/pp/pur-1/file.jpg'), { propertyId: 'pp', purchaseId: 'pur-1' });
+  for (const bad of ['receipts/pp/inbox/ri-abc/a/b.jpg', 'receipts/pp/inbox/pur-1/f.jpg', 'receipts/pp/inbox/ri-abc', 'receipts/PP/inbox/ri-a/f.jpg', 'receipts/pp/inbox/ri-../f.jpg', 'receipts/pp/inbox/RI-abc/f.jpg', 'receipts/../inbox/ri-a/f.jpg', 'receipts/pp/inbox//f.jpg', 'receipts/pp/other/ri-a/f.jpg']) {
+    assert.equal(parseReceiptPathname(bad), null, bad);
+  }
+  ok('inbox blob paths parse to { propertyId, inboxId }; purchase paths are unchanged; traversal, wrong prefixes, uppercase and extra levels are rejected');
+
+  const rec = (o = {}) => ({ id: 'ri-abc-123', status: 'extracted', receipt: { pathname: 'receipts/pp/inbox/ri-abc-123/receipt-x9.pdf', name: 'a.pdf', contentType: 'application/pdf', uploadedAt: '2026-11-07T09:00:00Z', hash: 'a'.repeat(64) },
+    extraction: RL.validateExtraction(fx('minoan-F3F3D4B0')).extraction, error: null, purchaseIds: [], ...o });
+  const good = RL.sanitizeInboxRecord(rec({ updatedBy: 'HACK', updatedAt: 'x', mystery: 1 }), stamp);
+  assert.equal(good.ok, true);
+  assert.deepEqual([good.record.updatedAt, good.record.updatedBy], [stamp.updatedAt, 'JM']);
+  assert.deepEqual(Object.keys(good.record).sort(), ['error', 'extraction', 'id', 'purchaseIds', 'receipt', 'status', 'updatedAt', 'updatedBy']);
+  assert.equal(good.record.extraction.lines.length, 6);
+  const edited = rec(); edited.extraction.lines[1].decision = 'accept'; edited.extraction.lines[1].matchItemId = 'sh-toast'; edited.extraction.lines[1].lineTotal = 1111.11; edited.extraction.lines[1].suggestedTrade = 'Plumbing';
+  const keptEdits = RL.sanitizeInboxRecord(edited, stamp).record.extraction.lines[1];
+  assert.deepEqual([keptEdits.decision, keptEdits.matchItemId, keptEdits.lineTotal, keptEdits.suggestedTrade], ['accept', 'sh-toast', 1111.11, 'Plumbing']);
+  assert.equal(RL.sanitizeInboxRecord(rec({ extraction: null, status: 'needs-manual', error: 'boom' }), stamp).ok, true);
+  assert.equal(RL.sanitizeInboxRecord(rec({ extraction: null, status: 'pending' }), stamp).ok, true);
+  const bads = [{ id: 'abc' }, { id: 'RI-1' }, { status: 'weird' }, { receipt: null }, { receipt: { ...rec().receipt, pathname: 'receipts/pp/pur-1/f.pdf' } },
+    { receipt: { ...rec().receipt, pathname: 'receipts/pp/inbox/ri-other-999/f.pdf' } }, { receipt: { ...rec().receipt, contentType: 'text/html' } },
+    { extraction: { docType: 'napkin', lines: [] } }, { extraction: 'x' }, { purchaseIds: 'p1' }];
+  for (const b of bads) assert.equal(RL.sanitizeInboxRecord(rec(b), stamp).ok, false, JSON.stringify(b).slice(0, 60));
+  assert.equal(RL.sanitizeInboxRecord(null, stamp).ok, false);
+  const huge = rec(); huge.extraction.issues = []; huge.extraction.lines = Array.from({ length: 3000 }, (_, i) => ({ ...huge.extraction.lines[0], lineNo: i + 1, description: 'x'.repeat(250) }));
+  assert.equal(RL.sanitizeInboxRecord(huge, stamp).ok, false);
+  const withCard = RL.sanitizeInboxRecord(rec({ error: 'failed for 4111 1111 1111 1111' }), stamp).record;
+  assert.ok(!withCard.error.includes('4111 1111 1111 1111'));
+  ok('inbox records are strictly whitelisted and stamped by the server; review edits survive; the blob path must belong to THIS record; bad ids/status/content types, a forged purchase path, unusable extractions and oversize records are rejected; card numbers are redacted');
+
+  const purchases = [{ id: 'pur-1', receipts: [{ pathname: 'receipts/pp/inbox/ri-abc-123/receipt-x9.pdf' }] }, { id: 'pur-2', receipts: [] }, null];
+  const inbox = [rec(), { id: 'ri-zzz-1', receipt: { pathname: 'receipts/pp/inbox/ri-zzz-1/other.pdf' } }, { id: 'ri-bad' }, null];
+  const P = 'receipts/pp/inbox/ri-abc-123/receipt-x9.pdf';
+  assert.equal(isInboxReceiptReferenced(inbox, P), true);
+  assert.equal(isInboxReceiptReferenced(inbox, P, 'ri-abc-123'), false);
+  assert.equal(isInboxReceiptReferenced(inbox, 'receipts/pp/inbox/ri-none-1/f.pdf'), false);
+  assert.equal(blobIsReferenced({ purchases, inbox, pathname: P }), true);
+  assert.equal(blobIsReferenced({ purchases, inbox, pathname: P, excludeInboxId: 'ri-abc-123' }), true);       // a purchase (filed from this record) still shows it
+  assert.equal(blobIsReferenced({ purchases, inbox, pathname: P, excludeInboxId: 'ri-abc-123', excludePurchaseId: 'pur-1' }), false);
+  assert.equal(blobIsReferenced({ purchases: [{ id: 'pur-2', receipts: [] }], inbox, pathname: P, excludeInboxId: 'ri-abc-123' }), false);
+  assert.equal(blobIsReferenced({ purchases, inbox, pathname: P, excludePurchaseId: 'pur-1' }), true);          // the inbox record itself still holds it
+  assert.equal(blobIsReferenced({ purchases: [], inbox: [], pathname: P }), false);
+  assert.doesNotThrow(() => blobIsReferenced({ purchases: null, inbox: undefined, pathname: P }));
+  ok('shared-blob safety: a filed receipt stays viewable and undeletable while a purchase OR its inbox record still references it, and is only deletable when nothing else does');
+}
+
+console.log('Phase 3 fix — card redaction must not mangle order numbers:');
+{
+  // 11355500001112223 is a 17-digit Amazon-style order number that happens to pass the Luhn check (~10% of them do)
+  assert.equal(RL.redactCardNumbers('order 113-5550000-1112223 ok'), 'order 113-5550000-1112223 ok');
+  assert.equal(RL.redactCardNumbers('order 11355500001112223'), 'order 11355500001112223');
+  assert.equal(RL.redactCardNumbers('x 123456789012345678 y'), 'x 123456789012345678 y');   // 18 digits: not a card length
+  assert.equal(RL.redactCardNumbers('amex 378282246310005 end'), 'amex •••• end');           // 15 digits
+  assert.equal(RL.redactCardNumbers('diners 30569309025904 end'), 'diners •••• end');          // 14 digits
+  assert.equal(RL.redactCardNumbers('visa 4111-1111-1111-1111 end'), 'visa •••• end');         // 16 digits, dashed
+  const v = RL.validateExtraction({ docType: 'receipt', vendor: 'Amazon', orderNo: '113-5550000-1112223', lines: [{ description: 'x', qty: 1, lineTotal: 1, sku: '11355500001112223', suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction;
+  assert.equal(v.orderNo, '113-5550000-1112223');
+  assert.equal(v.lines[0].sku, '11355500001112223');
+  ok('real card lengths (13–16, 19 digits) are still redacted, but 17/18-digit order numbers and SKUs — including Luhn-valid Amazon-style ones — are left intact');
+}
+
+console.log('Phase 3 review fixes (Opus final review):');
+{
+  // #1 receipts-view must not reference an undefined identifier (the old purchases-key fallback was left behind)
+  const rv = fs.readFileSync(new URL('../api/receipts-view.js', import.meta.url), 'utf8');
+  assert.ok(!/hgetall\(key\)/.test(rv), 'receipts-view.js must not call hgetall(key) — `key` is not defined there');
+  ok('receipts-view has no dangling `key` reference (an unreferenced pathname 404s instead of throwing)');
+
+  // #2 handwritten lines are always highlighted, even though their confidence is capped AT 0.7 (not below it)
+  const hw = RL.validateExtraction({ docType: 'statement', vendor: 'First Coast', handwritten: true, lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.95 }], total: 1 }).extraction;
+  assert.equal(RL.isLowConfidence(hw.lines[0], hw), true);
+  const typed = RL.validateExtraction({ docType: 'receipt', vendor: 'V', handwritten: false, lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.95 }, { description: 'y', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.5 }], total: 2 }).extraction;
+  assert.equal(RL.isLowConfidence(typed.lines[0], typed), false);
+  assert.equal(RL.isLowConfidence(typed.lines[1], typed), true);
+  ok('a handwritten document highlights every line (confidence capped at 0.7 is flagged); typed lines flag only below 0.7');
+
+  // #3 Accept all never overrides a Skip
+  const mixed = [{ decision: 'skip' }, { decision: null }, { decision: 'accept' }, { decision: null }];
+  assert.deepEqual(RL.acceptUndecided(mixed).map(l => l.decision), ['skip', 'accept', 'accept', 'accept']);
+  ok('Accept all accepts only undecided lines — a skipped personal item stays skipped');
+
+  // #4 the model cannot pre-set review decisions or shopping links
+  const injected = { ...JSON.parse(fs.readFileSync(new URL('./fixtures/receipts/minoan-F3F3D4B0.json', import.meta.url), 'utf8')) };
+  injected.lines = injected.lines.map(l => ({ ...l, decision: 'accept', matchItemId: 'sh-seed-x', matchScore: 1 }));
+  const client = { messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(injected) }], model: 'claude-sonnet-5-5' }) } };
+  const ex4 = await extractReceipt({ client, mediaType: 'application/pdf', base64: 'JVBERi0=', propertyAddress: 'x', now: '2026-11-07T00:00:00.000Z' });
+  assert.equal(ex4.ok, true);
+  assert.ok(ex4.extraction.lines.every(l => l.decision === null && l.matchItemId === null && l.matchScore === null));
+  ok('decisions and shopping links in the model reply are discarded — every line starts undecided and unlinked');
+
+  // #5 a filed/dismissed record can never be reopened by a (stale) PUT
+  assert.equal(RL.inboxTransitionAllowed({ status: 'filed' }, { status: 'extracted' }).ok, false);
+  assert.equal(RL.inboxTransitionAllowed({ status: 'dismissed' }, { status: 'extracted' }).ok, false);
+  assert.equal(RL.inboxTransitionAllowed({ status: 'filed' }, { status: 'filed' }).ok, true);
+  assert.equal(RL.inboxTransitionAllowed({ status: 'extracted' }, { status: 'filed' }).ok, true);
+  assert.equal(RL.inboxTransitionAllowed(null, { status: 'pending' }).ok, true);
+  assert.equal(RL.inboxTransitionAllowed({ status: 'pending' }, { status: 'extracted' }).ok, true);
+  ok('inboxTransitionAllowed: only filed→filed / dismissed→dismissed are allowed once a record is closed');
+
+  // #5b processInboxRecord re-reads before saving: a record filed / dismissed / deleted during the Claude call is not overwritten
+  const fixA = JSON.parse(fs.readFileSync(new URL('./fixtures/receipts/minoan-F3F3D4B0.json', import.meta.url), 'utf8'));
+  const reply = JSON.stringify(Object.fromEntries(Object.entries(fixA).filter(([k]) => !k.startsWith('_'))));
+  const rec = { id: 'ri-1', status: 'pending', receipt: { pathname: 'receipts/pp/inbox/ri-1/r.pdf', name: 'r.pdf', contentType: 'application/pdf', uploadedAt: 'x', hash: 'h' }, extraction: null, error: null, purchaseIds: [] };
+  const racing = (mutate) => {
+    const hash = { 'ri-1': JSON.stringify(rec) };
+    const redis = { hash, hget: async (_k, id) => hash[id] ?? null, hset: async (_k, o) => { Object.assign(hash, o); }, get: async () => null };
+    const createClient = () => ({ messages: { create: async () => { mutate(hash); return { stop_reason: 'end_turn', content: [{ type: 'text', text: reply }], model: 'claude-sonnet-5-5' }; } } });
+    return { hash, run: () => processInboxRecord({ redis, key: 'receipt-inbox:pp', inboxId: 'ri-1', readBlob: async () => 'JVBERi0=', createClient, apiKey: 'k', user: 'JM', now: '2026-11-07T00:00:00.000Z', propertyId: 'pp', defaultAddress: 'x' }) };
+  };
+  const f = racing(h => { h['ri-1'] = JSON.stringify({ ...rec, status: 'filed', purchaseIds: ['p1'] }); });
+  const fr = await f.run();
+  assert.equal(fr.status, 409); assert.equal(JSON.parse(f.hash['ri-1']).status, 'filed'); assert.deepEqual(JSON.parse(f.hash['ri-1']).purchaseIds, ['p1']);
+  const d = racing(h => { delete h['ri-1']; });
+  const dr = await d.run();
+  assert.equal(dr.status, 404); assert.equal(d.hash['ri-1'], undefined);
+  const x = racing(h => { h['ri-1'] = JSON.stringify({ ...rec, status: 'dismissed' }); });
+  assert.equal((await x.run()).status, 409); assert.equal(JSON.parse(x.hash['ri-1']).status, 'dismissed');
+  ok('a record filed, dismissed or deleted while Claude was reading is not overwritten or resurrected by the extraction result');
+
+  // #6 card-number redaction covers real-world layouts but still leaves order numbers alone
+  for (const [inp, want] of [
+    ['Visa 4111 1111 1111 1111 12/27', 'Visa •••• 12/27'],
+    ['4111111111111111-2', '••••-2'],
+    ['VISA4111111111111111', 'VISA••••'],
+    ['4111.1111.1111.1111', '••••'],
+    ['4111 - 1111 - 1111 - 1111', '••••'],
+    ['order 113-5550000-1112223', 'order 113-5550000-1112223'],
+    ['order 11355500001112223', 'order 11355500001112223'],
+  ]) assert.equal(RL.redactCardNumbers(inp), want, inp);
+  const money = RL.validateExtraction({ docType: 'receipt', vendor: 'V', lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: '4111111111111111', tax: '4111 1111 1111 1111' }).extraction;
+  assert.ok(!JSON.stringify(money).includes('4111111111111111'));
+  ok('card numbers are redacted with expiry/suffix attached, no word boundary, or odd separators — and a card number in a money field is never stored');
+
+  // a SHA-256 file digest must survive sanitizing untouched (hex digits next to letters can look like a card number)
+  const digest = 'a' + '4111111111111111' + 'b'.repeat(47);
+  const sres = RL.sanitizeInboxRecord({ id: 'ri-h1', status: 'pending', receipt: { pathname: 'receipts/pp/inbox/ri-h1/f.pdf', name: 'f.pdf', contentType: 'application/pdf', uploadedAt: 'x', hash: digest }, extraction: null, purchaseIds: [] }, { updatedAt: 'x', updatedBy: 'JM' });
+  assert.equal(sres.ok, true); assert.equal(sres.record.receipt.hash, digest);
+  ok('the receipt file hash (hex digest) is stored exactly as sent, even if its digits look like a card number');
+
+  // #7 partial filing failure must not mark the record filed
+  assert.equal(typeof RL.decideFilingOutcome, 'function');
+  assert.deepEqual(RL.decideFilingOutcome([true, true, true]), { markFiled: true, failed: 0 });
+  assert.deepEqual(RL.decideFilingOutcome([true, false, true]), { markFiled: false, failed: 1 });
+  assert.deepEqual(RL.decideFilingOutcome([]), { markFiled: false, failed: 0 });
+  ok('decideFilingOutcome: the record is marked filed only when every purchase save succeeded');
+
+  // invoice (e.g. the Amazon case) is paid; only statements/quotes file unconfirmed (spec §3.3 / Phase 1 rule)
+  const mkDraft = (docType) => RL.buildPurchasesFromInbox({
+    record: { id: 'ri-9', receipt: { pathname: 'receipts/pp/inbox/ri-9/f.pdf', name: 'f.pdf', contentType: 'application/pdf', uploadedAt: 'x' }, extraction: { docType, vendor: 'Amazon', orderNo: '1', lines: [{ lineNo: 1, description: 'a', qty: 1, unitPrice: 10, lineTotal: 10, suggestedTrade: 'Other', decision: 'accept', confidence: 0.9 }], tax: 0, shipping: 0, fees: 0, discounts: 0, total: 10 } },
+    order: { purchasedBy: 'JM', paymentMethod: 'Credit card' }, shoppingItems: [], settings: { reimbursableVendors: [] }, propertyInServiceDate: '',
+  })[0].paymentConfirmed;
+  assert.equal(mkDraft('receipt'), true); assert.equal(mkDraft('invoice'), true);
+  assert.equal(mkDraft('statement'), false); assert.equal(mkDraft('quote'), false);
+  ok('only statements and quotes file with paymentConfirmed:false — receipts and invoices are treated as paid');
+}
+
+console.log('Phase 3 deferred items (all fixed):');
+{
+  const PL = await import('../src/lib/purchases-logic.js');
+  // negative allocation: tiny amount over many lines never leaves a negative share; sums stay exact
+  const twelve = Array.from({ length: 12 }, () => ({ lineTotal: 10 }));   // equal lines: every share rounds up, the remainder is negative
+  const tiny = RL.allocateOrderCosts(twelve, { tax: 0, shipping: 0.06, fees: 0, discounts: 0 });
+  assert.ok(tiny.every(a => a.shipping >= 0), 'no negative shipping share');
+  assert.equal(Math.round(tiny.reduce((s, a) => s + a.shipping, 0) * 100), 6);
+  let seed = 7; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  for (let t = 0; t < 3000; t++) {
+    const n = 1 + Math.floor(rnd() * 14);
+    const lines = Array.from({ length: n }, () => ({ lineTotal: Math.round(rnd() * 5000) / 100 + 0.01 }));
+    const amt = Math.round(rnd() * 2000) / 100;
+    const out = RL.allocateOrderCosts(lines, { tax: amt, shipping: amt / 3, fees: 0, discounts: amt / 7 });
+    for (const k of ['tax', 'shipping', 'discounts']) {
+      assert.ok(out.every(a => a[k] >= 0), `${k} share must never be negative`);
+    }
+    assert.equal(Math.round(out.reduce((s, a) => s + a.tax, 0) * 100), Math.round(amt * 100));
+  }
+  ok('allocation: the remainder never pushes a line negative (largest-remainder fallback) and every column still sums exactly (3000 random orders)');
+
+  // cross-property blob path
+  const mk = (pathname) => ({ id: 'ri-x1', status: 'pending', receipt: { pathname, name: 'f.pdf', contentType: 'application/pdf', uploadedAt: 'x', hash: '' }, extraction: null, purchaseIds: [] });
+  assert.equal(RL.sanitizeInboxRecord(mk('receipts/pp/inbox/ri-x1/f.pdf'), {}, 'pp').ok, true);
+  assert.equal(RL.sanitizeInboxRecord(mk('receipts/other/inbox/ri-x1/f.pdf'), {}, 'pp').ok, false);
+  assert.equal(RL.sanitizeInboxRecord(mk('receipts/other/inbox/ri-x1/f.pdf'), {}).ok, true);   // no property given → shape check only (unit-level use)
+  const rin = fs.readFileSync(new URL('../api/receipt-inbox.js', import.meta.url), 'utf8');
+  assert.ok(/sanitizeInboxRecord\(req\.body,[\s\S]*?\},\s*property\)/.test(rin), 'the route must pass ?property= to the sanitizer');
+  ok('an inbox record whose blob path belongs to another property is rejected (and the route passes ?property= in)');
+
+  // re-link only fills lines that were never matched
+  const lines = [{ matchItemId: null, matchScore: 0.2 }, { matchItemId: null, matchScore: null }, { matchItemId: 'a', matchScore: 1 }];
+  const matched = RL.applyMatches(lines, [{ matchItemId: 'x', matchScore: 0.9 }, { matchItemId: 'y', matchScore: 0.8 }, { matchItemId: 'z', matchScore: 0.7 }]);
+  assert.deepEqual(matched.map(l => [l.matchItemId, l.matchScore]), [[null, 0.2], ['y', 0.8], ['a', 1]]);
+  ok('matching fills only never-matched lines — a line the reviewer unlinked stays unlinked, existing links stay');
+
+  // function duration
+  const vj = JSON.parse(fs.readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
+  assert.ok(vj.functions && vj.functions['api/receipt-extract.js'] && vj.functions['api/receipt-extract.js'].maxDuration >= 240);
+  ok('vercel.json gives receipt-extract a maxDuration that covers 2 SDK attempts of 120 s');
+
+  // an extraction too big to store lands as needs-manual instead of poisoning later PUTs
+  const bigLines = Array.from({ length: 700 }, (_, i) => ({ description: 'Item number ' + i + ' ' + 'x'.repeat(120), qty: 1, unitPrice: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }));
+  const bigReply = JSON.stringify({ docType: 'receipt', vendor: 'Big Co', lines: bigLines, total: 700 });
+  const hash = { 'ri-1': JSON.stringify({ id: 'ri-1', status: 'pending', receipt: { pathname: 'receipts/pp/inbox/ri-1/r.pdf', name: 'r.pdf', contentType: 'application/pdf', uploadedAt: 'x', hash: '' }, extraction: null, error: null, purchaseIds: [] }) };
+  const redisBig = { hget: async (_k, id) => hash[id] ?? null, hset: async (_k, o) => { Object.assign(hash, o); }, get: async () => null };
+  const bigRes = await processInboxRecord({ redis: redisBig, key: 'k', inboxId: 'ri-1', readBlob: async () => 'JVBERi0=', createClient: () => ({ messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: bigReply }], model: 'claude-sonnet-5-5' }) } }), apiKey: 'k', user: 'JM', now: '2026-11-07T00:00:00.000Z', propertyId: 'pp', defaultAddress: 'x' });
+  assert.equal(bigRes.status, 200); assert.equal(bigRes.body.record.status, 'needs-manual'); assert.match(bigRes.body.record.error, /too (long|large|many)/i);
+  assert.equal(JSON.parse(hash['ri-1']).extraction, null);
+  ok('an extraction too large to store is saved as needs-manual with a readable reason (never stored in a state later saves would reject)');
+
+  // JSON after a prose brace
+  const fixA2 = JSON.parse(fs.readFileSync(new URL('./fixtures/receipts/minoan-F3F3D4B0.json', import.meta.url), 'utf8'));
+  const clean = Object.fromEntries(Object.entries(fixA2).filter(([k]) => !k.startsWith('_')));
+  const proseClient = { messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Note: fields in {braces} are optional.\nHere you go:\n' + JSON.stringify(clean) }], model: 'claude-sonnet-5-5' }) } };
+  const pr = await extractReceipt({ client: proseClient, mediaType: 'application/pdf', base64: 'JVBERi0=', propertyAddress: 'x', now: '2026-11-07T00:00:00.000Z' });
+  assert.equal(pr.ok, true); assert.equal(pr.extraction.lines.length, 6);
+  ok('JSON is found even when the reply has an earlier balanced {…} in its prose');
+
+  // card redaction refinements
+  assert.equal(RL.redactCardNumbers('Total 12.50 4111111111111111'), 'Total 12.50 ••••');
+  assert.equal(RL.redactCardNumbers('Total $1,234.50 4111 1111 1111 1111 ok'), 'Total $1,234.50 •••• ok');
+  let ean = null; for (let n = 9780000000001; n < 9780000000200 && !ean; n++) { const d = String(n); let sum = 0, alt = false; for (let i = d.length - 1; i >= 0; i--) { let v = +d[i]; if (alt) { v *= 2; if (v > 9) v -= 9; } sum += v; alt = !alt; } if (sum % 10 === 0) ean = d; }
+  assert.ok(ean, 'found a Luhn-passing 13-digit number starting with 9');
+  assert.equal(RL.redactCardNumbers(`GTIN ${ean} end`), `GTIN ${ean} end`);
+  for (const card of ['5500005555555559', '378282246310005', '30569309025904', '6011111111111117', '3530111333300000', '4222222222222']) assert.equal(RL.redactCardNumbers(`c ${card} e`), 'c •••• e', card);
+  assert.equal(RL.redactCardNumbers('order 113-5550000-1112223'), 'order 113-5550000-1112223');
+  ok('card redaction: a card after a money amount is caught; 13-digit barcodes (not card-prefixed) and order numbers are left alone; all major card prefixes still redact');
+
+  // discount as a real field + a penny-tolerant "use total" suggestion
+  assert.equal(PL.emptyPurchase().discount, null);
+  assert.equal(PL.purchaseComputedTotal({ qty: 22, unitPrice: 442.3636, tax: 0, shipping: 0, fees: 0 }), 9732);
+  assert.equal(PL.purchaseComputedTotal({ qty: 2, unitPrice: 10, tax: 1, shipping: 2, fees: 0.5, discount: 3 }), 20.5);
+  assert.equal(PL.totalSuggestionNeeded({ qty: 22, unitPrice: 442.3636, totalPaid: 9731.99 }), false);
+  assert.equal(PL.totalSuggestionNeeded({ qty: 2, unitPrice: 10, totalPaid: 25 }), true);
+  assert.equal(PL.totalSuggestionNeeded({ qty: 0, unitPrice: 0, totalPaid: 25 }), false);
+  const dr = RL.buildPurchasesFromInbox({
+    record: { id: 'ri-9', receipt: { pathname: 'receipts/pp/inbox/ri-9/f.pdf', name: 'f.pdf', contentType: 'application/pdf', uploadedAt: 'x' }, extraction: { docType: 'receipt', vendor: 'V', orderNo: '1', lines: [{ lineNo: 1, description: 'a', qty: 1, unitPrice: 100, lineTotal: 100, suggestedTrade: 'Other', decision: 'accept', confidence: 0.9 }], tax: 0, shipping: 0, fees: 0, discounts: 10, total: 90 } },
+    order: { purchasedBy: 'JM', paymentMethod: 'Credit card' }, shoppingItems: [], settings: { reimbursableVendors: [] }, propertyInServiceDate: '',
+  })[0];
+  assert.equal(dr.discount, 10); assert.equal(dr.totalPaid, 90);
+  assert.equal(PL.totalSuggestionNeeded(dr), false);
+  ok('the order discount share is stored in a real `discount` field, the form total accounts for it, and a one-cent rounding gap no longer triggers "use $…"');
+}
+
+console.log('Phase 3 second Opus review (all fixed):');
+{
+  // negative order discount: normalized to a positive amount, flagged, and Accept all stays off
+  const neg = RL.validateExtraction({ docType: 'receipt', vendor: 'V', lines: [{ description: 'a', qty: 1, lineTotal: 100, suggestedTrade: 'Other', confidence: 0.9 }, { description: 'b', qty: 1, lineTotal: 50, suggestedTrade: 'Other', confidence: 0.9 }], tax: 9, discounts: -10, total: 149 }).extraction;
+  assert.equal(neg.discounts, 10);
+  assert.ok(neg.issues.some(i => /discount/i.test(i)));
+  assert.equal(RL.canAcceptAll(neg), false);
+  assert.equal(neg.reconciles, true);
+  const pos = RL.validateExtraction({ docType: 'receipt', vendor: 'V', lines: [{ description: 'a', qty: 1, lineTotal: 100, suggestedTrade: 'Other', confidence: 0.9 }], discounts: 10, total: 90 }).extraction;
+  assert.equal(pos.discounts, 10); assert.ok(!pos.issues.some(i => /discount/i.test(i)));
+  assert.ok(buildExtractionPrompt({ propertyAddress: 'x' }).toLowerCase().includes('positive number'));
+  ok('a discount printed as a negative number is stored positive and flagged (Accept all off); the prompt asks for positive amounts');
+
+  // blank payment method chosen on purpose is respected; untouched (null/undefined) falls back to the suggestion
+  const base = (pm) => RL.buildPurchasesFromInbox({
+    record: { id: 'ri-9', receipt: { pathname: 'receipts/pp/inbox/ri-9/f.pdf', name: 'f.pdf', contentType: 'application/pdf', uploadedAt: 'x' }, extraction: { docType: 'receipt', vendor: 'V', paymentMethod: 'Visa ending 1234', orderNo: '1', lines: [{ lineNo: 1, description: 'a', qty: 1, unitPrice: 10, lineTotal: 10, suggestedTrade: 'Other', decision: 'accept', confidence: 0.9 }], tax: 0, shipping: 0, fees: 0, discounts: 0, total: 10 } },
+    order: { purchasedBy: 'JM', paymentMethod: pm }, shoppingItems: [], settings: { reimbursableVendors: [] }, propertyInServiceDate: '',
+  })[0].paymentMethod;
+  assert.equal(base(''), '');
+  assert.equal(base(undefined), RL.suggestPaymentMethod('Visa ending 1234'));
+  assert.equal(base(null), RL.suggestPaymentMethod('Visa ending 1234'));
+  ok('a payment method deliberately left blank files blank; only an untouched one uses the suggestion');
+
+  // card redaction: grouping-aware
+  for (const [inp, want] of [
+    ['Line 3 4111 1111 1111 1111', 'Line 3 ••••'],
+    ['x2 4111111111111111', 'x2 ••••'],
+    ['$12 4111 1111 1111 1111', '$12 ••••'],
+    ['Paid 2026-11-07 4111 1111 1111 1111', 'Paid 2026-11-07 ••••'],
+    ['Visa 4111 1111 1111 1111 end', 'Visa •••• end'],
+    ['Visa 4111\t1111\t1111\t1111 end', 'Visa •••• end'],
+    ['Amex 3782 822463 10005 end', 'Amex •••• end'],
+    ['Visa 4111 1111 1111 1111 12/27', 'Visa •••• 12/27'],
+    ['Total 12.50 4111111111111111', 'Total 12.50 ••••'],
+  ]) assert.equal(RL.redactCardNumbers(inp), want, inp);
+  // ordinary text must never be redacted, whatever its Luhn luck: phone/zip strings, date ranges, order numbers
+  const lcg = (() => { let x = 11; return () => (x = (x * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff; })();
+  for (let i = 0; i < 4000; i++) {
+    const zip = String(30000 + Math.floor(lcg() * 60000));
+    const ph = `${900 + Math.floor(lcg() * 99)}-${700 + Math.floor(lcg() * 99)}-${String(1000 + Math.floor(lcg() * 8999))}`;
+    const t1 = `FL ${zip} ${ph}`, t2 = `2026-0${1 + Math.floor(lcg() * 9)}-20 - 2026-12-${10 + Math.floor(lcg() * 19)}`;
+    assert.equal(RL.redactCardNumbers(t1), t1, t1); assert.equal(RL.redactCardNumbers(t2), t2, t2);
+  }
+  ok('card redaction finds a card after any leading numbers, with NBSP/tab separators, and Amex 4-6-5 grouping — and never redacts zip+phone strings or date ranges (4000 fuzz cases)');
+
+  // order numbers / SKUs are identifiers, not free text: a contiguous Luhn-valid 16-digit one survives; a spaced card in them does not
+  const idEx = RL.validateExtraction({ docType: 'receipt', vendor: 'V', orderNo: '5500005555555559', lines: [{ description: 'card 5500005555555559', sku: '5500005555555559', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction;
+  assert.equal(idEx.orderNo, '5500005555555559'); assert.equal(idEx.lines[0].sku, '5500005555555559');
+  assert.equal(idEx.lines[0].description, 'card ••••');
+  const spaced = RL.validateExtraction({ docType: 'receipt', vendor: 'V', orderNo: '5500 0055 5555 5559', lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction;
+  assert.ok(!spaced.orderNo.includes('5500 0055'));
+  ok('order numbers and SKUs keep contiguous digit strings (even if they look like a card); a card number written with spaces is still removed from them; free text is redacted either way');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

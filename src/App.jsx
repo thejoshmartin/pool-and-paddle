@@ -11,9 +11,14 @@ import {
   defaultAllowanceFor, reimbursementDefaultsFor, normalizePurchase, netCost, paymentBadge,
   summarizePurchases, fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
   groupByOrder, newOrderGroupId, returnsClosingSoon, localISODate, daysBetween, statusChangePatch, formDefaultsTouched,
+  purchaseComputedTotal, totalSuggestionNeeded,
 } from "./lib/purchases-logic.js";
 import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, furnitureField, roomField, tombstone, BUDGET_FIELD, partitionFinishFields } from "./lib/design-logic.js";
 import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, groupHouseInfoByCategory } from "./lib/house-info-logic.js";
+import {
+  newInboxId, reconciles, matchLines, findDuplicates, addressMatches, mergeLines, canAcceptAll, fileProblems,
+  buildPurchasesFromInbox, suggestPaymentMethod, isLowConfidence, applyMatches, acceptUndecided, decideFilingOutcome,
+} from "./lib/receipt-logic.js";
 import SHOPPING_SEED from "./shopping-seed.json";
 import {
   normalizeShoppingItem, mergeShopping, partitionShoppingFields, shoppingItemField, SHOPPING_SETTINGS_FIELD,
@@ -3464,7 +3469,7 @@ function ReceiptUploader({ propertyId, purchaseId, receipts, onChange, viewableP
 const MEANINGFUL_PURCHASE_FIELDS = [
   "description", "vendor", "invoiceNo", "trade", "room", "notes",
   "purchaseDate", "receivedDate", "qty", "unitPrice", "tax", "shipping", "totalPaid",
-  "sourceVendor", "docType", "fees", "returnByDate", "returnPolicyNote", "refundAmount", "drawNo",
+  "sourceVendor", "docType", "fees", "discount", "returnByDate", "returnPolicyNote", "refundAmount", "drawNo",
 ];
 function draftHasContent(parsed) {
   if (!parsed || typeof parsed !== "object" || !parsed.id) return false;
@@ -3543,7 +3548,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
       {title}{note && <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0 }}> — {note}</span>}
     </div>
   );
-  const computedTotal = Math.round(((Number(d.qty) || 0) * (Number(d.unitPrice) || 0) + (Number(d.tax) || 0) + (Number(d.shipping) || 0) + (Number(d.fees) || 0)) * 100) / 100;
+  const computedTotal = purchaseComputedTotal(d);
 
   const field = (label, node) => (
     <div style={{ flex: 1, minWidth: isMobile ? "100%" : 140 }}><label style={ppLabel}>{label}</label>{node}</div>
@@ -3579,10 +3584,11 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
         {field("Tax ($)", <input type="number" step="0.01" style={ppInput} value={d.tax ?? ""} onChange={e => set({ tax: e.target.value === "" ? null : Number(e.target.value) })} />)}
         {field("Shipping ($)", <input type="number" step="0.01" style={ppInput} value={d.shipping ?? ""} onChange={e => set({ shipping: e.target.value === "" ? null : Number(e.target.value) })} />)}
         {field("Fees ($)", <input type="number" step="0.01" style={ppInput} value={d.fees ?? ""} onChange={num("fees")} placeholder="transaction / processing" />)}
+        {field("Discount ($)", <input type="number" step="0.01" style={ppInput} value={d.discount ?? ""} onChange={num("discount")} placeholder="order discount share" />)}
         {field("Total paid ($)", (
           <div>
             <input type="number" step="0.01" style={ppInput} value={d.totalPaid ?? ""} onChange={e => set({ totalPaid: e.target.value === "" ? null : Number(e.target.value) })} placeholder={computedTotal ? String(computedTotal) : ""} />
-            {computedTotal > 0 && (Number(d.totalPaid) || 0) !== computedTotal && (
+            {totalSuggestionNeeded(d) && (
               <button type="button" onClick={() => set({ totalPaid: computedTotal })} style={{ marginTop: 2, background: "none", border: "none", color: C.mint, fontSize: 13, fontWeight: 600, cursor: "pointer", padding: "6px 2px" }}>use {fmtUSD(computedTotal)}</button>
             )}
           </div>
@@ -3674,7 +3680,234 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
   );
 }
 
-function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, onAddLine, reimbursableVendors, focusPurchaseId, focusPurchaseMode, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
+// ─── RECEIPT INBOX ───────────────────────────────────────────────────────────
+// Upload receipts → the server reads them with Claude (api/receipt-extract.js) → review everything here → File creates
+// Purchases. Nothing is filed without a click, and an extraction failure never blocks entering a purchase by hand.
+// Pure logic (validation, reconcile, cost allocation, matching, purchase building) is in src/lib/receipt-logic.js.
+
+async function sha256Hex(file) {
+  try {
+    if (!(window.crypto && window.crypto.subtle)) return "";
+    const buf = await window.crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+    return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+  } catch (e) { return ""; }
+}
+
+const inboxBtn = { padding: "10px 16px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" };
+const inboxBtnPrimary = { ...inboxBtn, border: `1px solid ${C.mint}`, background: C.mint, color: C.white, fontWeight: 700 };
+const inboxChip = (color, bg) => ({ fontSize: 11, fontWeight: 700, color, background: bg, padding: "3px 9px", borderRadius: 12, whiteSpace: "nowrap" });
+
+function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAddress, onChange, onChangeNow, onFile, onRetry, onRemove, onOpenPurchase, isMobile }) {
+  const ex = record.extraction;
+  const [order, setOrder] = useState(() => ({ purchasedBy: "", paymentMethod: null }));   // paymentMethod null = not touched → the extraction's suggestion
+  const shownOrder = { ...order, paymentMethod: order.paymentMethod ?? (ex ? suggestPaymentMethod(ex.paymentMethod) : "") };   // what the form shows is exactly what gets filed
+  const [filing, setFiling] = useState(false);
+  const activeItems = useMemo(() => (shoppingItems || []).filter(i => i && !i.dismissed), [shoppingItems]);
+
+  // First time the reviewer sees an extraction: link lines to shopping items (exact SKU, then name similarity).
+  useEffect(() => {
+    if (record.status === "extracted" && ex && ex.lines.some(l => l.matchScore == null)) {
+      const m = matchLines(ex.lines, shoppingItems);
+      onChange({ ...record, extraction: { ...ex, lines: applyMatches(ex.lines, m) } });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [record.id, record.status]);
+
+  const setEx = (patch) => { const next = { ...ex, ...patch }; next.reconciles = reconciles(next); onChange({ ...record, extraction: next }); };
+  const setLine = (i, patch) => setEx({ lines: ex.lines.map((l, k) => (k === i ? { ...l, ...patch } : l)) });
+  const numField = (v) => (v === "" ? null : Number(v));
+  const fld = (label, node, w = 130) => (<div style={{ flex: 1, minWidth: isMobile ? "45%" : w }}><label style={ppLabel}>{label}</label>{node}</div>);
+  const acc = ex ? ex.lines.filter(l => l.decision === "accept").length : 0;
+  const problems = ex ? fileProblems(ex, shownOrder) : [];
+  const dups = ex ? findDuplicates(ex, record.receipt, purchases, inbox, record.id, record.purchaseIds) : [];
+  const addrOk = ex ? addressMatches(ex.shipTo, propertyAddress) : null;
+  const fileName = (record.receipt && record.receipt.name) || "receipt";
+  const link = record.receipt && record.receipt.pathname ? (
+    <a href={receiptViewUrl(record.receipt.pathname)} target="_blank" rel="noreferrer" style={{ color: C.mint, fontWeight: 700, textDecoration: "none" }}>{fileName}</a>
+  ) : fileName;
+  const stale = record.status === "pending" && record.updatedAt && Date.now() - new Date(record.updatedAt).getTime() > 3 * 60 * 1000;
+
+  const doFile = () => {
+    if (filing || problems.length) return;
+    if (dups.length > 0 && !window.confirm(`This may already be on file:\n\n• ${dups.map(d => d.reason).join("\n• ")}\n\nFile it anyway?`)) return;
+    setFiling(true);
+    Promise.resolve(onFile(record, shownOrder)).then(ok => { if (ok === false) setFiling(false); });
+  };
+
+  const card = { background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 12 };
+  if (record.status === "pending") {
+    return (
+      <div style={card}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div><strong>{link}</strong> <span style={inboxChip(C.textSecondary, C.pageBg)}>reading…</span></div>
+          {stale && <button onClick={() => onRetry(record)} style={inboxBtn}>Retry</button>}
+        </div>
+        <p style={{ margin: "6px 0 0", fontSize: 12, color: C.textMuted }}>Claude is reading this receipt (usually under a minute). You can keep working.</p>
+      </div>
+    );
+  }
+  if (record.status === "needs-manual") {
+    return (
+      <div style={{ ...card, borderColor: C.warnText }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div><strong>{link}</strong> <span style={inboxChip(C.warnText, C.warnBg)}>needs manual entry</span></div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => onRetry(record)} style={inboxBtnPrimary}>Retry</button>
+            <button onClick={() => { if (window.confirm("Dismiss this receipt? The file stays attached to nothing; you can still add the purchase by hand.")) onChangeNow({ ...record, status: "dismissed" }); }} style={inboxBtn}>Dismiss</button>
+          </div>
+        </div>
+        <p role="alert" style={{ margin: "8px 0 0", fontSize: 13, color: C.warnText, fontWeight: 600 }}>{record.error || "The receipt could not be read."}</p>
+        <p style={{ margin: "4px 0 0", fontSize: 12, color: C.textMuted }}>The receipt is safe. Press Retry, or use “+ Add purchase” to enter it by hand (open the file link above to read it).</p>
+      </div>
+    );
+  }
+  if (!ex) return null;
+  return (
+    <div style={card}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start", marginBottom: 8 }}>
+        <div>
+          <div style={{ fontSize: 15 }}><strong>{ex.vendor || "(vendor?)"}</strong> <span style={{ color: C.textMuted }}>· {ex.docType}{ex.orderNo ? ` · #${ex.orderNo}` : ""}</span></div>
+          <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>{link}{ex.paidDate || ex.orderDate ? ` · ${ex.paidDate || ex.orderDate}` : ""}{ex.cardLast4 ? ` · card ending ${ex.cardLast4}` : ""}</div>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <span style={ex.reconciles ? inboxChip(C.mintDark, C.seafoamLight) : inboxChip(C.warnText, C.warnBg)}>{ex.reconciles ? "totals match" : "totals don't reconcile"}</span>
+          {ex.handwritten && <span style={inboxChip(C.warnText, C.warnBg)}>handwritten</span>}
+          {ex.docType !== "receipt" && <span style={inboxChip(C.warnText, C.warnBg)}>{ex.docType} — not proof of payment</span>}
+        </div>
+      </div>
+
+      {ex.issues.length > 0 && (
+        <div role="alert" style={{ background: C.warnBg, border: `1px solid ${C.warnText}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.warnText, marginBottom: 4 }}>Check these first — Claude would not guess:</div>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: C.charcoal, lineHeight: 1.5 }}>{ex.issues.map((t, i) => <li key={i}>{t}</li>)}</ul>
+          <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 6 }}>“Accept all” is off until you review each line yourself and fill in any blank prices or the total.</div>
+        </div>
+      )}
+      {ex.handwritten && <p style={{ margin: "0 0 8px", fontSize: 12, color: C.warnText }}>Handwritten document — every line starts flagged for review.</p>}
+      {addrOk === false && <p style={{ margin: "0 0 8px", fontSize: 13, color: C.warnText, fontWeight: 600 }}>⚠ Receipt says “{ex.shipTo}”; the property is {propertyAddress}. Ask the vendor for a corrected copy for your records. (You can still file it.)</p>}
+      {dups.length > 0 && <p style={{ margin: "0 0 8px", fontSize: 13, color: C.warnText, fontWeight: 600 }}>⚠ Possible duplicate: {dups.map(d => d.reason).join("; ")}.</p>}
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+        {fld("Who paid?", <select style={ppInput} value={order.purchasedBy} onChange={e => setOrder(o => ({ ...o, purchasedBy: e.target.value }))}><option value="">— choose —</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>, 170)}
+        {fld("Payment method", <select style={ppInput} value={shownOrder.paymentMethod} onChange={e => setOrder(o => ({ ...o, paymentMethod: e.target.value }))}><option value="">—</option>{PAYMENT_METHODS.map(p => <option key={p} value={p}>{p}</option>)}</select>, 170)}
+        {fld("Tax ($)", <input type="number" step="0.01" style={ppInput} value={ex.tax ?? ""} onChange={e => setEx({ tax: numField(e.target.value) })} />)}
+        {fld("Shipping ($)", <input type="number" step="0.01" style={ppInput} value={ex.shipping ?? ""} onChange={e => setEx({ shipping: numField(e.target.value) })} />)}
+        {fld("Fees ($)", <input type="number" step="0.01" style={ppInput} value={ex.fees ?? ""} onChange={e => setEx({ fees: numField(e.target.value) })} />)}
+        {fld("Order discount ($)", <input type="number" step="0.01" style={ppInput} value={ex.discounts ?? ""} onChange={e => setEx({ discounts: numField(e.target.value) })} />)}
+        {fld("Order total ($)", <input type="number" step="0.01" style={{ ...ppInput, borderColor: ex.total == null ? C.warnText : C.border }} value={ex.total ?? ""} placeholder="enter the total" onChange={e => setEx({ total: numField(e.target.value) })} />)}
+      </div>
+
+      {ex.lines.map((l, i) => {
+        const low = isLowConfidence(l, ex);
+        const accepted = l.decision === "accept", skipped = l.decision === "skip";
+        return (
+          <div key={i} style={{ border: `1px solid ${accepted ? C.mint : low ? C.warnText : C.border}`, background: skipped ? C.pageBg : low ? C.warnBg : C.white, borderRadius: 10, padding: 10, marginBottom: 8, opacity: skipped ? 0.7 : 1 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: C.textMuted }}>Line {l.lineNo}</span>
+              {low && <span style={inboxChip(C.warnText, C.white)}>check this line · {Math.round((l.confidence ?? 0) * 100)}% sure</span>}
+              {l.sourceVendor && <span style={inboxChip(C.textSecondary, C.pageBg)}>via {l.sourceVendor}</span>}
+              {l.roomHint && <span style={inboxChip(C.ocean, C.oceanLight)}>{l.roomHint}</span>}
+              {l.matchItemId && <span style={inboxChip(C.mintDark, C.seafoamLight)}>linked to shopping item</span>}
+              <span style={{ flex: 1 }} />
+              <button onClick={() => setLine(i, { decision: accepted ? null : "accept" })} style={{ ...inboxBtn, ...(accepted ? { background: C.mint, color: C.white, borderColor: C.mint } : {}) }}>{accepted ? "✓ Accepted" : "Accept"}</button>
+              <button onClick={() => setLine(i, { decision: skipped ? null : "skip" })} style={{ ...inboxBtn, ...(skipped ? { background: C.charcoal, color: C.white, borderColor: C.charcoal } : {}) }}>{skipped ? "Skipped" : "Skip"}</button>
+              {i > 0 && <button onClick={() => onChange({ ...record, extraction: { ...ex, lines: mergeLines(ex.lines, i), reconciles: reconciles({ ...ex, lines: mergeLines(ex.lines, i) }) } })} style={inboxBtn} title="Combine this line with the one above (adds quantities and totals)">Merge into line above</button>}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ flex: 3, minWidth: isMobile ? "100%" : 240 }}><label style={ppLabel}>Description</label><input style={ppInput} value={l.description} onChange={e => setLine(i, { description: e.target.value })} /></div>
+              {fld("Qty", <input type="number" style={ppInput} value={l.qty ?? ""} onChange={e => setLine(i, { qty: numField(e.target.value) })} />, 70)}
+              {fld("Unit price ($)", <input type="number" step="0.01" style={ppInput} value={l.unitPrice ?? ""} onChange={e => setLine(i, { unitPrice: numField(e.target.value) })} />, 100)}
+              {fld("Line total ($)", <input type="number" step="0.01" style={{ ...ppInput, borderColor: l.lineTotal == null ? C.warnText : C.border }} value={l.lineTotal ?? ""} placeholder="required" onChange={e => setLine(i, { lineTotal: numField(e.target.value) })} />, 110)}
+              {fld("Trade", <select style={ppInput} value={l.suggestedTrade} onChange={e => setLine(i, { suggestedTrade: e.target.value })}>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>, 170)}
+              {fld("Shopping item", <select style={ppInput} value={l.matchItemId || ""} onChange={e => setLine(i, { matchItemId: e.target.value || null })}><option value="">— none —</option>{activeItems.map(it => <option key={it.id} value={it.id}>{it.name}</option>)}</select>, 170)}
+            </div>
+          </div>
+        );
+      })}
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
+        <button disabled={!canAcceptAll(ex)} title={canAcceptAll(ex) ? "" : "Disabled while there are issues or blank prices — accept lines one at a time"} onClick={() => onChange({ ...record, extraction: { ...ex, lines: acceptUndecided(ex.lines) } })} style={{ ...inboxBtn, opacity: canAcceptAll(ex) ? 1 : 0.5 }}>Accept all</button>
+        <button disabled={problems.length > 0 || filing} onClick={doFile} style={{ ...inboxBtnPrimary, background: problems.length || filing ? C.border : C.mint, borderColor: problems.length || filing ? C.border : C.mint }}>{filing ? "Filing…" : `File ${acc} purchase${acc === 1 ? "" : "s"}`}</button>
+        <button onClick={() => { if (window.confirm("Dismiss this receipt without filing anything?")) onChangeNow({ ...record, status: "dismissed" }); }} style={inboxBtn}>Dismiss</button>
+      </div>
+      {problems.length > 0 && <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 12, color: C.textSecondary }}>{problems.map((p, i) => <li key={i}>{p}</li>)}</ul>}
+    </div>
+  );
+}
+
+function ReceiptInboxPanel({ inbox, loaded, loadError, canUse, uploads, onUpload, onChange, onChangeNow, onRemove, onRetry, onFile, shoppingItems, purchases, propertyAddress, onOpenPurchase, notice, onDismissNotice, isMobile }) {
+  const open = inbox.filter(r => ["pending", "extracted", "needs-manual"].includes(r.status)).sort((a, b) => String(a.receipt?.uploadedAt).localeCompare(String(b.receipt?.uploadedAt)));
+  const done = inbox.filter(r => r.status === "filed" || r.status === "dismissed");
+  const [expanded, setExpanded] = useState(null);       // null = follow "open if anything needs attention"
+  const [showDone, setShowDone] = useState(false);
+  const isOpen = expanded === null ? true : expanded;   // open by default: the upload buttons (or the reason they're off) are always visible
+  const busy = uploads.length > 0;
+  const trigger = { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 14, fontWeight: 600, borderRadius: 8, padding: "12px 16px", minHeight: 44, boxSizing: "border-box", cursor: busy || !canUse ? "not-allowed" : "pointer", opacity: canUse ? 1 : 0.5 };
+  return (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 18 }}>
+      <button onClick={() => setExpanded(!isOpen)} aria-expanded={isOpen} style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, background: "none", border: "none", cursor: "pointer", padding: 0, minHeight: 44, fontFamily: font, textAlign: "left" }}>
+        <span style={{ fontSize: 16, fontWeight: 800, color: C.charcoal }}>Receipt Inbox <span style={{ fontWeight: 600, color: C.textMuted, fontSize: 13 }}>— drop in receipts and review them in one place</span></span>
+        <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {open.length > 0 && <span style={inboxChip(C.warnText, C.warnBg)}>{open.length} to review</span>}
+          <span style={{ color: C.textMuted }}>{isOpen ? "▾" : "▸"}</span>
+        </span>
+      </button>
+      {isOpen && (
+        <div style={{ marginTop: 12 }}>
+          {!canUse && <p style={{ fontSize: 13, color: C.textMuted }}>The inbox is available once this property is set up (open the app from the main address once to finish setup).</p>}
+          {loadError && <p style={{ fontSize: 13, color: C.ocean, fontWeight: 600 }}>Couldn’t load the inbox — reload to try again.</p>}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+            <label style={{ ...trigger, color: C.mintDark, background: C.seafoamFaint, border: `1.5px dashed ${C.mint}` }}>
+              {busy ? "Working…" : "🖼️ Choose photos or files"}
+              <input type="file" accept="image/*,application/pdf" multiple disabled={busy || !canUse} onChange={e => { onUpload(e.target.files); e.target.value = ""; }} style={{ display: "none" }} />
+            </label>
+            <label style={{ ...trigger, color: C.textSecondary, background: C.white, border: `1.5px solid ${C.border}` }}>
+              📷 Take photo
+              <input type="file" accept="image/*" capture="environment" disabled={busy || !canUse} onChange={e => { onUpload(e.target.files); e.target.value = ""; }} style={{ display: "none" }} />
+            </label>
+          </div>
+          <p style={{ fontSize: 11, color: C.textMuted, margin: "0 0 10px" }}>Pick several at once. Nothing becomes a purchase until you review it and press File. iPhone photos are converted automatically.</p>
+          {uploads.map(u => (
+            <div key={u.key} style={{ fontSize: 13, color: u.error ? C.ocean : C.textSecondary, margin: "0 0 6px" }}>{u.error ? "⚠ " : "⏳ "}{u.name}: {u.error || u.stage}</div>
+          ))}
+          {notice && (
+            <div role="status" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, background: C.seafoamFaint, border: `1px solid ${C.mint}`, borderRadius: 8, padding: "8px 12px", margin: "0 0 10px", fontSize: 13, color: C.charcoal }}>
+              <span>✓ {notice.text}</span>
+              <button onClick={() => onOpenPurchase(notice.purchaseId)} style={inboxBtn}>Open the first purchase</button>
+              <button onClick={onDismissNotice} aria-label="Dismiss" style={{ ...inboxBtn, border: "none", background: "none" }}>✕</button>
+            </div>
+          )}
+          {!loaded && <p style={{ fontSize: 13, color: C.textMuted }}>Loading the inbox…</p>}
+          {loaded && open.length === 0 && uploads.length === 0 && canUse && <p style={{ fontSize: 13, color: C.textMuted }}>Nothing waiting. Upload a receipt to have it read for you.</p>}
+          {open.map(r => (
+            <ReceiptInboxCard key={r.id} record={r} shoppingItems={shoppingItems} purchases={purchases} inbox={inbox} propertyAddress={propertyAddress}
+              onChange={onChange} onChangeNow={onChangeNow} onFile={onFile} onRetry={onRetry} onRemove={onRemove} onOpenPurchase={onOpenPurchase} isMobile={isMobile} />
+          ))}
+          {done.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <button onClick={() => setShowDone(s => !s)} style={{ ...inboxBtn, border: "none", background: "none", color: C.textSecondary, padding: "6px 0", minHeight: 44 }}>{showDone ? "▾" : "▸"} Filed &amp; dismissed ({done.length})</button>
+              {showDone && done.map(r => (
+                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "8px 0", borderTop: `1px solid ${C.borderLight}`, fontSize: 13 }}>
+                  <span>
+                    <strong>{(r.extraction && r.extraction.vendor) || r.receipt?.name || "receipt"}</strong>
+                    <span style={{ color: C.textMuted }}> · {r.status === "filed" ? `filed ${r.purchaseIds.length} purchase${r.purchaseIds.length === 1 ? "" : "s"}` : "dismissed"}</span>
+                    {r.receipt?.pathname && <> · <a href={receiptViewUrl(r.receipt.pathname)} target="_blank" rel="noreferrer" style={{ color: C.mint, textDecoration: "none", fontWeight: 600 }}>view receipt</a></>}
+                  </span>
+                  <span style={{ display: "flex", gap: 8 }}>
+                    {r.status === "filed" && r.purchaseIds[0] && <button onClick={() => onOpenPurchase(r.purchaseIds[0])} style={inboxBtn}>Open purchases</button>}
+                    <button onClick={() => { if (window.confirm("Remove this from the inbox history? Purchases already filed from it are kept, and the receipt file stays with them.")) onRemove(r.id); }} style={inboxBtn}>Remove</button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, onAddLine, reimbursableVendors, inboxPanel, focusPurchaseId, focusPurchaseMode, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
   const [editingId, setEditingId] = useState(null);   // id | "new" | null
   const [expandedId, setExpandedId] = useState(null);
   const [query, setQuery] = useState("");
@@ -3749,6 +3982,8 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
           <button onClick={() => { setEditingId("new"); setExpandedId(null); }} style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: C.mint, color: C.white, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>+ Add purchase</button>
         )}
       </div>
+
+      {inboxPanel && <ReceiptInboxPanel {...inboxPanel} purchases={purchases} isMobile={isMobile} />}
 
       {/* New purchase form — at the top so it's visible immediately when opened. Keyed on the
           active property so a property switch remounts it (draft is scoped per property). */}
@@ -3901,7 +4136,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
                   Allowance: {p.allowanceCategory} · Status: {p.status}<br />
                   Funding: {fundingSource(p)}<br />
                   {p.reimbursable && <>Sparrow reimbursement: {p.reimbursementStatus}{p.reimbursedAmount != null ? ` · ${fmtUSD(p.reimbursedAmount)}` : ""}{p.reimbursedDate ? ` · ${p.reimbursedDate}` : ""}{p.drawNo ? ` · draw ${p.drawNo}` : ""}<br /></>}
-                  {(p.sourceVendor || p.docType || Number(p.fees) > 0) && <>{[p.sourceVendor && `Source vendor: ${p.sourceVendor}`, p.docType && `Document: ${p.docType}`, Number(p.fees) > 0 && `Fees: ${fmtUSD(p.fees)}`].filter(Boolean).join(" · ")}<br /></>}
+                  {(p.sourceVendor || p.docType || Number(p.fees) > 0 || Number(p.discount) > 0) && <>{[p.sourceVendor && `Source vendor: ${p.sourceVendor}`, p.docType && `Document: ${p.docType}`, Number(p.fees) > 0 && `Fees: ${fmtUSD(p.fees)}`, Number(p.discount) > 0 && `Discount: ${fmtUSD(p.discount)}`].filter(Boolean).join(" · ")}<br /></>}
                   {(p.returnByDate || p.returnPolicyNote || p.refundAmount != null || Number(p.restockingFee) > 0 || Number(p.returnShippingCost) > 0) && <>{[p.returnByDate && `Return by ${p.returnByDate}${p.keepConfirmed ? " (keeping)" : ""}`, p.returnPolicyNote, p.refundAmount != null && `Refund ${fmtUSD(p.refundAmount)}${p.refundDate ? ` on ${p.refundDate}` : ""}`, Number(p.restockingFee) > 0 && `Restocking fee ${fmtUSD(p.restockingFee)}`, Number(p.returnShippingCost) > 0 && `Return shipping ${fmtUSD(p.returnShippingCost)}`].filter(Boolean).join(" · ")}<br /></>}
                   {(p.inspected || p.deliveredTo) && <>{[p.inspected && `Inspected${p.inspectedDate ? ` ${p.inspectedDate}` : ""}`, p.deliveredTo && `Delivered to ${p.deliveredTo}`].filter(Boolean).join(" · ")}<br /></>}
                   {(p.warranty || p.warrantyTerm) && <>Warranty: {p.warrantyTerm || "yes"}{p.registered ? " (registered)" : ""}{p.binderPocket ? ` · Binder ${p.binderPocket}` : ""}<br /></>}
@@ -4866,6 +5101,17 @@ export default function App() {
   const shoppingFirstRun = useRef(true);
   const shoppingFieldTimers = useRef({});    // field -> debounce timer
   const shoppingFieldPending = useRef({});   // field -> latest unsent value
+  const [inbox, setInbox] = useState([]);                 // Receipt Inbox records (no localStorage cache: they carry addresses)
+  const [inboxLoaded, setInboxLoaded] = useState(false);
+  const [inboxLoadError, setInboxLoadError] = useState(false);
+  const [inboxUploads, setInboxUploads] = useState([]);   // in-flight uploads: [{ key, name, stage, error }]
+  const inboxServerLoaded = useRef(false);
+  const inboxTimers = useRef({});                         // id -> debounce timer
+  const inboxPending = useRef({});                        // id -> { rec, prop }: latest unsent record + the property it belongs to
+  const inboxSeq = useRef({});                            // id -> local edit counter (a server reply is only adopted if no newer local edit happened)
+  const [inboxNotice, setInboxNotice] = useState(null);  // { text, purchaseId } after a successful filing
+  const inboxNoticeTimer = useRef(null);
+  const inboxFiling = useRef(new Set());                  // double-click guard for File
 
   // Load the property registry once. Decides migrated vs. needs-migration.
   useEffect(() => {
@@ -5159,12 +5405,12 @@ export default function App() {
     setPurchases(prev => (prev.some(p => p.id === purchase.id)
       ? prev.map(p => (p.id === purchase.id ? purchase : p))
       : [...prev, purchase]));
-    fetch(apiUrl('/api/purchases', activeProperty), {
+    return fetch(apiUrl('/api/purchases', activeProperty), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(purchase),
-    }).then(r => { if (!r.ok) setSyncError('Failed to save purchase'); else setSyncError(null); })
-      .catch(() => setSyncError('Unable to reach server'));
+    }).then(r => { if (!r.ok) { setSyncError('Failed to save purchase'); return false; } setSyncError(null); return true; })
+      .catch(() => { setSyncError('Unable to reach server'); return false; });   // resolves true/false so callers (Receipt Inbox filing) can wait for the outcome
   };
   const deletePurchase = (id) => {
     setPurchases(prev => prev.filter(p => p.id !== id));
@@ -5470,6 +5716,194 @@ export default function App() {
   // Dashboard "Returns closing" → open that purchase expanded (not in edit mode) on the Purchases tab.
   const openPurchase = (id) => { setFocusPurchaseMode("view"); setFocusPurchaseId(id); setActiveView("purchases"); };
 
+  // ── Receipt Inbox ──────────────────────────────────────────────────────────
+  // Records are a Redis hash (api/receipt-inbox.js, one field per record): single-record writes only. Edits while reviewing
+  // are debounced per record; File / Dismiss write immediately. Loading is cancellation-guarded like every fetch effect.
+  useEffect(() => {
+    let cancelled = false;
+    inboxServerLoaded.current = false;
+    setInbox([]); setInboxLoadError(false);
+    if (!activeProperty) { setInboxLoaded(true); return () => { cancelled = true; }; }
+    setInboxLoaded(false);
+    fetch(apiUrl('/api/receipt-inbox', activeProperty))
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error('bad status'))))
+      .then(data => {
+        if (cancelled) return;
+        setInbox(Array.isArray(data) ? data.filter(r => r && typeof r.id === 'string') : []);
+        inboxServerLoaded.current = true;
+        setInboxLoaded(true);
+      })
+      .catch(() => { if (!cancelled) { setInboxLoadError(true); setInboxLoaded(true); } });
+    return () => { cancelled = true; };
+  }, [activeProperty]);
+
+  // Resolves true (saved), 'closed' (409: already filed/dismissed elsewhere — the server's record is adopted) or false.
+  // `propertyId` is the property the record BELONGS to (a pending write can outlive a property switch).
+  const putInboxRecord = (rec, useKeepalive = false, propertyId = activePropertyRef.current) => {
+    if (propertyId === activePropertyRef.current && !inboxServerLoaded.current) return Promise.resolve(false);
+    const seq = inboxSeq.current[rec.id] || 0;
+    const sameProperty = () => activePropertyRef.current === propertyId;
+    return fetch(apiUrl('/api/receipt-inbox', propertyId), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rec), keepalive: useKeepalive,
+    }).then(async r => {
+      const body = await r.json().catch(() => null);
+      if (r.status === 409) {
+        if (body && body.record && sameProperty()) setInbox(prev => prev.map(x => (x.id === body.record.id ? body.record : x)));
+        setSyncError('This receipt was already filed or dismissed on another device — it has been refreshed');
+        return 'closed';
+      }
+      if (!r.ok) { setSyncError('Failed to save receipt'); return false; }
+      setSyncError(null);
+      // The server re-validates every save (e.g. a cleared quantity becomes "assumed 1" with a new issue). Adopt its issues
+      // and reconcile flag so the screen matches what is stored — but never overwrite the reviewer's own fields, and only if
+      // nothing newer was typed since this request left.
+      const sx = body && body.record && body.record.extraction;
+      if (sx && sameProperty() && (inboxSeq.current[rec.id] || 0) === seq && !inboxPending.current[rec.id]) {
+        setInbox(prev => prev.map(x => (x.id === rec.id && x.extraction ? { ...x, updatedAt: body.record.updatedAt, updatedBy: body.record.updatedBy, extraction: { ...x.extraction, issues: sx.issues, reconciles: sx.reconciles } } : x)));
+      }
+      return true;
+    }).catch(() => { setSyncError('Unable to reach server'); return false; });
+  };
+  const cancelInboxWrite = (id) => {
+    if (inboxTimers.current[id]) { clearTimeout(inboxTimers.current[id]); delete inboxTimers.current[id]; }
+    delete inboxPending.current[id];
+  };
+  const saveInboxRecord = (rec) => {   // debounced (review typing)
+    setInbox(prev => prev.map(r => (r.id === rec.id ? rec : r)));
+    inboxSeq.current[rec.id] = (inboxSeq.current[rec.id] || 0) + 1;
+    const prop = activePropertyRef.current;   // the write belongs to the property it was typed in, even if the user switches before it fires
+    inboxPending.current[rec.id] = { rec, prop };
+    if (inboxTimers.current[rec.id]) clearTimeout(inboxTimers.current[rec.id]);
+    inboxTimers.current[rec.id] = setTimeout(() => { delete inboxTimers.current[rec.id]; delete inboxPending.current[rec.id]; putInboxRecord(rec, false, prop); }, 500);
+  };
+  const saveInboxRecordNow = (rec) => {   // immediate (File / Dismiss)
+    setInbox(prev => prev.map(r => (r.id === rec.id ? rec : r)));
+    inboxSeq.current[rec.id] = (inboxSeq.current[rec.id] || 0) + 1;
+    cancelInboxWrite(rec.id);
+    return putInboxRecord(rec);
+  };
+  const flushInbox = () => {
+    for (const t of Object.values(inboxTimers.current)) clearTimeout(t);
+    const pending = inboxPending.current;
+    inboxTimers.current = {}; inboxPending.current = {};
+    for (const { rec, prop } of Object.values(pending)) putInboxRecord(rec, true, prop);
+  };
+  useEffect(() => {
+    const onHide = () => { if (document.visibilityState === 'hidden') flushInbox(); };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('beforeunload', flushInbox);
+    return () => { document.removeEventListener('visibilitychange', onHide); window.removeEventListener('beforeunload', flushInbox); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const removeInboxRecord = (id) => {
+    setInbox(prev => prev.filter(r => r.id !== id));
+    cancelInboxWrite(id);
+    if (!inboxServerLoaded.current) return;
+    const base = apiUrl('/api/receipt-inbox', activeProperty);
+    fetch(base + (activeProperty ? '&' : '?') + 'id=' + encodeURIComponent(id), { method: 'DELETE' })
+      .then(r => { if (!r.ok) setSyncError('Failed to remove receipt'); else setSyncError(null); })
+      .catch(() => setSyncError('Unable to reach server'));
+  };
+  // Ask the server to read one uploaded receipt; returns the updated record (extracted OR needs-manual) or null if unreachable.
+  const runExtraction = async (id, propertyId = activePropertyRef.current) => {
+    try {
+      const r = await fetch('/api/receipt-extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ property: propertyId, inboxId: id }) });
+      const body = await r.json().catch(() => null);
+      return body && body.record ? body.record : null;
+    } catch (e) { return null; }
+  };
+  const retryInboxRecord = async (record) => {
+    const propertyId = activePropertyRef.current;
+    setInbox(prev => prev.map(r => (r.id === record.id ? { ...r, status: 'pending', error: null } : r)));
+    const rec = await runExtraction(record.id, propertyId);
+    if (activePropertyRef.current !== propertyId) return;   // the property changed while Claude was reading: don't touch the other property's list
+    setInbox(prev => prev.map(r => (r.id === record.id
+      ? (rec || { ...record, status: 'needs-manual', error: 'Could not reach the server to read this receipt. Check your connection and press Retry.' })
+      : r)));
+  };
+  // One receipt at a time: upload → create the inbox record → extract. Each failure leaves the file safe in the inbox.
+  const uploadToInbox = async (fileList) => {
+    const propertyId = activePropertyRef.current;
+    if (!propertyId || !inboxServerLoaded.current) return;
+    for (const file of Array.from(fileList || [])) {
+      const key = Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+      const stage = (text, error) => setInboxUploads(u => u.map(x => (x.key === key ? { ...x, stage: text, error: error || null } : x)));
+      setInboxUploads(u => [...u, { key, name: file.name || 'receipt', stage: 'Preparing…', error: null }]);
+      try {
+        const hash = await sha256Hex(file);
+        const id = newInboxId();
+        const payload = await buildReceiptUpload(file);
+        stage('Uploading…');
+        const up = await fetch('/api/receipts-upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ propertyId, inboxId: id, ...payload }) });
+        if (!up.ok) {
+          const msg = up.status === 413 ? 'That file is too large (about 2.5 MB max).' : ((await up.json().catch(() => ({}))).error || 'Upload failed.');
+          throw new ReceiptUploadError(msg);
+        }
+        const { pathname, name, contentType } = await up.json();
+        const record = { id, status: 'pending', receipt: { pathname, name, contentType, uploadedAt: new Date().toISOString(), hash }, extraction: null, error: null, purchaseIds: [] };
+        const savePending = () => fetch(apiUrl('/api/receipt-inbox', propertyId), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(record) }).then(r => r.ok).catch(() => false);
+        if (!(await savePending()) && !(await savePending())) {
+          // The file is uploaded but no inbox card exists for it: remove the orphaned blob (best-effort) and tell the user.
+          fetch('/api/receipts-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pathname, inboxId: id }) }).catch(() => {});
+          throw new ReceiptUploadError('Could not save the receipt to the inbox (the upload was removed). Check your connection and try again.');
+        }
+        const stillHere = () => activePropertyRef.current === propertyId;   // a property switch mid-upload must not leak into the other property's list
+        if (stillHere()) setInbox(prev => [...prev, record]);
+        stage('Reading the receipt…');
+        const rec = await runExtraction(id, propertyId);
+        if (stillHere()) setInbox(prev => prev.map(r => (r.id === id ? (rec || { ...record, status: 'needs-manual', error: 'Could not reach the server to read this receipt. Press Retry.' }) : r)));
+        setInboxUploads(u => u.filter(x => x.key !== key));
+      } catch (e) {
+        stage('', e instanceof ReceiptUploadError ? e.message : 'Upload failed: ' + ((e && e.message) || 'unknown error'));
+        setTimeout(() => setInboxUploads(u => u.filter(x => x.key !== key)), 8000);
+      }
+    }
+  };
+  // File: ONE explicit action. Creates one purchase per accepted line (shared order group + shared receipt), marks the
+  // record filed, and moves linked shopping items to ordered. The ref guards against a double click.
+  const fileInboxRecord = async (record, order) => {
+    if (inboxFiling.current.has(record.id)) return false;
+    const drafts = buildPurchasesFromInbox({ record, order, shoppingItems: shopping.items, settings: shopping.settings, propertyInServiceDate: activeInServiceDate });
+    if (drafts.length === 0) return false;
+    inboxFiling.current.add(record.id);
+    // All-or-nothing: wait for every purchase save, and only then mark the record filed. Any failure rolls the lot back
+    // (quietly — the error message below must not be cleared by a rollback "success") so a retry can't double-file.
+    const results = await Promise.all(drafts.map(savePurchase));
+    const outcome = decideFilingOutcome(results);
+    const filedRes = outcome.markFiled ? await saveInboxRecordNow({ ...record, status: 'filed', purchaseIds: drafts.map(d => d.id) }) : false;
+    const filedOk = filedRes === true;
+    if (!filedOk) {
+      const ids = new Set(drafts.map(d => d.id));
+      setPurchases(prev => prev.filter(p => !ids.has(p.id)));
+      for (const d of drafts) {
+        const base = apiUrl('/api/purchases', activeProperty);
+        fetch(base + (activeProperty ? '&' : '?') + 'id=' + encodeURIComponent(d.id), { method: 'DELETE' }).catch(() => {});
+      }
+      if (filedRes !== 'closed') setInbox(prev => prev.map(r => (r.id === record.id ? record : r)));   // 'closed' already adopted the server's record
+      inboxFiling.current.delete(record.id);
+      setSyncError(outcome.failed
+        ? `Filing failed: ${outcome.failed} of ${drafts.length} purchases did not save. Nothing was filed — please try again.`
+        : 'Could not mark the receipt as filed. Nothing was filed — please try again.');
+      return false;
+    }
+    const byItem = {};
+    drafts.forEach(d => { if (d.shoppingItemId) (byItem[d.shoppingItemId] = byItem[d.shoppingItemId] || []).push(d.id); });
+    for (const [itemId, pids] of Object.entries(byItem)) {
+      const it = shopping.items.find(i => i.id === itemId);
+      if (!it) continue;
+      const live = (it.purchaseIds || []).filter(pid => purchases.some(p => p.id === pid));
+      saveShoppingItem({ ...it, status: ['received', 'kept', 'returned'].includes(it.status) ? it.status : 'ordered', purchaseIds: [...live, ...pids] });
+    }
+    // Tell the user, with a link — never auto-navigate: that would close an open edit form (losing unsaved edits) and reset
+    // the search/filters every time several receipts are filed in a row.
+    setInboxNotice({ text: `Filed ${drafts.length} purchase${drafts.length === 1 ? '' : 's'} from ${(record.extraction && record.extraction.vendor) || 'the receipt'}.`, purchaseId: drafts[0].id });
+    if (inboxNoticeTimer.current) clearTimeout(inboxNoticeTimer.current);
+    inboxNoticeTimer.current = setTimeout(() => setInboxNotice(null), 20000);
+    return true;
+  };
+  const inboxReady = inboxLoaded && !!activeProperty && !inboxLoadError;
+  const activePropertyAddress = (properties.find(p => p.id === activeProperty) || {}).address || '';
+
   // Shopping "Mark purchased" → a pre-filled Purchase, non-destructively (the candidate is untouched).
   // The item moves to "ordered" with the chosen candidate selected and the purchase linked both ways
   // (item.purchaseIds ↔ purchase.shoppingItemId). If the item already has a live purchase, just open it.
@@ -5549,7 +5983,7 @@ export default function App() {
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
       {activeView === "shopping" && <ShoppingView shopping={shopping} loaded={shoppingLoaded} loadError={shoppingLoadError} canEdit={shoppingReady} purchases={purchases} onSaveItem={saveShoppingItem} onRemoveItem={removeShoppingItem} onSaveSettings={saveShoppingSettings} onMarkPurchased={promoteShoppingItem} propertyId={activeProperty} />}
-      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} reimbursableVendors={shopping.settings.reimbursableVendors} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
+      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} reimbursableVendors={shopping.settings.reimbursableVendors} inboxPanel={{ inbox, loaded: inboxLoaded, loadError: inboxLoadError, canUse: inboxReady, uploads: inboxUploads, onUpload: uploadToInbox, onChange: saveInboxRecord, onChangeNow: saveInboxRecordNow, onRemove: removeInboxRecord, onRetry: retryInboxRecord, onFile: fileInboxRecord, shoppingItems: shopping.items, propertyAddress: activePropertyAddress, onOpenPurchase: openPurchase, notice: inboxNotice, onDismissNotice: () => setInboxNotice(null) }} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
       {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} loadError={houseInfoLoadError} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 
       {showMigrationModal && migrationNeeded && (

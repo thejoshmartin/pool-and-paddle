@@ -1,0 +1,95 @@
+{
+  "_note": "Expected model output for a real Minoan receipt (spec §3.7). Minoan line prices are already net of the Minoan discount, so order-level discounts is 0.",
+  "docType": "receipt",
+  "vendor": "Minoan",
+  "orderNo": "F088F252",
+  "orderDate": null,
+  "paidDate": "2026-10-26",
+  "paymentMethod": "credit card",
+  "cardLast4": null,
+  "customerName": null,
+  "shipTo": "6401 Broward Street, Anastasia Island FL 32080",
+  "handwritten": false,
+  "lines": [
+    {
+      "lineNo": 1,
+      "description": "Dunphy upholstered platform bed, adjustable headboard, king, white",
+      "sourceVendor": "Wayfair",
+      "sku": null,
+      "qty": 1,
+      "retailUnitPrice": 1039.96,
+      "unitPrice": 196.87,
+      "lineTotal": 196.87,
+      "roomHint": null,
+      "suggestedTrade": "Furniture / FF&E",
+      "suggestedCategory": "Furniture",
+      "confidence": 0.95,
+      "matchItemId": null,
+      "matchScore": null,
+      "decision": null
+    },
+    {
+      "lineNo": 2,
+      "description": "Dunphy upholstered platform bed, adjustable headboard, king, acid blue",
+      "sourceVendor": "Wayfair",
+      "sku": null,
+      "qty": 1,
+      "retailUnitPrice": 959.96,
+      "unitPrice": 182.15,
+      "lineTotal": 182.15,
+      "roomHint": null,
+      "suggestedTrade": "Furniture / FF&E",
+      "suggestedCategory": "Furniture",
+      "confidence": 0.95,
+      "matchItemId": null,
+      "matchScore": null,
+      "decision": null
+    },
+    {
+      "lineNo": 3,
+      "description": "King velvet upholstered platform bed, wooden slats, black",
+      "sourceVendor": "Wayfair",
+      "sku": null,
+      "qty": 1,
+      "retailUnitPrice": 399.99,
+      "unitPrice": 156.39,
+      "lineTotal": 156.39,
+      "roomHint": null,
+      "suggestedTrade": "Furniture / FF&E",
+      "suggestedCategory": "Furniture",
+      "confidence": 0.95,
+      "matchItemId": null,
+      "matchScore": null,
+      "decision": null
+    }
+  ],
+  "retailTotal": 2399.91,
+  "subtotal": 535.41,
+  "tax": 35.92,
+  "shipping": 0.0,
+  "fees": 17.34,
+  "discounts": 0,
+  "total": 588.67,
+  "amountPaid": 588.67,
+  "reconciles": true,
+  "issues": [],
+  "model": "fixture",
+  "extractedAt": "2026-11-07T00:00:00.000Z",
+  "_expected": {
+    "fees": [
+      6.38,
+      5.9,
+      5.06
+    ],
+    "tax": [
+      13.21,
+      12.22,
+      10.49
+    ],
+    "totalPaid": [
+      216.46,
+      200.27,
+      171.94
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 import { Redis } from '@upstash/redis';
 import { del } from '@vercel/blob';
-import { scopedKey, purchasesFromHash, isReceiptReferenced } from './_scope.js';
+import { scopedKey, purchasesFromHash, blobIsReferenced } from './_scope.js';
 
 const redis = new Redis({
   url: process.env.PP_REDIS_URL,
@@ -41,10 +41,12 @@ export default async function handler(req, res) {
     // Clean up receipt blobs so deleting a purchase never leaves orphaned files — but never
     // delete a blob another purchase (a sibling line of the same order) still references.
     const all = purchasesFromHash(await redis.hgetall(key));
+    // A receipt filed from the Receipt Inbox is ALSO referenced by its inbox record — keep the blob while either holds it.
+    const inbox = purchasesFromHash(await redis.hgetall(scopedKey('receipt-inbox', req.query.property)));
     const purchase = all.find((p) => p && p.id === id);
     const receipts = purchase && Array.isArray(purchase.receipts) ? purchase.receipts : [];
     for (const r of receipts) {
-      if (r && r.pathname && !isReceiptReferenced(all, r.pathname, id)) {
+      if (r && r.pathname && !blobIsReferenced({ purchases: all, inbox, pathname: r.pathname, excludePurchaseId: id })) {
         try { await del(r.pathname); } catch (e) { /* best-effort cleanup */ }
       }
     }
