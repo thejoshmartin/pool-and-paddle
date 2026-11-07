@@ -9,6 +9,7 @@ import {
   assetClassLabel, defaultAllowanceFor, reimbursementDefaultsFor, purchaseDefaults,
   normalizePurchase, netCost, paymentBadge, summarizePurchases,
   fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
+  localISODate, daysBetween, returnsClosingSoon, newOrderGroupId, groupByOrder,
 } from '../src/lib/purchases-logic.js';
 import { scopedKey, parseReceiptPathname, migrateFinishesToHash } from '../api/_scope.js';
 import {
@@ -68,7 +69,7 @@ console.log('buildCostSegCsv():');
   assert.equal(count, 3);
   ok('filters to items with BOTH assetClass and placedInServiceDate');
   const body = csv.split('\n');
-  assert.ok(body[2].includes('5-yr'));   // 5-yr (order 1) sorts before 27.5-yr (order 4)
+  assert.ok(body[3].includes('5-yr'));   // 5-yr (order 1) sorts before 27.5-yr (order 4); rows start after 2 preamble lines + header
   ok('grouped by asset class in MACRS order');
   assert.ok(csv.includes('"5-yr subtotal"') && csv.includes('"27.5-yr subtotal"'));
   ok('per-class subtotals present');
@@ -589,6 +590,96 @@ console.log('Phase 1 — reimbursements / allowance pool (spec §1.3 fixtures A,
   }
   assert.equal(allowancePool([]).poolCharged, 0);
   ok('every money-flow function tolerates [] and bare legacy records');
+}
+
+console.log('Phase 1 — returns closing / order grouping:');
+{
+  assert.equal(localISODate(new Date(2026, 10, 13)), '2026-11-13');
+  assert.equal(daysBetween('2026-11-13', '2026-11-27'), 14);
+  assert.equal(daysBetween('2026-11-13', 'nope'), null);
+  assert.equal(daysBetween('', '2026-11-13'), null);
+  ok('localISODate uses local date parts; daysBetween is whole days and null for invalid input');
+
+  const today = '2026-11-13';
+  const input = [
+    { id: 'B', returnByDate: '2026-11-27', status: 'Ordered' },
+    { id: 'late', returnByDate: '2026-11-28', status: 'Ordered' },
+    { id: 'A', returnByDate: '2026-11-13', status: 'Received' },
+    { id: 'past', returnByDate: '2026-11-12', status: 'Ordered' },
+    { id: 'ret', returnByDate: '2026-11-15', status: 'Returned' },
+    { id: 'kept', returnByDate: '2026-11-15', status: 'Installed', keepConfirmed: true },
+    { id: 'blank', returnByDate: '', status: 'Ordered' },
+    { id: 'junk', returnByDate: 'garbage', status: 'Ordered' },
+    { id: 'I', returnByDate: '2026-11-20', status: 'Return started' },
+    { id: 'old' },
+  ];
+  assert.deepEqual(returnsClosingSoon(input, today, 14).map(p => p.id), ['A', 'I', 'B']);
+  ok('returns closing: today..today+14 inclusive, soonest first; excludes closed windows, Returned, kept, blank/garbage dates and bare legacy records');
+  assert.deepEqual(returnsClosingSoon(input, today, 3).map(p => p.id), ['A']);
+  ok('the day window is a parameter');
+
+  assert.match(newOrderGroupId(), /^og-[a-z0-9]+-[a-z0-9]{6}$/);
+  assert.notEqual(newOrderGroupId(), newOrderGroupId());
+  ok('newOrderGroupId shape and uniqueness');
+
+  const s1 = { id: 's1' }, s2 = { id: 's2' };
+  const a1 = { id: 'a1', orderGroupId: 'og-1', lineNo: 2, totalPaid: 10 };
+  const a0 = { id: 'a0', orderGroupId: 'og-1', lineNo: 1, totalPaid: 30, refundAmount: 5 };
+  const lone = { id: 'lone', orderGroupId: 'og-2' };
+  const g = groupByOrder([s1, a1, s2, a0, lone]);
+  assert.equal(g.length, 4);
+  assert.deepEqual([g[0].kind, g[0].purchase.id], ['single', 's1']);
+  assert.equal(g[1].kind, 'order');
+  assert.equal(g[1].orderGroupId, 'og-1');
+  assert.deepEqual(g[1].purchases.map(p => p.id), ['a0', 'a1']);
+  assert.equal(g[1].subtotal, 35);
+  assert.deepEqual([g[2].kind, g[2].purchase.id], ['single', 's2']);
+  assert.deepEqual([g[3].kind, g[3].purchase.id], ['single', 'lone']);
+  ok('groupByOrder: group sits at first member, lines sort by lineNo, subtotal is net, one-member group renders as a single');
+  const noLine = groupByOrder([{ id: 'm1', orderGroupId: 'og-3' }, { id: 'm2', orderGroupId: 'og-3', lineNo: 1 }, { id: 'm3', orderGroupId: 'og-3' }]);
+  assert.deepEqual(noLine[0].purchases.map(p => p.id), ['m2', 'm1', 'm3']);
+  assert.doesNotThrow(() => groupByOrder([{}, {}]));
+  ok('lines without lineNo follow numbered ones in input order; bare records never throw');
+}
+
+console.log('Phase 1 — cost-seg CSV (net cost, returned block, funding source):');
+{
+  const base = { placedInServiceDate: '2026-01-01', ownerPurchased: true, vendor: 'V', invoiceNo: '', trade: '', room: '', section: '', purchasedBy: '' };
+  const net = buildCostSegCsv([{ ...base, assetClass: '5-yr', totalPaid: 120, refundAmount: 100, description: 'Rug' }]);
+  assert.match(net.csv, /"5-yr subtotal",,,,"20"/);
+  assert.match(net.csv, /"GRAND TOTAL",,,,"20"/);
+  ok('CSV uses net cost ($120 paid, $100 refunded → 20) in rows, subtotal and grand total');
+
+  const withReturn = buildCostSegCsv([
+    { ...base, assetClass: '5-yr', totalPaid: 100, description: 'Good lamp', status: 'Installed' },
+    { ...base, assetClass: '5-yr', totalPaid: 80, refundAmount: 80, description: 'Bad lamp', status: 'Returned', invoiceNo: 'INV9' },
+  ]);
+  assert.equal(withReturn.count, 1);
+  assert.match(withReturn.csv, /"GRAND TOTAL",,,,"100"/);
+  const iBlock = withReturn.csv.indexOf('Returned (excluded)');
+  assert.ok(iBlock > -1 && withReturn.csv.indexOf('Bad lamp') > iBlock);
+  assert.ok(withReturn.csv.indexOf('GRAND TOTAL') < iBlock);
+  assert.ok(withReturn.csv.includes('INV9'));
+  ok('a Returned line leaves the groups, count and grand total and is listed after a "Returned (excluded)" block');
+  assert.ok(!net.csv.includes('Returned (excluded)'));
+  ok('no Returned purchases → no excluded block');
+
+  const classes = buildCostSegCsv([
+    { ...base, assetClass: 'supplies', totalPaid: 10, description: 'Paper towels' },
+    { ...base, assetClass: '27.5-yr', totalPaid: 20, description: 'Closet' },
+  ]).csv;
+  assert.ok(classes.indexOf('"27.5-yr subtotal"') < classes.indexOf('"supplies subtotal"'));
+  ok('supplies group sorts after 27.5-yr');
+  const partial = buildCostSegCsv([{ ...base, assetClass: '5-yr', totalPaid: 200, refundAmount: 50, status: 'Return started', description: 'Chair' }]);
+  assert.equal(partial.count, 1);
+  assert.match(partial.csv, /"5-yr subtotal",,,,"150"/);
+  ok('Return started with a partial refund stays in its group at net');
+
+  const funded = buildCostSegCsv([{ ...base, assetClass: '5-yr', totalPaid: 300, reimbursable: true, description: 'Pendant' }]).csv;
+  assert.ok(funded.includes('Contract-funded items are already inside the construction contract price; do not add them to basis a second time.'));
+  assert.ok(funded.includes('"Funding Source"') && funded.includes('"Cost Basis (net of refunds)"'));
+  assert.ok(funded.includes('Contract (reimbursed by Sparrow)'));
+  ok('CSV carries the contract-funded note, a Funding Source column (reimbursed by Sparrow) and the net-of-refunds header');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

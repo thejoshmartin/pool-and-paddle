@@ -56,33 +56,45 @@ export const ASSET_CLASS_BY_TRADE = {
 export function suggestAssetClass(trade) { return ASSET_CLASS_BY_TRADE[trade] || ""; }
 
 // Build a per-property cost-seg CSV: every purchase with BOTH an asset class and a
-// placed-in-service date, grouped by asset class with subtotals. Section (§1245/1250)
-// is included only when set. Header carries the "confirm with CPA" disclaimer.
+// placed-in-service date, grouped by asset class with subtotals, on NET cost (refunds
+// subtracted). Fully Returned lines are excluded and listed in a trailing block. Section
+// (§1245/1250) is included only when set. The header carries the "confirm with CPA"
+// disclaimer and the contract-funded note.
 export function buildCostSegCsv(purchases) {
-  const order = { "5-yr": 1, "7-yr": 2, "15-yr": 3, "27.5-yr": 4 };
+  const order = { "5-yr": 1, "7-yr": 2, "15-yr": 3, "27.5-yr": 4, "supplies": 5 };
   const rows = purchases
-    .filter(p => p.assetClass && p.placedInServiceDate)
+    .filter(p => p.status !== "Returned" && p.assetClass && p.placedInServiceDate)
     .sort((a, b) => (order[a.assetClass] || 9) - (order[b.assetClass] || 9) || (a.description || "").localeCompare(b.description || ""));
+  const returned = purchases.filter(p => p.status === "Returned");
   const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const header = ["Asset Class", "Description", "Vendor", "Invoice #", "Cost Basis (paid)", "Placed In Service", "Section", "Room", "Trade", "Purchased By", "Owner/Contractor"];
+  const header = ["Asset Class", "Description", "Vendor", "Invoice #", "Cost Basis (net of refunds)", "Placed In Service", "Section", "Room", "Trade", "Purchased By", "Owner/Contractor", "Funding Source"];
   const lines = [];
   lines.push(esc("Cost Segregation Export — asset classes are SUGGESTIONS; confirm all with your CPA / cost-seg engineer. Not tax advice."));
+  lines.push(esc("Contract-funded items are already inside the construction contract price; do not add them to basis a second time."));
   lines.push(header.map(esc).join(","));
   let lastClass = null, subtotal = 0, grandTotal = 0;
-  const blanks = (label, amt) => [esc(label), "", "", "", esc(amt), "", "", "", "", "", ""].join(",");
-  const flushSubtotal = () => { if (lastClass != null) lines.push(blanks(lastClass + " subtotal", subtotal)); };
+  const blanks = (label, amt) => [esc(label), "", "", "", esc(amt), "", "", "", "", "", "", ""].join(",");
+  const flushSubtotal = () => { if (lastClass != null) lines.push(blanks(lastClass + " subtotal", round2(subtotal))); };
   for (const p of rows) {
     if (p.assetClass !== lastClass) { flushSubtotal(); lastClass = p.assetClass; subtotal = 0; }
-    const paid = Number(p.totalPaid) || 0;
+    const paid = netCost(p);
     subtotal += paid; grandTotal += paid;
     lines.push([
       esc(p.assetClass), esc(p.description), esc(p.vendor), esc(p.invoiceNo), esc(paid),
       esc(p.placedInServiceDate), esc(p.section), esc(p.room), esc(p.trade),
-      esc(p.purchasedBy), esc(p.ownerPurchased ? "Owner" : "Contractor"),
+      esc(p.purchasedBy), esc(p.ownerPurchased ? "Owner" : "Contractor"), esc(fundingSource(p)),
     ].join(","));
   }
   flushSubtotal();
-  lines.push(blanks("GRAND TOTAL", grandTotal));
+  lines.push(blanks("GRAND TOTAL", round2(grandTotal)));
+  if (returned.length > 0) {
+    lines.push("");
+    lines.push(esc("Returned (excluded)"));
+    lines.push(["Description", "Vendor", "Invoice #", "Paid", "Refund"].map(esc).join(","));
+    for (const p of returned) {
+      lines.push([esc(p.description), esc(p.vendor), esc(p.invoiceNo), esc(Number(p.totalPaid) || 0), esc(Number(p.refundAmount) || 0)].join(","));
+    }
+  }
   return { csv: lines.join("\n"), count: rows.length };
 }
 
@@ -234,4 +246,64 @@ export function allowancePool(purchases, allowances = ALLOWANCE_CATEGORIES) {
     reimbursedNoCategory,
     poolTotal, poolCharged, poolRemaining: round2(poolTotal - poolCharged),
   };
+}
+
+// ── Returns, dates, order grouping ───────────────────────────────────────────
+
+const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Today's date as YYYY-MM-DD from the LOCAL clock (toISOString would flip a day in the evening).
+export function localISODate(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Whole days from fromISO to toISO; null if either is not a valid YYYY-MM-DD.
+export function daysBetween(fromISO, toISO) {
+  if (!ISO_RE.test(fromISO || "") || !ISO_RE.test(toISO || "")) return null;
+  const utc = (iso) => { const [y, m, d] = iso.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+  const diff = Math.round((utc(toISO) - utc(fromISO)) / 86400000);
+  return Number.isNaN(diff) ? null : diff;
+}
+
+// Purchases whose return window closes from today through today+days (soonest first),
+// excluding Returned and ones the owners already decided to keep. Closed windows are not listed.
+export function returnsClosingSoon(purchases, todayISO, days = 14) {
+  return purchases
+    .map((p, i) => ({ p, i, left: daysBetween(todayISO, p.returnByDate) }))
+    .filter(({ p, left }) => left !== null && left >= 0 && left <= days && p.status !== "Returned" && !p.keepConfirmed)
+    .sort((a, b) => a.left - b.left || a.i - b.i)
+    .map(({ p }) => p);
+}
+
+export function newOrderGroupId() {
+  return `og-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Group purchases that share an orderGroupId. A group sits where its first member appeared;
+// its lines sort by lineNo (unnumbered lines after numbered ones, in input order); one-member
+// groups render as a plain single.
+export function groupByOrder(purchases) {
+  const members = {};
+  for (const p of purchases) {
+    if (p.orderGroupId) (members[p.orderGroupId] = members[p.orderGroupId] || []).push(p);
+  }
+  const out = [];
+  const emitted = new Set();
+  for (const p of purchases) {
+    const gid = p.orderGroupId;
+    if (!gid || members[gid].length < 2) { out.push({ kind: "single", purchase: p }); continue; }
+    if (emitted.has(gid)) continue;
+    emitted.add(gid);
+    const lines = members[gid]
+      .map((m, i) => ({ m, i }))
+      .sort((a, b) => {
+        const an = a.m.lineNo == null, bn = b.m.lineNo == null;
+        if (an !== bn) return an ? 1 : -1;
+        return (an ? 0 : a.m.lineNo - b.m.lineNo) || a.i - b.i;
+      })
+      .map(x => x.m);
+    out.push({ kind: "order", orderGroupId: gid, purchases: lines, subtotal: round2(lines.reduce((s, m) => s + netCost(m), 0)) });
+  }
+  return out;
 }
