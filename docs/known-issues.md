@@ -128,3 +128,17 @@ Consciously chosen behavior — don't re-litigate without Josh:
 - Receipt blobs can be shared by several purchases; `receipts-delete` fails safe (keeps the blob) if it can't read Redis, which can leave an orphan blob (harmless) — same best-effort stance as known issue #3.
 - Receipt routes check shared references by reading the purchases hash (`HGETALL`) — `receipts-view` tries a single `HGET` of the uploader's record first; fine at this scale, and one corrupt record is skipped rather than breaking the property. A removal in one tab racing another line's unsaved save could still orphan-delete a blob (needs seconds of overlap; not seen in practice).
 - The Returned (excluded) CSV block lists every Returned line with a "Net not refunded" column; those lines are not part of cost-seg basis even if only partly refunded (a restocking fee is an expense, not basis) — confirm with the CPA.
+
+## 2026-11 Phase 2 Shopping tab
+Consciously chosen behavior — don't re-litigate without Josh:
+- The server sanitizer validates every known field but **preserves unknown fields** on items, candidates and settings (so additive research-agent fields survive a save); only `__proto__`/`constructor`/`prototype` are dropped and a record is capped at 100 KB.
+- `qtyNeeded` on a stored item is never authoritative — `computeQty` recomputes on read and the export bundle writes it fresh.
+- Best Value treats unknown stock (`inStock` null) as in stock and a missing delivery ETA as OK when a need-by is set; `restockingPct` is a fraction (a value above 1 is read as a percent); `targetPrice` and the over-target warning are per unit.
+- Agent import never changes `status` (adding candidates does not advance it), appends notes once, takes `flaggedAt` from the file's `generatedAt` (so re-importing is a no-op), and adds a repeat new item's candidates to the existing proposed item instead of duplicating it. Price/stock refreshes never overwrite `qtyToBuy`/`packSize`/identity fields or blank out a known value. Update entries' unknown fields are copied only when they don't collide with a known item field and aren't delete-like.
+- Approve needs a selected candidate; selecting a candidate on a researching item moves it to shortlisted; un-approving returns it to shortlisted.
+- Research tools exported to the agent = Smart Home & Security, Guest Experience, Operations & Cleaning (the spec says "procurement-relevant" without a list).
+- Print for Kerry uses a new window (pop-ups must be allowed) because the project forbids stylesheets, which an in-page `@media print` would need.
+- `scripts/parse-shopping-list.py` reads a CSV export of the master-list tab and could not be validated against the real master list (not yet supplied); it ships with a sample fixture and a unit test, and rejects a bad row with its row number.
+- Shopping edits are disabled until the saved list has loaded for a real property (so seed defaults can never overwrite saved data); there is no live sync between devices (same as the rest of the app).
+- The Purchases form's reimbursement default reads `settings.reimbursableVendors`; the legacy-record default in `normalizePurchase` still uses the code constant because settings are not loaded at that point.
+
