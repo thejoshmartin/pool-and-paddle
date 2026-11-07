@@ -14,6 +14,8 @@ import {
 } from "./lib/purchases-logic.js";
 import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, furnitureField, roomField, tombstone, BUDGET_FIELD, partitionFinishFields } from "./lib/design-logic.js";
 import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, groupHouseInfoByCategory } from "./lib/house-info-logic.js";
+import SHOPPING_SEED from "./shopping-seed.json";
+import { normalizeShoppingItem, mergeShopping, partitionShoppingFields, shoppingItemField, SHOPPING_SETTINGS_FIELD } from "./lib/shopping-logic.js";
 
 // ─── DATA ───────────────────────────────────────────────────────────────────
 
@@ -225,6 +227,7 @@ function Header({ activeView, setActiveView, properties = [], activeProperty, on
               { key: "dashboard", label: "Dashboard" },
               { key: "tasks", label: "Tasks" },
               { key: "design", label: "Design" },
+              { key: "shopping", label: "Shopping" },
               { key: "purchases", label: "Purchases" },
               { key: "house-info", label: "House Info" },
               { key: "summary", label: "Brief" },
@@ -3949,6 +3952,21 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
   );
 }
 
+// ─── SHOPPING ────────────────────────────────────────────────────────────────
+// Whole-house shopping list: seeded from src/shopping-seed.json, compared on total landed cost,
+// approved by JM/KM, promoted to Purchases, and round-tripped with the research agent. Persisted as
+// a Redis hash via /api/shopping (per-field writes). Pure logic lives in src/lib/shopping-logic.js.
+function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveItem, onRemoveItem, onSaveSettings }) {
+  return (
+    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px", fontFamily: font }}>
+      <h2 style={{ fontSize: 24, fontWeight: 800, color: C.charcoal, margin: 0 }}>Shopping</h2>
+      <p style={{ fontSize: 13, color: C.textMuted, margin: "4px 0 0" }}>Stocking the house · {shopping.items.length} items</p>
+      {!loaded && <p style={{ color: C.textMuted, fontSize: 14, padding: 24 }}>Loading…</p>}
+      {loaded && loadError && <p style={{ color: C.ocean, fontSize: 14, padding: 24 }}>Couldn’t load saved shopping changes — showing the starter list. Reload to try again.</p>}
+    </div>
+  );
+}
+
 // ─── HOUSE INFO ──────────────────────────────────────────────────────────────
 // House reference data (utility accounts, IDs, access codes, vendor contacts) — including
 // real login credentials. Persisted server-side as a Redis hash (one field per item) via
@@ -4203,6 +4221,7 @@ function HouseInfoView({ houseInfo, loaded, canAdd, loadError, onSave, onDelete 
 
 const LS_TASKS = "pool-paddle-tasks-v2";
 const LS_FINISHES = "pool-paddle-finishes-v1";
+const LS_SHOPPING = "pool-paddle-shopping-v1";
 const LS_ACTIVE_PROPERTY = "pool-paddle-active-property";
 
 // localStorage key for a property (legacy base key when propertyId is null/pre-migration).
@@ -4252,6 +4271,21 @@ const modalCardStyle = {
   boxShadow: "0 8px 40px rgba(0,0,0,0.18)", fontFamily: font,
 };
 
+// Shopping list = bundled seed + this property's saved edits. The localStorage cache holds the MERGED
+// result (local read-cache only — server writes are per-field via the handlers in App).
+function loadShoppingFromCache(propertyId) {
+  try {
+    const raw = localStorage.getItem(lsKey(LS_SHOPPING, propertyId));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.items) && parsed.settings) {
+        return { items: parsed.items.map(normalizeShoppingItem), settings: parsed.settings };
+      }
+    }
+  } catch (e) { /* fall through to the seed */ }
+  return mergeShopping({ itemsById: {}, deletedIds: [], settings: null }, SHOPPING_SEED.items);
+}
+
 export default function App() {
   const [activeView, setActiveView] = useState("dashboard");
   const [activeProperty, setActiveProperty] = useState(() => readActiveProperty());
@@ -4289,6 +4323,13 @@ export default function App() {
   const [houseInfo, setHouseInfo] = useState([]);
   const [houseInfoLoaded, setHouseInfoLoaded] = useState(false);
   const [houseInfoLoadError, setHouseInfoLoadError] = useState(false);
+  const [shopping, setShopping] = useState(() => loadShoppingFromCache(activeProperty));
+  const [shoppingLoaded, setShoppingLoaded] = useState(false);
+  const [shoppingLoadError, setShoppingLoadError] = useState(false);
+  const shoppingServerLoaded = useRef(false);
+  const shoppingFirstRun = useRef(true);
+  const shoppingFieldTimers = useRef({});    // field -> debounce timer
+  const shoppingFieldPending = useRef({});   // field -> latest unsent value
 
   // Load the property registry once. Decides migrated vs. needs-migration.
   useEffect(() => {
@@ -4478,6 +4519,43 @@ export default function App() {
     } catch (e) { console.warn('localStorage save failed:', e.name); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [purchases]);
+
+  // Fetch the shopping list's saved edits for the active property. api/shopping.js REQUIRES ?property=
+  // (no legacy data), so pre-migration there is nothing to load and edits are disabled. Cancellation-
+  // guarded like every other fetch effect so an out-of-order response after a rapid property switch can
+  // never apply under the wrong key; on a switch we show that property's cache first. Writes stay gated
+  // by shoppingServerLoaded so seed/cache defaults can never clobber saved server data.
+  useEffect(() => {
+    shoppingServerLoaded.current = false;
+    let cancelled = false;
+    setShoppingLoadError(false);
+    if (shoppingFirstRun.current) {
+      shoppingFirstRun.current = false;   // state already initialized from cache
+    } else {
+      setShopping(loadShoppingFromCache(activeProperty));
+    }
+    if (!activeProperty) { setShoppingLoaded(true); return () => { cancelled = true; }; }
+    setShoppingLoaded(false);
+    fetch(apiUrl('/api/shopping', activeProperty))
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error('bad status'))))
+      .then(map => {
+        if (cancelled) return;
+        setShopping(mergeShopping(partitionShoppingFields(map), SHOPPING_SEED.items));
+        shoppingServerLoaded.current = true;
+        setShoppingLoaded(true);
+      })
+      .catch(() => { if (!cancelled) { setShoppingLoadError(true); setShoppingLoaded(true); } });
+    return () => { cancelled = true; };
+  }, [activeProperty]);
+
+  // Cache the merged shopping list locally (read-cache only). activeProperty omitted from deps for the
+  // same reason as the other cache/save effects.
+  useEffect(() => {
+    try {
+      localStorage.setItem(lsKey(LS_SHOPPING, activeProperty), JSON.stringify(shopping));
+    } catch (e) { console.warn('localStorage save failed:', e.name); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shopping]);
 
   // ── Property switch + migration + backup handlers ─────────────────────────
   const switchProperty = (id) => {
@@ -4703,6 +4781,78 @@ export default function App() {
   const writeRoomMeta = (roomId, meta) => putFinishField(roomField(roomId), meta);
   const writeBudget = (val) => putFinishField(BUDGET_FIELD, val);
 
+  // Shopping — per-field server mutations (HSET/HDEL one field via api/shopping.js), never a
+  // whole-hash write. Item edits are debounced per field (coalesces typing) and flushed on hide/unload.
+  const putShoppingField = (field, value, useKeepalive = false) => {
+    if (!shoppingServerLoaded.current) return;
+    fetch(apiUrl('/api/shopping', activeProperty), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field, value }),
+      keepalive: useKeepalive,
+    }).then(r => { if (!r.ok) setSyncError('Failed to save shopping list'); else setSyncError(null); })
+      .catch(() => setSyncError('Unable to reach server'));
+  };
+  const cancelPendingShoppingField = (field) => {
+    if (shoppingFieldTimers.current[field]) { clearTimeout(shoppingFieldTimers.current[field]); delete shoppingFieldTimers.current[field]; }
+    delete shoppingFieldPending.current[field];
+  };
+  const putShoppingFieldDebounced = (field, value) => {
+    shoppingFieldPending.current[field] = value;
+    if (shoppingFieldTimers.current[field]) clearTimeout(shoppingFieldTimers.current[field]);
+    shoppingFieldTimers.current[field] = setTimeout(() => {
+      delete shoppingFieldTimers.current[field];
+      delete shoppingFieldPending.current[field];
+      putShoppingField(field, value);
+    }, 400);
+  };
+  const flushShoppingFields = () => {
+    for (const id of Object.values(shoppingFieldTimers.current)) clearTimeout(id);
+    const pending = shoppingFieldPending.current;
+    shoppingFieldTimers.current = {};
+    shoppingFieldPending.current = {};
+    for (const [field, value] of Object.entries(pending)) putShoppingField(field, value, true);
+  };
+  const saveShoppingItem = (item) => {
+    setShopping(prev => ({
+      ...prev,
+      items: prev.items.some(i => i.id === item.id) ? prev.items.map(i => (i.id === item.id ? item : i)) : [...prev.items, item],
+    }));
+    putShoppingFieldDebounced(shoppingItemField(item.id), item);
+  };
+  // Deleting a seed item writes a tombstone (so the seed can't resurrect it); a user-created item is just removed.
+  const removeShoppingItem = (id) => {
+    const item = shopping.items.find(i => i.id === id);
+    setShopping(prev => ({ ...prev, items: prev.items.filter(i => i.id !== id) }));
+    const field = shoppingItemField(id);
+    cancelPendingShoppingField(field);
+    if (!shoppingServerLoaded.current) return;
+    if (item && item.userCreated === false) {
+      putShoppingField(field, { id, __deleted: true });
+    } else {
+      const base = apiUrl('/api/shopping', activeProperty);
+      fetch(base + (activeProperty ? '&' : '?') + 'field=' + encodeURIComponent(field), { method: 'DELETE' })
+        .then(r => { if (!r.ok) setSyncError('Failed to save shopping list'); else setSyncError(null); })
+        .catch(() => setSyncError('Unable to reach server'));
+    }
+  };
+  const saveShoppingSettings = (settings) => {
+    setShopping(prev => ({ ...prev, settings }));
+    putShoppingFieldDebounced(SHOPPING_SETTINGS_FIELD, settings);
+  };
+  useEffect(() => {
+    const onHide = () => { if (document.visibilityState === 'hidden') flushShoppingFields(); };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('beforeunload', flushShoppingFields);
+    return () => {
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('beforeunload', flushShoppingFields);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Edits are enabled only once the saved list has loaded for a real property and the load didn't fail.
+  const shoppingReady = shoppingLoaded && !!activeProperty && !shoppingLoadError;
+
   // Flush pending finish writes when the tab is hidden/closed. Empty dep array is safe
   // because there is a single, static property (no property-switch UI) — the flush closure's
   // captured activeProperty can't go stale for a different key. visibilitychange lives on
@@ -4837,6 +4987,7 @@ export default function App() {
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
+      {activeView === "shopping" && <ShoppingView shopping={shopping} loaded={shoppingLoaded} loadError={shoppingLoadError} canEdit={shoppingReady} purchases={purchases} onSaveItem={saveShoppingItem} onRemoveItem={removeShoppingItem} onSaveSettings={saveShoppingSettings} />}
       {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
       {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} loadError={houseInfoLoadError} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 
