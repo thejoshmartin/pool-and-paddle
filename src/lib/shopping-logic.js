@@ -7,6 +7,8 @@
  * with saved edits like mergeFinishes: saved wins, seed fills the rest, tombstones hide deletions.
  */
 
+import { netCost } from "./purchases-logic.js";
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 export const SHOPPING_CATEGORIES = [
@@ -353,4 +355,125 @@ export function mergeShopping(saved, seedItems) {
   const vendorDefaults = { ...D.vendorDefaults };
   for (const [k, v] of Object.entries(sv.vendorDefaults || {})) vendorDefaults[k] = { ...(D.vendorDefaults[k] || {}), ...v };
   return { items, settings: { ...D, ...sv, vendorDefaults } };
+}
+
+// ── Landed cost, best value, warnings, forecast (spec §2.7) ──────────────────
+
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+const qtyOf = (c) => { const q = numOrNull(c && c.qtyToBuy); return q === null ? 1 : Math.max(0, q); };
+
+// Goods total after any discount: unitPrice × qtyToBuy − discount (never negative).
+export function merchandise(c) {
+  if (!c) return 0;
+  return Math.max(0, round2(num(c.unitPrice, 0) * qtyOf(c) - num(c.discount, 0)));
+}
+
+// Vendor defaults (fee %, whether tax is charged on fees, holiday return date) by vendorType, else by
+// a case-insensitive match of the vendor name.
+export function vendorDefaultFor(c, settings) {
+  const vd = (settings && settings.vendorDefaults) || {};
+  if (c && vd[c.vendorType] && isObj(vd[c.vendorType])) return vd[c.vendorType];
+  const name = String((c && c.vendor) || "").trim().toLowerCase();
+  if (!name) return null;
+  return Object.values(vd).find(v => isObj(v) && String(v.name || "").trim().toLowerCase() === name) || null;
+}
+
+// Transaction/processing fees: candidate value, else the vendor default, else 0.
+export function feesFor(c, settings) {
+  const vd = vendorDefaultFor(c, settings);
+  const pct = numOrNull(c && c.transactionFeePct) ?? numOrNull(vd && vd.transactionFeePct) ?? 0;
+  return round2(merchandise(c) * pct);
+}
+
+// Sales tax: an explicit estTax (even 0) wins; blank defaults to the tax rate on goods (plus fees
+// for vendors whose tax base includes them, e.g. Minoan).
+export function taxFor(c, settings) {
+  const explicit = numOrNull(c && c.estTax);
+  if (explicit !== null) return round2(explicit);
+  const vd = vendorDefaultFor(c, settings);
+  const base = merchandise(c) + (vd && vd.taxIncludesFees ? feesFor(c, settings) : 0);
+  return round2(num(settings && settings.defaultTaxRate, DEFAULT_SHOPPING_SETTINGS.defaultTaxRate) * base);
+}
+
+export function landedTotal(c, settings) {
+  if (!c) return 0;
+  return round2(merchandise(c) + num(c.shipping, 0) + feesFor(c, settings) + taxFor(c, settings));
+}
+
+// Landed price per individual unit (qtyToBuy packs × packSize units).
+export function perUnit(c, settings) {
+  const units = Math.max(1, qtyOf(c) * Math.max(1, num(c && c.packSize, 1)));
+  return round2(landedTotal(c, settings) / units);
+}
+
+// What returning it would cost: return shipping + restocking % of goods (a value above 1 is read as a percent).
+export function returnExposure(c) {
+  if (!c || c.freeReturns) return 0;
+  let pct = num(c.restockingPct, 0);
+  if (pct > 1) pct /= 100;
+  return round2(num(c.returnShippingCost, 0) + pct * merchandise(c));
+}
+
+// Display-only suggestion: lowest landed total among candidates not known to be out of stock and
+// (when the item has a need-by date) not known to arrive too late. A human always selects.
+export function bestValue(item, settings) {
+  const list = Array.isArray(item && item.candidates) ? item.candidates.filter(isObj) : [];
+  const needBy = item && item.needBy;
+  const ok = list.filter(c => c.inStock !== false && (!needBy || !c.deliveryEta || c.deliveryEta <= needBy));
+  if (ok.length === 0) return null;
+  const eta = (c) => c.deliveryEta || "9999-12-31";
+  return [...ok].sort((a, b) =>
+    landedTotal(a, settings) - landedTotal(b, settings) ||
+    returnExposure(a) - returnExposure(b) ||
+    (eta(a) < eta(b) ? -1 : eta(a) > eta(b) ? 1 : 0))[0];
+}
+
+const HOURS_72 = 72 * 3600 * 1000;
+
+// Cautions about a candidate. `nowISO` is injected so the logic stays pure/testable.
+export function candidateWarnings(c, item, settings, nowISO) {
+  const out = [];
+  if (!c) return out;
+  const s = settings || {};
+  if (c.returnByDate && s.readyDate && c.returnByDate < s.readyDate) {
+    out.push({ code: "return-before-ready", text: "Return window closes before the house is ready — can't test in the house before returns close" });
+  }
+  const target = numOrNull(item && item.targetPrice);
+  if (target !== null && num(c.unitPrice, 0) / Math.max(1, num(c.packSize, 1)) > target) {
+    out.push({ code: "over-target", text: "Unit price is above the target price" });
+  }
+  if (OPEN_STOCK_CATEGORIES.includes(item && item.category) && c.openStock !== true) {
+    out.push({ code: "not-open-stock", text: "Not confirmed open stock — a broken piece may not be re-buyable" });
+  }
+  const now = new Date(nowISO);
+  const checked = c.checkedAt ? new Date(c.checkedAt) : null;
+  if (checked && !Number.isNaN(checked.getTime()) && !Number.isNaN(now.getTime())) {
+    const y = now.getUTCFullYear();
+    const inSaleWindow = now >= new Date(Date.UTC(y, 10, 20)) && now < new Date(Date.UTC(y, 11, 3));
+    if (inSaleWindow && now - checked > HOURS_72) {
+      out.push({ code: "stale-price", text: "Price last checked more than 72 hours ago" });
+    }
+  }
+  return out;
+}
+
+// Spend outlook: selected-candidate landed totals for items with no live linked purchase (and not
+// returned) + the net cost of linked purchases. Items with no selected candidate plan $0.
+export function forecastSpend(items, purchases, settings) {
+  const byId = new Map((purchases || []).filter(Boolean).map(p => [p.id, p]));
+  const countedPurchases = new Set();
+  let planned = 0, committed = 0;
+  for (const item of items || []) {
+    if (!item) continue;
+    const linked = (Array.isArray(item.purchaseIds) ? item.purchaseIds : []).map(id => byId.get(id)).filter(Boolean);
+    for (const p of linked) {
+      if (!countedPurchases.has(p.id)) { countedPurchases.add(p.id); committed += netCost(p); }
+    }
+    if (linked.length === 0 && item.status !== "returned") {
+      const sel = (Array.isArray(item.candidates) ? item.candidates : []).find(c => c && c.id === item.selectedCandidateId);
+      if (sel) planned += landedTotal(sel, settings);
+    }
+  }
+  planned = round2(planned); committed = round2(committed);
+  return { planned, committed, forecast: round2(planned + committed) };
 }

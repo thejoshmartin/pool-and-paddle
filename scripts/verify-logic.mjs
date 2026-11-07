@@ -933,4 +933,105 @@ console.log('Phase 2 — shopping model, quantity rules, sanitizers, seed merge:
   ok('seed merge: saved edits win, untouched seed fills in, tombstones hide (never resurrect), user-created items kept once, settings overlay defaults per vendor');
 }
 
+console.log('Phase 2 — landed cost, best value, warnings, spend forecast:');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const within = (a, b, cents = 1) => Math.round(Math.abs(a - b) * 100) <= cents;
+  const cand = (o) => ({ ...SH.emptyCandidate(), ...o });
+
+  // Fixture B: three beds, merchandise $535.41, fee 3.2386%, tax 6.5% on goods + fee.
+  const fixB = cand({ vendorType: 'minoan', unitPrice: 535.41, qtyToBuy: 1, shipping: 0, transactionFeePct: 0.032386 });
+  assert.equal(SH.merchandise(fixB), 535.41);
+  assert.equal(SH.feesFor(fixB, D), 17.34);
+  assert.equal(SH.taxFor(fixB, D), 35.93);
+  assert.ok(within(SH.landedTotal(fixB, D), 588.67), `landed ${SH.landedTotal(fixB, D)}`);
+  const minoanDefault = cand({ vendorType: 'minoan', unitPrice: 535.41, qtyToBuy: 1 });
+  assert.equal(SH.feesFor(minoanDefault, D), 17.13);
+  assert.equal(SH.taxFor(minoanDefault, D), 35.92);
+  ok('fixture B (three beds, Minoan): $535.41 + 3.2386% fee + 6.5% tax on goods+fee lands within a cent of $588.67; vendor default fee applies when the candidate has none');
+
+  const amazon = cand({ vendorType: 'amazon', unitPrice: 100, qtyToBuy: 2, shipping: 5, discount: 10 });
+  assert.equal(SH.merchandise(amazon), 190);
+  assert.equal(SH.feesFor(amazon, D), 0);
+  assert.equal(SH.taxFor(amazon, D), 12.35);
+  assert.equal(SH.landedTotal(amazon, D), 207.35);
+  assert.equal(SH.landedTotal({ ...amazon, estTax: 0 }, D), 195);
+  assert.equal(SH.landedTotal({ ...amazon, estTax: '' }, D), 207.35);
+  assert.equal(SH.landedTotal({ ...amazon, estTax: null }, D), 207.35);
+  assert.equal(SH.landedTotal(amazon, { ...D, defaultTaxRate: 0.07 }), 208.3);
+  ok('landed total = merchandise + shipping + fees + tax; an explicit $0 tax is honored while blank tax uses the default rate');
+
+  const byName = cand({ vendor: ' MINOAN ', vendorType: 'other', unitPrice: 100, qtyToBuy: 1 });
+  assert.equal(SH.feesFor(byName, D), 3.2);
+  assert.equal(SH.perUnit({ ...amazon, packSize: 3 }, D), 34.56);
+  ok('vendor defaults are found by vendorType or by a case-insensitive vendor name; per-unit price divides by packs × pack size');
+
+  assert.equal(SH.returnExposure(cand({ freeReturns: true, returnShippingCost: 50, restockingPct: 0.5, unitPrice: 100 })), 0);
+  assert.equal(SH.returnExposure(cand({ returnShippingCost: 12, restockingPct: 0.15, unitPrice: 100, qtyToBuy: 1 })), 27);
+  assert.equal(SH.returnExposure(cand({ returnShippingCost: 12, restockingPct: 15, unitPrice: 100, qtyToBuy: 1 })), 27);
+  assert.equal(SH.returnExposure(cand({ unitPrice: 100 })), 0);
+  ok('return exposure = return shipping + restocking % of merchandise (fraction or percent), zero for free returns');
+
+  // bestValue
+  const mk = (cs, o = {}) => ({ ...SH.emptyShoppingItem(), id: 'sh-bv', name: 'Toaster', candidates: cs, ...o });
+  const A = cand({ id: 'A', vendor: 'Amazon', vendorType: 'amazon', unitPrice: 100, qtyToBuy: 1, shipping: 0, inStock: true, freeReturns: true });
+  const Mdear = cand({ id: 'M', vendor: 'Minoan', vendorType: 'minoan', unitPrice: 90, qtyToBuy: 1, shipping: 15, inStock: true });
+  assert.equal(SH.bestValue(mk([Mdear, A]), D).id, 'A');
+  const Mcheap = { ...Mdear, unitPrice: 80, shipping: 0 };
+  assert.equal(SH.bestValue(mk([A, Mcheap]), D).id, 'M');
+  ok('Best Value ranks on total landed cost (a lower sticker price with shipping + fee can lose to a dearer free-shipping offer)');
+  assert.equal(SH.bestValue(mk([A, { ...Mcheap, inStock: false }]), D).id, 'A');
+  assert.equal(SH.bestValue(mk([A, { ...Mcheap, inStock: null }]), D).id, 'M');
+  assert.equal(SH.bestValue(mk([A, { ...Mcheap, deliveryEta: '2026-12-20' }], { needBy: '2026-12-01' }), D).id, 'A');
+  assert.equal(SH.bestValue(mk([A, { ...Mcheap, deliveryEta: '' }], { needBy: '2026-12-01' }), D).id, 'M');
+  ok('out-of-stock and too-late candidates are skipped; unknown stock or a missing ETA does not disqualify');
+  const T1 = cand({ id: 'T1', vendorType: 'other', unitPrice: 100, estTax: 0, shipping: 0, returnShippingCost: 10, inStock: true });
+  const T2 = cand({ id: 'T2', vendorType: 'other', unitPrice: 100, estTax: 0, shipping: 0, freeReturns: true, inStock: true, deliveryEta: '2026-12-05' });
+  const T3 = cand({ id: 'T3', vendorType: 'other', unitPrice: 100, estTax: 0, shipping: 0, freeReturns: true, inStock: true, deliveryEta: '2026-12-01' });
+  assert.equal(SH.bestValue(mk([T1, T2]), D).id, 'T2');
+  assert.equal(SH.bestValue(mk([T1, T2, T3]), D).id, 'T3');
+  assert.equal(SH.bestValue(mk([]), D), null);
+  const noisy = { ...A, retailUnitPrice: 9999 };
+  assert.equal(SH.bestValue(mk([noisy, Mcheap]), D).id, 'M');
+  const before = JSON.stringify(mk([A, Mcheap]));
+  SH.bestValue(JSON.parse(before), D);
+  assert.equal(JSON.stringify(JSON.parse(before)), before);
+  assert.equal(SH.bestValue({}, D), null);
+  ok('ties break on lower return exposure then earlier delivery; retail "list price" is ignored; empty/bare items → null');
+
+  // warnings
+  const wn = (c, item, now = '2026-11-25T12:00:00Z', settings = D) => SH.candidateWarnings(c, item, settings, now).map(w => w.code);
+  const dn = { category: 'Dinnerware', targetPrice: 20 };
+  assert.deepEqual(wn(cand({ returnByDate: '2026-12-01' }), { category: 'Small Appliances' }, undefined, { ...D, readyDate: '2026-12-15' }), ['return-before-ready']);
+  assert.deepEqual(wn(cand({ returnByDate: '2026-12-01' }), { category: 'Small Appliances' }), []);
+  assert.ok(wn(cand({ unitPrice: 50, packSize: 2, openStock: true }), dn).includes('over-target'));
+  assert.ok(!wn(cand({ unitPrice: 50, packSize: 2, openStock: true }), { ...dn, targetPrice: 25 }).includes('over-target'));
+  assert.ok(wn(cand({ openStock: false }), dn).includes('not-open-stock'));
+  assert.ok(wn(cand({ openStock: null }), dn).includes('not-open-stock'));
+  assert.ok(!wn(cand({ openStock: true }), dn).includes('not-open-stock'));
+  assert.ok(!wn(cand({ openStock: false }), { category: 'Small Appliances' }).includes('not-open-stock'));
+  assert.ok(wn(cand({ checkedAt: '2026-11-21T08:00:00Z' }), { category: 'Other' }).includes('stale-price'));
+  assert.ok(!wn(cand({ checkedAt: '2026-11-25T02:00:00Z' }), { category: 'Other' }).includes('stale-price'));
+  assert.ok(!wn(cand({ checkedAt: '2026-10-06T08:00:00Z' }), { category: 'Other' }, '2026-10-10T12:00:00Z').includes('stale-price'));
+  assert.ok(!wn(cand({ checkedAt: '' }), { category: 'Other' }).includes('stale-price'));
+  assert.doesNotThrow(() => SH.candidateWarnings({}, {}, D, 'not-a-date'));
+  assert.ok(SH.candidateWarnings(cand({ returnByDate: '2026-12-01' }), { category: 'Other' }, { ...D, readyDate: '2026-12-15' }, '2026-11-25T12:00:00Z')[0].text.includes("can't test in the house"));
+  ok('warnings: return closes before the house is ready, over per-unit target, not open stock (dinnerware/flatware/glassware), stale price only Nov 20–Dec 2');
+
+  // forecast
+  const lc = (id, price) => cand({ id, vendorType: 'other', unitPrice: price, qtyToBuy: 1, estTax: 0, shipping: 0 });
+  const items = [
+    mk([lc('c1', 100)], { id: 'sh-a', selectedCandidateId: 'c1' }),
+    mk([lc('c2', 500)], { id: 'sh-b', selectedCandidateId: 'c2', purchaseIds: ['p1'] }),
+    mk([lc('c3', 70)], { id: 'sh-c' }),
+    mk([lc('c4', 300)], { id: 'sh-d', selectedCandidateId: 'c4', status: 'returned' }),
+    mk([lc('c5', 50)], { id: 'sh-e', selectedCandidateId: 'c5', purchaseIds: ['gone'] }),
+  ];
+  const f = SH.forecastSpend(items, [{ id: 'p1', totalPaid: 25, refundAmount: 5, status: 'Received' }], D);
+  assert.deepEqual(f, { planned: 150, committed: 20, forecast: 170 });
+  assert.deepEqual(SH.forecastSpend([], [], D), { planned: 0, committed: 0, forecast: 0 });
+  assert.doesNotThrow(() => SH.forecastSpend([{}, null], [null], D));
+  ok('forecast = selected-candidate landed totals for unpurchased items + net cost of linked purchases (returned items and dangling links handled)');
+}
+
 console.log(`\nAll ${passed} checks passed.`);
