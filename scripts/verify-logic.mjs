@@ -1117,6 +1117,13 @@ console.log('Phase 2 — seed list (§2.6 tables) and master-list parser:');
     const withTier = parsed.find(i => i.qualityTier === 'Premium');
     assert.ok(withTier && withTier.requirements && typeof withTier.kerryDecides === 'boolean');
     assert.equal(SH.computeQty(parsed[0], D), parsed[0].qtyRule.fixedQty);
+    assert.equal(parsed.find(i => i.name === 'Dinner plates (indoor)').dishType, 'Dinner plates');
+    assert.equal(parsed.find(i => i.name === 'Shatter-resistant tumblers (outdoor)').dishType, 'Shatter-resistant tumblers');
+    const drip = parsed.find(i => i.masterId === 'MS-0102');
+    assert.ok(drip && drip.id === 'sh-seed-ms-0102');
+    const mugs = parsed.find(i => i.name === 'Coffee mugs');
+    assert.deepEqual([mugs.qtyRule.basis, mugs.qtyRule.multiplier], ['guests', 1.5]);
+    assert.equal(SH.computeQty(mugs, { ...D, guestCount: 20 }), 30);
     const bad = path.join(tmp, 'bad.csv');
     fs.writeFileSync(bad, 'Item,Category,Final qty\nGood item,Dinnerware,4\nBad item,Not A Category,2\n');
     const badRun = spawnSync('python3', ['scripts/parse-shopping-list.py', bad, '--check'], { encoding: 'utf8' });
@@ -1348,6 +1355,87 @@ console.log('Phase 2 — agent export/import (§2.9) and Print for Kerry:');
   for (const bad of ['<link', '<style', '@import', 'src=', 'href=', 'http://', 'https://']) assert.ok(!html.includes(bad), `print html must not contain ${bad}`);
   assert.ok(html.includes('—'));
   ok('Print for Kerry lists only approved + shortlisted items grouped by category with qty, chosen vendor, landed total and return-by; every value is escaped; no scripts, styles or external references');
+}
+
+console.log('Phase 2 review fixes — agent value robustness, Best Value, packs, master ids:');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const mkRes = (extra) => ({ schema: 'pp-shopping-results/v1', generatedAt: '2026-11-21T09:00:00Z', propertyId: 'pp', updates: [], newItems: [], ...extra });
+  let n = 0;
+  const ids = { candidate: () => `c-r-${++n}`, item: () => `sh-r-${++n}` };
+  const existing = { ...SH.emptyCandidate(), id: 'c-1', vendor: 'Amazon', vendorType: 'amazon', sku: 'B0X', unitPrice: 50, qtyToBuy: 1, inStock: true, freeReturns: true, returnByDate: '2026-12-30', rating: 4.6, checkedAt: '2026-11-20T08:00:00Z' };
+  const item = { ...SH.emptyShoppingItem(), id: 'sh-1', name: 'Kettle', category: 'Small Appliances', candidates: [existing], selectedCandidateId: 'c-1', requirements: 'Original requirement', kerryDecides: false, masterId: 'MS-0102' };
+  const upd = (cands, extra = {}) => mkRes({ updates: [{ itemId: 'sh-1', addCandidates: cands, ...extra }] });
+  const run = (items, res) => SH.mergeResults(items, res, D, ids);
+
+  // placeholders never wipe known values (the agent is told to write "n/a"/"unverified" instead of blanks)
+  const placeholder = run([item], upd([{ vendor: 'Amazon', sku: 'B0X', unitPrice: 'n/a', inStock: 'unverified', returnByDate: 'n/a', freeReturns: 'unknown', rating: 'unverified', retailUnitPrice: '—', checkedAt: '2026-11-21T08:00:00Z' }]));
+  const c = placeholder.touched[0].candidates[0];
+  assert.equal(c.unitPrice, 50); assert.equal(c.inStock, true); assert.equal(c.returnByDate, '2026-12-30');
+  assert.equal(c.freeReturns, true); assert.equal(c.rating, 4.6); assert.equal(c.checkedAt, '2026-11-21T08:00:00Z');
+  ok('placeholder values ("n/a", "unverified", "unknown", "—") never overwrite known prices, stock, dates or flags on a re-check');
+
+  // strict booleans and ISO-only dates
+  const typed = run([item], upd([{ vendor: 'Target', sku: 'T1', unitPrice: 10, inStock: 'false', freeReturns: 'no', openStock: 'N', commercialGrade: 'maybe', returnByDate: 'next week', deliveryEta: '2026-12-01' },
+    { vendor: 'Target', sku: 'T2', unitPrice: 11, inStock: 'Yes', freeReturns: 'true', openStock: 1 }])).touched[0].candidates;
+  const t1 = typed.find(x => x.sku === 'T1'), t2 = typed.find(x => x.sku === 'T2');
+  assert.equal(t1.inStock, false); assert.equal(t1.freeReturns, false); assert.equal(t1.openStock, false); assert.equal(t1.commercialGrade, null);
+  assert.equal(t1.returnByDate, ''); assert.equal(t1.deliveryEta, '2026-12-01');
+  assert.equal(t2.inStock, true); assert.equal(t2.freeReturns, true); assert.equal(t2.openStock, true);
+  assert.equal(SH.landedTotal({ ...t1, qtyToBuy: 1 }, D) > 0, true);
+  assert.equal(SH.returnExposure({ ...t1, returnShippingCost: 12 }), 12);
+  ok('"false"/"no"/"N" are false (not truthy), "maybe" is unknown, free-text is not stored as a date');
+
+  // Good / Better / Best with no sku/url stay separate; identical re-import adds nothing
+  const gbb = [{ vendor: 'Amazon', sku: 'n/a', unitPrice: 40, brand: '', model: '' }, { vendor: 'Amazon', sku: 'n/a', unitPrice: 60 }, { vendor: 'Amazon', sku: 'n/a', unitPrice: 90 }];
+  const g1 = run([item], upd(gbb)).touched[0];
+  assert.equal(g1.candidates.length, 4);
+  assert.deepEqual(g1.candidates.slice(1).map(x => x.unitPrice), [40, 60, 90]);
+  assert.deepEqual(run([g1], upd(gbb)).touched, []);
+  ok('options from one vendor with placeholder/blank identifiers stay separate candidates, and re-importing them is still a no-op');
+
+  // agent-supplied source is ignored; null never clears; flag labels are normalized; unknown flag is ignored
+  const withSrc = run([item], upd([{ vendor: 'Wayfair', sku: 'W1', unitPrice: 5, source: 'JM' }, { vendor: 'Wayfair', sku: 'W2', unitPrice: 6, source: 'KM' }])).touched[0];
+  assert.ok(withSrc.candidates.slice(1).every(x => x.source === 'agent'));
+  const flagged = { ...item, suggestedQty: 4, agentFlag: { action: 'buy-now', reason: 'low', flaggedAt: '2026-11-01T00:00:00Z' } };
+  assert.equal(run([flagged], upd([], { suggestedQty: null, agentFlag: { action: 'banana', reason: 'x' } })).touched.length, 0);
+  for (const [label, action] of [['BUY NOW', 'buy-now'], ['Wait', 'wait-for-sale'], ['wait for sale', 'wait-for-sale'], ['REVIEW', 'needs-review'], ['needs_review', 'needs-review']]) {
+    assert.equal(run([item], upd([], { agentFlag: { action: label, reason: 'r' } })).touched[0].agentFlag.action, action, label);
+  }
+  ok('imported candidates are always labelled "agent"; a null suggested qty or an unrecognized flag never clears what is there; BUY NOW / WAIT / REVIEW map to the app flags');
+
+  // human master-list fields and delete-like keys are protected; blanks can still be filled in
+  const protect = run([item], upd([], { requirements: 'HACK', kerryDecides: true, masterId: 'EVIL', isDeleted: true, deleted: true, removeMe: true, masterNote: 'x' }));
+  assert.deepEqual(protect.touched, []);
+  const fill = run([{ ...item, requirements: undefined }], upd([], { requirements: 'Agent filled', qualityTier: 'Premium' })).touched[0];
+  assert.equal(fill.requirements, 'Agent filled'); assert.equal(fill.qualityTier, 'Premium');
+  ok('an update can fill a missing master-list field but never overwrite one, never touch master ids, and delete/remove-style keys are ignored');
+
+  // master ids resolve
+  const byMaster = run([item], mkRes({ updates: [{ itemId: 'MS-0102', addCandidates: [{ vendor: 'Costco', sku: 'C1', unitPrice: 20 }] }] }));
+  assert.equal(byMaster.touched.length, 1); assert.equal(byMaster.touched[0].id, 'sh-1'); assert.deepEqual(byMaster.skipped, []);
+  ok('results keyed by the master-list Item ID resolve to the right shopping item');
+
+  // Best Value ignores unpriced / zero-quantity candidates
+  const priced = { ...SH.emptyCandidate(), id: 'P', vendor: 'Amazon', vendorType: 'amazon', unitPrice: 49.99, qtyToBuy: 2, inStock: true };
+  const unpriced = { ...SH.emptyCandidate(), id: 'U', vendor: 'Target', vendorType: 'retail', unitPrice: null, qtyToBuy: 2, shipping: 0, inStock: true };
+  const zeroQty = { ...priced, id: 'Z', unitPrice: 1, qtyToBuy: 0 };
+  assert.equal(SH.bestValue({ candidates: [unpriced, priced] }, D).id, 'P');
+  assert.equal(SH.bestValue({ candidates: [zeroQty, priced] }, D).id, 'P');
+  assert.equal(SH.bestValue({ candidates: [unpriced, zeroQty] }, D), null);
+  ok('Best Value never recommends a candidate with no price or zero quantity');
+
+  // packs: the purchase records pieces so mealsCovered counts forks, not packs
+  const forksItem = { ...SH.emptyShoppingItem(), id: 'sh-forks', name: 'Dinner forks', category: 'Flatware', dishType: 'Dinner forks', usesPerGuestPerDay: 3, qtyRule: { basis: 'guests', multiplier: 3, fixedQty: 0 } };
+  const packCand = { ...SH.emptyCandidate(), id: 'c-p', vendor: 'Costco', vendorType: 'retail', unitPrice: 36, packSize: 12, qtyToBuy: 6, estTax: 0, shipping: 0 };
+  const draft = SH.buildPurchaseFromShopping(forksItem, packCand, D);
+  assert.equal(draft.qty, 72); assert.equal(draft.unitPrice, 3);
+  assert.equal(Math.round(draft.qty * draft.unitPrice * 100) / 100, SH.merchandise(packCand));
+  const boughtForks = { ...forksItem, status: 'ordered', purchaseIds: [draft.id] };
+  const forks = SH.mealsCovered([boughtForks], D, [draft]).find(r => r.dishType === 'Dinner forks');
+  assert.equal(forks.total, 72); assert.equal(forks.level, 'full-day');
+  assert.equal(SH.buildPurchaseFromShopping(forksItem, { ...packCand, packSize: 1, qtyToBuy: 2, unitPrice: 5 }, D).qty, 2);
+  ok('buying 6 packs of 12 records 72 pieces at $3 each (quantity × price still equals the goods total), so the meals-covered badge counts forks, not packs');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

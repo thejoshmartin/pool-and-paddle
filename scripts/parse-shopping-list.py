@@ -25,7 +25,10 @@ Columns (header names are case-insensitive; several aliases are accepted):
   Kerry decides          yes/true/y/1     → kerryDecides (extra field)
   Priority               launch-critical | launch | nice-to-have (blank → launch)
   Notes
-  Uses per guest per day (blank for non-dishware) → usesPerGuestPerDay; the item name becomes dishType
+  Uses per guest per day (blank for non-dishware) → usesPerGuestPerDay; the item name (minus any
+                         trailing "(indoor)"/"(outdoor)") becomes dishType, so indoor + outdoor sets combine
+  Qty per guest / per bedroom / per bathroom (optional) → a scaling qtyRule instead of a fixed quantity
+                         (so the quantity follows the guest count); Final qty is then only the starting estimate
 
 Exit status is non-zero (and the row number printed) if any row is invalid.
 """
@@ -62,11 +65,18 @@ ALIASES = {
     "priority": ["priority"],
     "notes": ["notes", "note"],
     "uses": ["uses per guest per day", "uses/guest/day", "uses per guest"],
+    "per_guest": ["qty per guest", "per guest", "multiplier", "qty per guest (multiplier)"],
+    "per_bedroom": ["qty per bedroom", "per bedroom"],
+    "per_bathroom": ["qty per bathroom", "per bathroom"],
 }
 
 
 def slugify(text):
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", text.lower())).strip("-")
+
+
+def dish_type(name):
+    return re.sub(r"\s*\((indoor|outdoor|both)\)\s*$", "", name, flags=re.IGNORECASE).strip()
 
 
 def number(text):
@@ -125,25 +135,33 @@ def main():
             try:
                 qty = number(get(row, "qty"))
                 uses = number(get(row, "uses"))
+                per = {b: number(get(row, k)) for b, k in (("guests", "per_guest"), ("bedrooms", "per_bedroom"), ("bathrooms", "per_bathroom"))}
             except ValueError:
                 errors.append(f"row {n}: quantity / uses-per-guest must be numbers")
                 continue
-            item_id = get(row, "id")
-            item_id = "sh-seed-" + slugify(item_id) if item_id else "sh-seed-" + slugify(name)
+            master_id = get(row, "id")
+            item_id = "sh-seed-" + slugify(master_id) if master_id else "sh-seed-" + slugify(name)
             if item_id in seen or not re.fullmatch(r"sh-seed-[a-z0-9-]+", item_id):
                 errors.append(f"row {n}: duplicate or invalid id {item_id!r}")
                 continue
             seen.add(item_id)
+            scaled = next(((b, v) for b, v in per.items() if v is not None), None)
+            rule = (
+                {"basis": scaled[0], "multiplier": scaled[1], "fixedQty": 0} if scaled
+                else {"basis": "fixed", "multiplier": 1, "fixedQty": qty if qty is not None else 0}
+            )
             item = {
                 "id": item_id, "name": name, "category": category, "zone": zone, "room": get(row, "room"),
-                "qtyRule": {"basis": "fixed", "multiplier": 1, "fixedQty": qty if qty is not None else 0},
+                "qtyRule": rule,
                 "qtyNeeded": qty if qty is not None else 0,
                 "priority": priority, "status": "researching", "notes": get(row, "notes"),
                 "userCreated": False, "proposed": False,
             }
+            if master_id:
+                item["masterId"] = master_id   # the research agent keys its rows by this Item ID
             if uses is not None:
                 item["usesPerGuestPerDay"] = uses
-                item["dishType"] = name
+                item["dishType"] = dish_type(name)
             tier = get(row, "tier")
             if tier:
                 item["qualityTier"] = tier

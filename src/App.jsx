@@ -4042,7 +4042,7 @@ function ShoppingCandidateForm({ initial, onSave, onCancel, isMobile, userCode }
       </div>
       <div style={{ marginBottom: 14 }}><label style={ppLabel}>Notes</label><textarea style={{ ...ppInput, minHeight: 56, resize: "vertical" }} value={d.notes || ""} onChange={e => set({ notes: e.target.value })} /></div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <button disabled={!(d.vendor || "").trim()} onClick={() => onSave({ ...d, source: d.source === "agent" ? "agent" : userCode, checkedAt: new Date().toISOString() })} style={{ ...shBtnPrimary, background: (d.vendor || "").trim() ? C.mint : C.border }}>Save candidate</button>
+        <button disabled={!(d.vendor || "").trim()} onClick={() => onSave({ ...d, source: d.source === "agent" ? "agent" : (userCode || "JM"), checkedAt: new Date().toISOString() })} style={{ ...shBtnPrimary, background: (d.vendor || "").trim() ? C.mint : C.border }}>Save candidate</button>
         <button onClick={onCancel} style={shBtn}>Cancel</button>
       </div>
     </div>
@@ -4078,7 +4078,7 @@ function ShoppingCandidateCard({ c, item, settings, selected, best, canEdit, onS
         {c.openStock === true ? " · open stock" : ""}
         {c.rating ? ` · ${c.rating}★${c.ratingCount ? ` (${c.ratingCount})` : ""}` : ""}
       </div>
-      <div style={{ ...dim, color: C.textMuted }}>Checked {c.checkedAt ? new Date(c.checkedAt).toLocaleString() : "—"} · by {c.source || "—"}{c.notes ? ` · ${c.notes}` : ""}</div>
+      <div style={{ ...dim, color: C.textMuted }}>Checked {c.checkedAt && !Number.isNaN(new Date(c.checkedAt).getTime()) ? new Date(c.checkedAt).toLocaleString() : "—"} · by {c.source || "—"}{c.notes ? ` · ${c.notes}` : ""}</div>
       {warnings.map(w => <div key={w.code} style={{ fontSize: 12, fontWeight: 600, color: C.warnText, background: C.warnBg, padding: "4px 8px", borderRadius: 6 }}>⚠ {w.text}</div>)}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
         <button disabled={!canEdit || selected} onClick={onSelect} style={{ ...shBtnPrimary, background: selected || !canEdit ? C.border : C.mint, border: "none" }}>{selected ? "Selected" : "Select"}</button>
@@ -4092,7 +4092,7 @@ function ShoppingCandidateCard({ c, item, settings, selected, best, canEdit, onS
 
 function ShoppingItemCard({ item, settings, expanded, onToggle, canEdit, onSave, onRemove, onMarkPurchased, linkedPurchases = [], isMobile, nowISO }) {
   const [editingCand, setEditingCand] = useState(null);   // candidate id | "new" | null
-  const user = getCurrentUser();
+  const user = getCurrentUser() || { code: null, name: "" };   // no pp_user cookie (auth bypassed): browse only, no approve/claim
   const qty = computeQty(item, settings);
   const best = bestValue(item, settings);
   const selected = (item.candidates || []).find(c => c.id === item.selectedCandidateId) || null;
@@ -4103,7 +4103,7 @@ function ShoppingItemCard({ item, settings, expanded, onToggle, canEdit, onSave,
     : rule.basis === "fixed" ? `fixed ${rule.fixedQty}` : `${rule.multiplier} × ${rule.basis} (${settings[rule.basis === "guests" ? "guestCount" : rule.basis]})`;
   const field = (label, node, w = 150) => (<div style={{ flex: 1, minWidth: isMobile ? "100%" : w }}><label style={ppLabel}>{label}</label>{node}</div>);
   const row = { display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 };
-  const purchased = (item.purchaseIds || []).length > 0;
+  const purchased = linkedPurchases.length > 0;   // live purchases only — a deleted purchase must not leave the item stuck
   return (
     <div id={`shop-${item.id}`} style={{ background: C.white, border: `1px solid ${item.proposed ? C.seafoam : C.border}`, borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
       <button onClick={onToggle} style={{ width: "100%", textAlign: "left", background: "none", border: "none", padding: "14px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", fontFamily: font }}>
@@ -4190,22 +4190,25 @@ function ShoppingItemCard({ item, settings, expanded, onToggle, canEdit, onSave,
             ) : (
               <ShoppingCandidateCard key={c.id} c={c} item={item} settings={settings} nowISO={nowISO}
                 selected={item.selectedCandidateId === c.id} best={!!best && best.id === c.id} canEdit={canEdit}
-                onSelect={() => patch({ selectedCandidateId: c.id, status: item.status === "researching" ? "shortlisted" : item.status })}
+                onSelect={() => {
+                  const reapprove = !!item.approvedBy && item.selectedCandidateId !== c.id;   // a different pick was never approved
+                  patch({ selectedCandidateId: c.id, ...(reapprove ? { status: "shortlisted", approvedBy: null, approvedAt: null } : { status: item.status === "researching" ? "shortlisted" : item.status }) });
+                }}
                 onEdit={() => setEditingCand(c.id)}
-                onDelete={() => { if (window.confirm("Delete this candidate?")) patch({ candidates: item.candidates.filter(x => x.id !== c.id), selectedCandidateId: item.selectedCandidateId === c.id ? null : item.selectedCandidateId }); }} />
+                onDelete={() => { if (window.confirm("Delete this candidate?")) { const wasPick = item.selectedCandidateId === c.id; patch({ candidates: item.candidates.filter(x => x.id !== c.id), selectedCandidateId: wasPick ? null : item.selectedCandidateId, ...(wasPick && item.approvedBy ? { status: "shortlisted", approvedBy: null, approvedAt: null } : {}) }); } }} />
             ))}
           </div>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             {item.approvedBy
               ? <button disabled={!canEdit} onClick={() => patch({ status: "shortlisted", approvedBy: null, approvedAt: null })} style={shBtn}>Un-approve ({item.approvedBy})</button>
-              : <button disabled={!canEdit || !selected} title={selected ? "" : "Select a candidate first"} onClick={() => patch({ status: "approved", approvedBy: user.code, approvedAt: new Date().toISOString() })} style={{ ...shBtnPrimary, background: canEdit && selected ? C.mint : C.border, border: "none" }}>Approve as {user.code || "me"}</button>}
+              : <button disabled={!canEdit || !selected || !user.code} title={!user.code ? "Log in to approve" : selected ? "" : "Select a candidate first"} onClick={() => patch({ status: "approved", approvedBy: user.code, approvedAt: new Date().toISOString() })} style={{ ...shBtnPrimary, background: canEdit && selected && user.code ? C.mint : C.border, border: "none" }}>Approve as {user.code || "me"}</button>}
             {item.claimedBy
               ? <button disabled={!canEdit} onClick={() => patch({ claimedBy: null })} style={shBtn}>Release claim ({item.claimedBy} is buying)</button>
-              : <button disabled={!canEdit} onClick={() => patch({ claimedBy: user.code })} style={shBtn}>I'm buying this</button>}
+              : <button disabled={!canEdit || !user.code} onClick={() => patch({ claimedBy: user.code })} style={shBtn}>I'm buying this</button>}
             {selected && selected.url && <a href={selected.url} target="_blank" rel="noopener noreferrer" style={{ ...shBtn, display: "inline-flex", alignItems: "center", textDecoration: "none" }}>Open selected link ↗</a>}
             {onMarkPurchased && selected && !purchased && <button disabled={!canEdit} onClick={() => onMarkPurchased(item, selected.id)} style={shBtnPrimary}>Mark purchased</button>}
-            {purchased && linkedPurchases.length > 0 && <span style={{ ...shChip(C.mintDark, C.seafoamLight), alignSelf: "center", padding: "8px 12px" }}>✓ {linkedPurchases.length} purchase{linkedPurchases.length > 1 ? "s" : ""} logged</span>}
+            {purchased && <span style={{ ...shChip(C.mintDark, C.seafoamLight), alignSelf: "center", padding: "8px 12px" }}>✓ {linkedPurchases.length} purchase{linkedPurchases.length > 1 ? "s" : ""} logged</span>}
             <button disabled={!canEdit} onClick={() => { if (window.confirm(`Delete "${item.name}" from the list?`)) onRemove(item.id); }} style={shBtnDanger}>Delete item</button>
           </div>
         </div>
@@ -4231,6 +4234,7 @@ function ShoppingSettingsPanel({ settings, canEdit, onSave, onClose }) {
   const field = (label, node) => (<div style={{ flex: 1, minWidth: 150 }}><label style={ppLabel}>{label}</label>{node}</div>);
   const int = (k) => <input type="number" style={ppInput} value={d[k]} onChange={e => set({ [k]: e.target.value === "" ? "" : Number(e.target.value) })} />;
   const save = () => {
+    if (String(d.taxPct).trim() === "") { setError("Enter a sales tax % (it can be 0, but it can't be blank)."); return; }
     const raw = {
       ...settings,
       guestCount: d.guestCount, bedrooms: d.bedrooms, bathrooms: d.bathrooms,
@@ -4381,6 +4385,15 @@ function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveI
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
+  // The import merges against the SERVER's current list, not this tab's in-memory copy: another device
+  // may have approved/claimed/selected things since this tab loaded, and a whole-record save from a
+  // stale copy would silently revert them.
+  const loadFresh = async () => {
+    const r = await fetch(apiUrl('/api/shopping', propertyId));
+    if (!r.ok) throw new Error("bad status");
+    return mergeShopping(partitionShoppingFields(await r.json()), SHOPPING_SEED.items);
+  };
+  const REFRESH_FAILED = "Couldn't refresh the shopping list from the server just now, so nothing was imported. Check your connection and try again.";
   const onPickResults = async (e) => {
     const file = e.target.files && e.target.files[0];
     e.target.value = "";   // allow re-picking the same file
@@ -4389,13 +4402,17 @@ function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveI
     try { json = JSON.parse(await file.text()); } catch (err) { setImportMsg({ error: "That file isn't valid JSON." }); return; }
     const v = validateResults(json, propertyId);
     if (!v.ok) { setImportMsg({ error: v.error }); return; }
+    let fresh;
+    try { fresh = await loadFresh(); } catch (err) { setImportMsg({ error: REFRESH_FAILED }); return; }
     setImportMsg(null);
-    setImportPreview({ fileName: file.name, ...mergeResults(items, json, settings) });
+    setImportPreview({ fileName: file.name, results: json, ...mergeResults(fresh.items, json, fresh.settings) });
   };
-  const applyImport = () => {
-    const n = importPreview.touched.length;
-    importPreview.touched.forEach(onSaveItem);   // one targeted write per touched item (never a whole-hash write)
-    setImportMsg({ ok: n === 0 ? "Nothing to change — this file is already imported." : `Imported: ${n} item${n === 1 ? "" : "s"} updated.` });
+  const applyImport = async () => {
+    let fresh;
+    try { fresh = await loadFresh(); } catch (err) { setImportMsg({ error: REFRESH_FAILED }); setImportPreview(null); return; }
+    const { touched } = mergeResults(fresh.items, importPreview.results, fresh.settings);   // recomputed right before applying
+    touched.forEach(onSaveItem);   // one targeted write per touched item (never a whole-hash write)
+    setImportMsg({ ok: touched.length === 0 ? "Nothing to change — this file is already imported." : `Imported: ${touched.length} item${touched.length === 1 ? "" : "s"} updated.` });
     setImportPreview(null);
   };
   const printForKerry = () => {
@@ -5294,9 +5311,13 @@ export default function App() {
 
   // Shopping — per-field server mutations (HSET/HDEL one field via api/shopping.js), never a
   // whole-hash write. Item edits are debounced per field (coalesces typing) and flushed on hide/unload.
+  // The hide/unload flush listener is registered once, so writers read the CURRENT property from a ref
+  // (a closure would keep the first render's null property and PUT without ?property=).
+  const activePropertyRef = useRef(activeProperty);
+  activePropertyRef.current = activeProperty;
   const putShoppingField = (field, value, useKeepalive = false) => {
     if (!shoppingServerLoaded.current) return;
-    fetch(apiUrl('/api/shopping', activeProperty), {
+    fetch(apiUrl('/api/shopping', activePropertyRef.current), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ field, value }),
@@ -5454,7 +5475,7 @@ export default function App() {
     shoppingPromoting.current.add(item.id);
     setTimeout(() => shoppingPromoting.current.delete(item.id), 1500);
     savePurchase({ ...draft, placedInServiceDate: activeInServiceDate });
-    saveShoppingItem({ ...item, status: "ordered", selectedCandidateId: cand.id, purchaseIds: [...(item.purchaseIds || []), draft.id] });
+    saveShoppingItem({ ...item, status: "ordered", selectedCandidateId: cand.id, purchaseIds: [...live.map(p => p.id), draft.id] });   // dangling ids (deleted purchases) are dropped
     setFocusPurchaseMode("edit");
     setFocusPurchaseId(draft.id);
     setActiveView("purchases");

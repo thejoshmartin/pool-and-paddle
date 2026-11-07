@@ -74,6 +74,20 @@ function numOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 const num = (v, d = 0) => { const n = numOrNull(v); return n === null ? d : n; };
+// Free-text stand-ins the research agent writes instead of blanks ("Leave nothing blank: use n/a or unverified").
+const PLACEHOLDERS = new Set(["", "n/a", "na", "unverified", "unknown", "-", "—", "–", "none", "tbd", "pending", "not priced"]);
+const isPlaceholder = (v) => v === null || v === undefined || (typeof v === "string" && PLACEHOLDERS.has(v.trim().toLowerCase()));
+// Strict yes/no parsing: never Boolean("false"). Anything else is "unknown" (null).
+function triBool(v) {
+  if (v === true || v === 1) return true;
+  if (v === false || v === 0) return false;
+  const l = String(v ?? "").trim().toLowerCase();
+  if (["true", "yes", "y", "1"].includes(l)) return true;
+  if (["false", "no", "n", "0"].includes(l)) return false;
+  return null;
+}
+const isoDate = (v) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? v.trim() : "");
+const isoDateTime = (v) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v.trim()) && !Number.isNaN(new Date(v).getTime()) ? v.trim() : "");
 const stamp36 = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 export function newShoppingItemId() { return `sh-${stamp36()}`; }
@@ -190,15 +204,18 @@ export function sanitizeCandidate(raw) {
   if (!isObj(raw)) return null;
   const e = emptyCandidate();
   const out = { ...safeCopy(raw) };
-  const strings = ["id", "vendor", "url", "sku", "brand", "model", "sourceVendor", "promoNote", "returnByDate", "deliveryEta", "warrantyTerm", "checkedAt", "notes"];
+  const strings = ["id", "vendor", "url", "sku", "brand", "model", "sourceVendor", "promoNote", "warrantyTerm", "notes"];
   for (const k of strings) out[k] = str(raw[k], k === "id" ? e.id : "");
   if (!out.id) out.id = e.id;
   const numbers = ["unitPrice", "retailUnitPrice", "shipping", "transactionFeePct", "estTax", "discount", "returnWindowDays", "returnShippingCost", "restockingPct", "rating", "ratingCount"];
   for (const k of numbers) out[k] = numOrNull(raw[k]);
   out.packSize = Math.max(1, num(raw.packSize, 1));
   out.qtyToBuy = Math.max(0, num(raw.qtyToBuy, 1));
-  for (const k of ["inStock", "openStock", "commercialGrade"]) out[k] = raw[k] === undefined || raw[k] === null ? null : Boolean(raw[k]);
-  out.freeReturns = Boolean(raw.freeReturns);
+  for (const k of ["inStock", "openStock", "commercialGrade"]) out[k] = triBool(raw[k]);
+  out.freeReturns = triBool(raw.freeReturns) === true;
+  out.returnByDate = isoDate(raw.returnByDate);
+  out.deliveryEta = isoDate(raw.deliveryEta);
+  out.checkedAt = isoDateTime(raw.checkedAt);
   out.vendorType = VENDOR_TYPES.includes(raw.vendorType) ? raw.vendorType : "other";
   out.tier = TIERS.includes(raw.tier) ? raw.tier : null;
   out.source = ["agent", "JM", "KM"].includes(raw.source) ? raw.source : "JM";
@@ -421,7 +438,9 @@ export function returnExposure(c) {
 export function bestValue(item, settings) {
   const list = Array.isArray(item && item.candidates) ? item.candidates.filter(isObj) : [];
   const needBy = item && item.needBy;
-  const ok = list.filter(c => c.inStock !== false && (!needBy || !c.deliveryEta || c.deliveryEta <= needBy));
+  // Candidates with no price (or nothing to buy) can't be compared, so they are never "best".
+  const ok = list.filter(c => c.inStock !== false && numOrNull(c.unitPrice) !== null && qtyOf(c) > 0
+    && (!needBy || !c.deliveryEta || c.deliveryEta <= needBy));
   if (ok.length === 0) return null;
   const eta = (c) => c.deliveryEta || "9999-12-31";
   return [...ok].sort((a, b) =>
@@ -558,7 +577,10 @@ export function buildPurchaseFromShopping(item, candidate, settings) {
     description: model ? `${item.name} — ${model}` : item.name,
     trade, room: item.room || "",
     vendor: candidate.vendor || "", sourceVendor: candidate.sourceVendor || "",
-    qty: qtyOf(candidate), unitPrice: numOrNull(candidate.unitPrice),
+    // Record PIECES so the purchase (and the meals-covered badge) counts forks, not packs of 12:
+    // qty × unitPrice still equals the goods total.
+    qty: qtyOf(candidate) * Math.max(1, num(candidate.packSize, 1)),
+    unitPrice: numOrNull(candidate.unitPrice) === null ? null : Math.round((num(candidate.unitPrice, 0) / Math.max(1, num(candidate.packSize, 1))) * 10000) / 10000,
     shipping: numOrNull(candidate.shipping), fees: feesFor(candidate, s), tax: taxFor(candidate, s),
     totalPaid: landedTotal(candidate, s),
     allowanceCategory: defaultAllowanceFor(trade, "") || NOT_IN_ALLOWANCE,
@@ -620,27 +642,48 @@ const PRICE_STOCK_FIELDS = ["unitPrice", "retailUnitPrice", "shipping", "transac
 const UPDATE_KEYS = new Set(["itemId", "addCandidates", "agentFlag", "suggestedQty", "notes"]);
 const NEW_ITEM_KEYS = new Set(["name", "category", "room", "qtyRule", "priority", "candidates", "agentFlag", "notes", "suggestedQty", "zone", "dishType", "usesPerGuestPerDay"]);
 const FORBIDDEN_AGENT_KEYS = new Set(["delete", "deleted", "__deleted", "remove", "removed", "tombstone"]);
+// Human master-list fields: an import may fill one in when it is empty but never overwrite it.
+const FILL_ONLY_KEYS = new Set(["qualityTier", "requirements", "kerryDecides"]);
+function isForbiddenAgentKey(k) {
+  const l = k.toLowerCase();
+  return FORBIDDEN_AGENT_KEYS.has(l) || /^(is_?)?(delete|remov)/.test(l) || l.startsWith("master");
+}
+// The agent's own flag labels (BUY NOW / WAIT / REVIEW) → the app's action names; anything else is null.
+function normalizeAgentAction(v) {
+  const l = String(v ?? "").trim().toLowerCase().replace(/[\s_]+/g, "-");
+  if (AGENT_ACTIONS.includes(l)) return l;
+  if (["buy", "buynow"].includes(l)) return "buy-now";
+  if (["wait", "wait-for-a-sale", "hold"].includes(l)) return "wait-for-sale";
+  if (["review", "needs-reviewing"].includes(l)) return "needs-review";
+  return null;
+}
 const blank = (v) => v === null || v === undefined || v === "";
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const norm = (v) => String(v || "").trim().toLowerCase();
 
-// Identity of a candidate for de-duplication: vendor + (sku || url), falling back to brand + model.
+// Identity of a candidate for de-duplication: vendor + (sku || url || brand+model), with agent
+// placeholders ("n/a") treated as blank. When nothing identifies the product, the price and quantity do —
+// so Good / Better / Best at one vendor stay separate, and re-importing the same file is still a no-op.
+const clean = (v) => (isPlaceholder(v) ? "" : norm(v));
 function candidateKey(c) {
-  return `${norm(c.vendor)}|${norm(c.sku) || norm(c.url) || `${norm(c.brand)} ${norm(c.model)}`.trim()}`;
+  const identity = clean(c.sku) || clean(c.url) || `${clean(c.brand)} ${clean(c.model)}`.trim()
+    || `~${numOrNull(c.unitPrice)}x${numOrNull(c.qtyToBuy)}`;
+  return `${clean(c.vendor)}|${identity}`;
 }
 
 function mergeCandidates(item, rawList, gen, stats) {
   for (const raw of rawList) {
     if (!isObj(raw)) continue;
-    const inc = sanitizeCandidate({ ...raw, source: raw.source || "agent" });
+    const inc = sanitizeCandidate({ ...raw, source: "agent" });   // an import can't label a candidate as JM/KM
     if (!inc) continue;
     const existing = item.candidates.find(c => candidateKey(c) === candidateKey(inc));
     if (existing) {
       let changed = false;
       for (const f of PRICE_STOCK_FIELDS) {
         // Only fields the agent actually sent, and never a null/blank over a known value.
-        if (f in raw && !blank(raw[f]) && !same(inc[f], existing[f])) { existing[f] = inc[f]; changed = true; }
+        // Only fields the agent sent with a real value: not "n/a", and nothing that parsed to null/blank.
+        if (f in raw && !isPlaceholder(raw[f]) && inc[f] !== null && inc[f] !== "" && !same(inc[f], existing[f])) { existing[f] = inc[f]; changed = true; }
       }
       for (const k of Object.keys(inc)) {
         if (!CANDIDATE_KNOWN_KEYS.has(k) && !same(inc[k], existing[k])) { existing[k] = inc[k]; changed = true; }
@@ -660,19 +703,24 @@ function mergeCandidates(item, rawList, gen, stats) {
 function applyAgentFields(item, src, results, gen, stats, handled, candidatesKey) {
   if (Array.isArray(src[candidatesKey])) mergeCandidates(item, src[candidatesKey], gen, stats);
   if (isObj(src.agentFlag)) {
-    const flag = { action: AGENT_ACTIONS.includes(src.agentFlag.action) ? src.agentFlag.action : null, reason: str(src.agentFlag.reason), flaggedAt: results.generatedAt };
-    if (!same(flag, item.agentFlag)) { item.agentFlag = flag; stats.flag = flag.action || "cleared"; }
+    // An unrecognized/blank action is ignored — an import can set a flag but never clear one.
+    const action = normalizeAgentAction(src.agentFlag.action);
+    if (action !== null) {
+      const flag = { action, reason: str(src.agentFlag.reason), flaggedAt: results.generatedAt };
+      if (!same(flag, item.agentFlag)) { item.agentFlag = flag; stats.flag = action; }
+    }
   }
   if ("suggestedQty" in src) {
-    const q = numOrNull(src.suggestedQty);
-    if (q !== item.suggestedQty) { item.suggestedQty = q; stats.suggestedQty = q; }
+    const q = numOrNull(src.suggestedQty);   // a null/blank/"n/a" never clears an earlier suggestion
+    if (q !== null && q !== item.suggestedQty) { item.suggestedQty = q; stats.suggestedQty = q; }
   }
   if (typeof src.notes === "string" && src.notes.trim()) {
     const line = `[agent ${String(results.generatedAt).slice(0, 10)}] ${src.notes.trim()}`;
     if (!String(item.notes || "").includes(line)) { item.notes = item.notes ? `${item.notes}\n${line}` : line; stats.noteAdded = true; }
   }
   for (const k of Object.keys(src)) {
-    if (handled.has(k) || ITEM_KNOWN_KEYS.has(k) || UNSAFE_KEYS.has(k) || FORBIDDEN_AGENT_KEYS.has(k)) continue;
+    if (handled.has(k) || ITEM_KNOWN_KEYS.has(k) || UNSAFE_KEYS.has(k) || isForbiddenAgentKey(k)) continue;
+    if (FILL_ONLY_KEYS.has(k) && !blank(item[k])) continue;
     if (!same(src[k], item[k])) item[k] = clone(src[k]);
   }
 }
@@ -706,7 +754,8 @@ export function mergeResults(items, results, settings, ids = {}) {
 
   for (const up of results.updates || []) {
     if (!isObj(up) || typeof up.itemId !== "string") { out.skipped.push("An update had no itemId"); continue; }
-    const item = working.find(i => i.id === up.itemId);
+    // The agent keys rows by the Master List "Item ID" (kept on the item as masterId) or by the app id.
+    const item = working.find(i => i.id === up.itemId) || working.find(i => i.masterId && i.masterId === up.itemId);
     if (!item) { out.skipped.push(`Unknown item ${up.itemId}`); continue; }
     const stats = newStats();
     applyAgentFields(item, up, results, gen, stats, UPDATE_KEYS, "addCandidates");
