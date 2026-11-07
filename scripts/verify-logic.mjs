@@ -11,6 +11,7 @@ import {
   fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
   localISODate, daysBetween, returnsClosingSoon, newOrderGroupId, groupByOrder, statusChangePatch, formDefaultsTouched,
 } from '../src/lib/purchases-logic.js';
+import * as SH from '../src/lib/shopping-logic.js';
 import { scopedKey, parseReceiptPathname, migrateFinishesToHash, purchasesFromHash, isReceiptReferenced } from '../api/_scope.js';
 import {
   matchesFinishSearch, buildRoomCopies, mergeFinishes, migrateRoom,
@@ -806,6 +807,130 @@ console.log('Repairs — Sparrow-paid scope defaults, legacy Minoan, fixture cov
   assert.ok(fixC.every(p => paymentBadge(p) === 'Contractor-paid: confirm in draw'));
   assert.ok(fixC.every(p => paymentBadge({ ...p, lienWaiverReceived: true }) === null));
   ok('fixture C: every First Coast statement line shows "Contractor-paid: confirm in draw" until the lien waiver is received');
+}
+
+console.log('Phase 2 — shopping model, quantity rules, sanitizers, seed merge:');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  assert.equal(D.guestCount, 24); assert.equal(D.bedrooms, 5); assert.equal(D.bathrooms, 5);
+  assert.equal(D.mealsPerDay, 3); assert.equal(D.washesPerDay, 1); assert.equal(D.dishwashers, 1);
+  assert.equal(D.budgetTarget, null); assert.equal(D.readyDate, null); assert.equal(D.defaultTaxRate, 0.065);
+  assert.equal(D.vendorDefaults.amazon.holidayReturnBy, '2027-01-31');
+  assert.equal(D.vendorDefaults.minoan.transactionFeePct, 0.032);
+  assert.equal(D.vendorDefaults.minoan.taxIncludesFees, true);
+  assert.deepEqual(D.reimbursableVendors, ['Minoan']);
+  ok('default settings match spec §2.2 (24 guests, 6.5% tax, Minoan 3.2% fee, reimbursable Minoan)');
+
+  assert.equal(SH.SHOPPING_CATEGORIES.length, 19);
+  assert.equal(SH.CATEGORY_TO_TRADE['Dinnerware'], 'Kitchen & Dining');
+  assert.equal(SH.CATEGORY_TO_TRADE['Bath'], 'Linens & Soft Goods');
+  assert.equal(SH.CATEGORY_TO_TRADE['Furniture'], 'Furniture / FF&E');
+  assert.equal(SH.CATEGORY_TO_TRADE['Cleaning & Laundry'], 'Supplies & Consumables');
+  assert.equal(SH.CATEGORY_TO_TRADE['Electronics & Tech'], 'Electronics / AV');
+  assert.equal(SH.CATEGORY_TO_TRADE['Safety & First Aid'], 'Other');
+  for (const c of SH.SHOPPING_CATEGORIES) assert.ok(PURCHASE_TRADES.includes(SH.CATEGORY_TO_TRADE[c]), `no valid trade for ${c}`);
+  ok('every shopping category maps to a real Purchase trade (§2.5)');
+
+  const I = (o) => ({ ...SH.emptyShoppingItem(), id: 'sh-test-1', name: 'x', ...o });
+  const q = (o, g = 24) => SH.computeQty(I(o), { ...D, guestCount: g });
+  assert.equal(q({ qtyRule: { basis: 'guests', multiplier: 1.5 } }), 36);
+  assert.equal(q({ qtyRule: { basis: 'guests', multiplier: 1.5 } }, 20), 30);
+  assert.equal(q({ qtyRule: { basis: 'guests', multiplier: 1.5 }, qtyOverride: 40 }), 40);
+  assert.equal(q({ qtyRule: { basis: 'guests', multiplier: 1.5 }, qtyOverride: 40 }, 20), 40);
+  assert.equal(q({ qtyRule: { basis: 'fixed', fixedQty: 10 } }), 10);
+  assert.equal(q({ qtyRule: { basis: 'bathrooms', multiplier: 3 } }), 15);
+  assert.equal(q({ qtyRule: { basis: 'bedrooms', multiplier: 2 } }), 10);
+  assert.equal(q({ qtyRule: { basis: 'guests', multiplier: 1.25 } }), 30);
+  assert.equal(q({ qtyRule: { basis: 'guests', multiplier: '1.5' } }), 36);
+  assert.equal(SH.computeQty({}, D), 0);
+  assert.doesNotThrow(() => SH.computeQty(null, D));
+  ok('computeQty: rules scale with guests/bedrooms/bathrooms, overrides win, no float drift, blank items → 0 and never throw');
+
+  const plates = (zone, mult, extra = {}) => I({ id: `sh-plates-${zone}`, dishType: 'Dinner plates', zone, usesPerGuestPerDay: 2, qtyRule: { basis: 'guests', multiplier: mult }, ...extra });
+  const mc = (items, g = 24, purchases) => SH.mealsCovered(items, { ...D, guestCount: g }, purchases).find(r => r.dishType === 'Dinner plates');
+  assert.equal(mc([plates('indoor', 1.5), plates('outdoor', 1.25)]).total, 66);
+  assert.equal(mc([plates('indoor', 1.5), plates('outdoor', 1.25)]).level, 'full-day');
+  assert.equal(mc([plates('indoor', 1.5)]).level, 'one-meal');
+  assert.equal(mc([plates('indoor', 0.5)]).level, 'short');
+  assert.equal(mc([plates('indoor', 1.5), plates('outdoor', 1.25)], 20).total, 55);
+  assert.equal(SH.mealsCovered([I({ dishType: 'Kids cups', usesPerGuestPerDay: null })], D).length, 0);
+  const owned = plates('outdoor', 1.25, { status: 'ordered', purchaseIds: ['p1'] });
+  assert.equal(mc([plates('indoor', 1.5), owned], 24, [{ id: 'p1', qty: 70, status: 'Ordered' }]).total, 106);
+  assert.equal(mc([plates('indoor', 1.5), owned], 24, [{ id: 'p1', qty: 70, status: 'Returned' }]).total, 66);
+  ok('mealsCovered: 66 plates at 24 guests and 2 uses/day → green; indoor alone amber; tiny set red; follows guest count; owned quantity replaces the plan; Returned purchases do not count');
+
+  // sanitizers
+  const stamp = { updatedAt: '2026-11-07T00:00:00.000Z', updatedBy: 'JM' };
+  const raw = { ...SH.emptyShoppingItem(), id: 'sh-abc-123', name: 'Plates', category: 'Dinnerware', updatedBy: 'HACK', updatedAt: 'x' };
+  const good = SH.sanitizeShoppingItem(raw, stamp);
+  assert.equal(good.ok, true); assert.equal(good.item.updatedBy, 'JM'); assert.equal(good.item.updatedAt, stamp.updatedAt);
+  for (const bad of [{ id: 'SH-1' }, { id: 'abc' }, { name: '   ' }, { category: 'Nope' }, { status: 'bogus' }, { priority: 'bogus' }, { zone: 'sideways' }, { candidates: 'nope' }, { candidates: [1] }]) {
+    assert.equal(SH.sanitizeShoppingItem({ ...raw, ...bad }, stamp).ok, false, JSON.stringify(bad));
+  }
+  const withExtra = SH.sanitizeShoppingItem({ ...raw, agentExtra: { a: 1 }, candidates: [{ id: 'c-1', vendor: 'Amazon', futureField: 'x' }] }, stamp);
+  assert.deepEqual(withExtra.item.agentExtra, { a: 1 });
+  assert.equal(withExtra.item.candidates[0].futureField, 'x');
+  assert.equal(withExtra.item.candidates[0].vendor, 'Amazon');
+  const hostile = SH.sanitizeShoppingItem(JSON.parse('{"id":"sh-a","name":"n","category":"Other","__proto__":{"polluted":true},"constructor":{"x":1}}'), stamp);
+  assert.equal(hostile.ok, true);
+  assert.equal(Object.keys(hostile.item).includes('__proto__'), false);
+  assert.equal(hostile.item.polluted, undefined); assert.equal(({}).polluted, undefined);
+  assert.equal(Object.prototype.hasOwnProperty.call(hostile.item, 'constructor'), false);
+  assert.equal(SH.sanitizeShoppingItem({ ...raw, notes: 'a'.repeat(100001) }, stamp).ok, false);
+  ok('sanitizeShoppingItem validates known fields, stamps updatedAt/By server-side, preserves unknown fields, drops __proto__/constructor, caps size');
+
+  assert.equal(SH.sanitizeShoppingSettings({ guestCount: 0 }).ok, false);
+  assert.equal(SH.sanitizeShoppingSettings({ guestCount: 201 }).ok, false);
+  assert.equal(SH.sanitizeShoppingSettings({ defaultTaxRate: 0.3 }).ok, false);
+  assert.equal(SH.sanitizeShoppingSettings({ reimbursableVendors: 'Minoan' }).ok, false);
+  assert.equal(SH.sanitizeShoppingSettings({ readyDate: 'soon' }).ok, false);
+  const st = SH.sanitizeShoppingSettings({ guestCount: 20, futureSetting: { z: 1 } });
+  assert.equal(st.ok, true); assert.equal(st.settings.guestCount, 20); assert.equal(st.settings.bedrooms, 5);
+  assert.deepEqual(st.settings.futureSetting, { z: 1 });
+  ok('sanitizeShoppingSettings rejects out-of-range/mistyped values, fills defaults, preserves unknown settings');
+
+  assert.equal(SH.isShoppingField('item:sh-abc-123'), true);
+  assert.equal(SH.isShoppingField('settings'), true);
+  for (const f of ['item:../x', 'foo', 'item:SH-1', 'item:sh-a:b', 'item:' + 'a'.repeat(1000), '__proto__']) assert.equal(SH.isShoppingField(f), false, f);
+  assert.equal(SH.sanitizeShoppingField('item:sh-abc-123', raw, stamp).ok, true);
+  assert.equal(SH.sanitizeShoppingField('item:sh-other-9', raw, stamp).ok, false);
+  assert.equal(SH.sanitizeShoppingField('item:sh-abc-123', null, stamp).ok, false);
+  assert.equal(SH.sanitizeShoppingField('item:sh-abc-123', [raw], stamp).ok, false);
+  assert.deepEqual(SH.sanitizeShoppingField('item:sh-seed-x', { id: 'sh-seed-x', __deleted: true, extra: 1 }, stamp), { ok: true, value: { id: 'sh-seed-x', __deleted: true } });
+  assert.equal(SH.sanitizeShoppingField('item:sh-seed-x', { id: 'sh-other', __deleted: true }, stamp).ok, false);
+  assert.equal(SH.sanitizeShoppingField('settings', { guestCount: 22 }, stamp).ok, true);
+  assert.equal(SH.sanitizeShoppingField('settings', { guestCount: -1 }, stamp).ok, false);
+  ok('field names are strictly validated; item fields must match their id; tombstones are exactly {id,__deleted:true}; settings go through their sanitizer');
+
+  // seed merge
+  const seedItem = (id, o = {}) => ({ ...SH.emptyShoppingItem(), id, name: id, userCreated: false, ...o });
+  const seed = [seedItem('sh-seed-a'), seedItem('sh-seed-b'), seedItem('sh-seed-c')];
+  const none = SH.mergeShopping(SH.partitionShoppingFields({}), seed);
+  assert.deepEqual(none.items.map(i => i.id), ['sh-seed-a', 'sh-seed-b', 'sh-seed-c']);
+  assert.deepEqual(none.settings, { ...D });
+  const map = {
+    'item:sh-seed-a': JSON.stringify({ ...seed[0], status: 'approved' }),
+    'item:sh-seed-b': { id: 'sh-seed-b', __deleted: true },
+    'item:sh-user-1': JSON.stringify(seedItem('sh-user-1', { userCreated: true, name: 'Mine' })),
+    settings: { vendorDefaults: { minoan: { note: 'custom note' } } },
+    'bogus-field': '{"x":1}',
+  };
+  const part = SH.partitionShoppingFields(map);
+  assert.deepEqual(part.deletedIds, ['sh-seed-b']);
+  assert.equal(part.itemsById['sh-seed-a'].status, 'approved');
+  const merged = SH.mergeShopping(part, seed);
+  assert.deepEqual(merged.items.map(i => i.id), ['sh-seed-a', 'sh-seed-c', 'sh-user-1']);
+  assert.equal(merged.items[0].status, 'approved');
+  assert.equal(merged.items[1].status, 'researching');
+  assert.equal(merged.settings.vendorDefaults.amazon.holidayReturnBy, '2027-01-31');
+  assert.equal(merged.settings.vendorDefaults.minoan.note, 'custom note');
+  assert.equal(merged.settings.vendorDefaults.minoan.transactionFeePct, 0.032);
+  const resurrect = SH.mergeShopping({ itemsById: { 'sh-seed-b': seedItem('sh-seed-b') }, deletedIds: ['sh-seed-b'], settings: null }, seed);
+  assert.equal(resurrect.items.some(i => i.id === 'sh-seed-b'), false);
+  const twice = SH.mergeShopping(part, seed);
+  assert.equal(twice.items.filter(i => i.id === 'sh-user-1').length, 1);
+  assert.ok(merged.items.every(i => Array.isArray(i.candidates) && i.agentFlag && i.qtyRule));
+  ok('seed merge: saved edits win, untouched seed fills in, tombstones hide (never resurrect), user-created items kept once, settings overlay defaults per vendor');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

@@ -1,0 +1,356 @@
+/**
+ * Pure, non-UI logic for the Shopping tab — no React, no browser APIs — so it can be unit-tested
+ * in plain node (scripts/verify-logic.mjs) and reused by App.jsx and api/shopping.js.
+ *
+ * Data model (spec §2): a Redis hash `shopping:<propertyId>` with fields `item:<id>`, `settings`,
+ * and `item:<id>` tombstones `{ id, __deleted:true }`. Seed items (src/shopping-seed.json) merge
+ * with saved edits like mergeFinishes: saved wins, seed fills the rest, tombstones hide deletions.
+ */
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+export const SHOPPING_CATEGORIES = [
+  "Small Appliances", "Cookware & Bakeware", "Dinnerware", "Flatware", "Glassware & Drinkware",
+  "Serveware & Entertaining", "Kitchen Tools & Utensils", "Food Storage", "Bar & Coffee",
+  "Outdoor / Pool Dining", "Linens & Towels", "Bath", "Cleaning & Laundry", "Supplies & Consumables",
+  "Game Room & Recreation", "Furniture", "Electronics & Tech", "Safety & First Aid", "Other",
+];
+
+// Spec §2.5: shopping category → Purchase trade.
+export const CATEGORY_TO_TRADE = {
+  "Small Appliances": "Small Appliances",
+  "Cookware & Bakeware": "Kitchen & Dining", "Dinnerware": "Kitchen & Dining", "Flatware": "Kitchen & Dining",
+  "Glassware & Drinkware": "Kitchen & Dining", "Serveware & Entertaining": "Kitchen & Dining",
+  "Kitchen Tools & Utensils": "Kitchen & Dining", "Food Storage": "Kitchen & Dining",
+  "Bar & Coffee": "Kitchen & Dining", "Outdoor / Pool Dining": "Kitchen & Dining",
+  "Linens & Towels": "Linens & Soft Goods", "Bath": "Linens & Soft Goods",
+  "Cleaning & Laundry": "Supplies & Consumables", "Supplies & Consumables": "Supplies & Consumables",
+  "Game Room & Recreation": "Furniture / FF&E", "Furniture": "Furniture / FF&E",
+  "Electronics & Tech": "Electronics / AV",
+  "Safety & First Aid": "Other", "Other": "Other",
+};
+
+export const ITEM_PRIORITIES = ["launch-critical", "launch", "nice-to-have"];
+export const ITEM_STATUSES = ["researching", "shortlisted", "approved", "ordered", "received", "kept", "returned"];
+export const ZONES = ["indoor", "outdoor", "both"];
+export const VENDOR_TYPES = ["amazon", "minoan", "retail", "restaurant-supply", "other"];
+export const AGENT_ACTIONS = ["buy-now", "wait-for-sale", "needs-review"];
+export const TIERS = ["best-value", "upgrade"];
+export const QTY_BASES = ["guests", "bedrooms", "bathrooms", "fixed"];
+export const NON_GLASS_CATEGORIES = ["Outdoor / Pool Dining"];
+// Categories where a candidate should be open stock (a broken piece must be re-buyable one at a time).
+export const OPEN_STOCK_CATEGORIES = ["Dinnerware", "Flatware", "Glassware & Drinkware"];
+
+export const DEFAULT_SHOPPING_SETTINGS = {
+  guestCount: 24, bedrooms: 5, bathrooms: 5,
+  mealsPerDay: 3, washesPerDay: 1, dishwashers: 1,
+  budgetTarget: null, readyDate: null,
+  defaultTaxRate: 0.065,
+  vendorDefaults: {
+    amazon: { name: "Amazon", transactionFeePct: 0, holidayReturnBy: "2027-01-31", note: "Nov 1–Dec 31 2026 purchases; Apple-brand Jan 15" },
+    minoan: { name: "Minoan", transactionFeePct: 0.032, taxIncludesFees: true, reimbursedBy: "Sparrow (Contractor)", note: "Returns and shipping follow each brand's policy; fee observed 3.19–3.24%; Sparrow reimburses, funded through loan draws" },
+  },
+  reimbursableVendors: ["Minoan"],
+};
+
+// ── Small helpers ────────────────────────────────────────────────────────────
+
+const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const MAX_RECORD_BYTES = 100000;
+const FIELD_RE = /^(item:sh-[a-z0-9-]+|settings)$/;
+const ITEM_ID_RE = /^sh-[a-z0-9-]+$/;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const str = (v, d = "") => (v === undefined || v === null ? d : String(v));
+// Blank / non-numeric → null; otherwise a finite number.
+function numOrNull(v) {
+  if (v === undefined || v === null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+const num = (v, d = 0) => { const n = numOrNull(v); return n === null ? d : n; };
+const stamp36 = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+export function newShoppingItemId() { return `sh-${stamp36()}`; }
+export function newCandidateId() { return `c-${stamp36()}`; }
+
+// Copy every own key of `raw` except the unsafe ones (used to preserve unknown fields).
+function safeCopy(raw) {
+  const out = {};
+  for (const k of Object.keys(raw)) if (!UNSAFE_KEYS.has(k)) out[k] = raw[k];
+  return out;
+}
+
+// ── Empty records ────────────────────────────────────────────────────────────
+
+export function emptyCandidate() {
+  return {
+    id: newCandidateId(), vendor: "", vendorType: "other", url: "", sku: "", brand: "", model: "",
+    sourceVendor: "", unitPrice: null, retailUnitPrice: null, packSize: 1, qtyToBuy: 1,
+    shipping: null, transactionFeePct: null, estTax: null, discount: null, promoNote: "",
+    returnWindowDays: null, returnByDate: "", returnShippingCost: null, restockingPct: null, freeReturns: false,
+    deliveryEta: "", inStock: null, openStock: null, commercialGrade: null, warrantyTerm: "",
+    rating: null, ratingCount: null, source: "JM", checkedAt: "", notes: "",
+    tier: null, standardsCheck: null,
+  };
+}
+
+export function emptyShoppingItem() {
+  return {
+    id: newShoppingItemId(), name: "", category: "Other", room: "",
+    zone: "both", dishType: "", usesPerGuestPerDay: null,
+    qtyRule: { basis: "fixed", multiplier: 1, fixedQty: 1 },
+    qtyNeeded: 0, qtyOverride: null,
+    priority: "launch", status: "researching",
+    candidates: [], selectedCandidateId: null,
+    approvedBy: null, approvedAt: null, claimedBy: null,
+    needBy: null, targetPrice: null,
+    episodes: [], finishItemId: null,
+    agentFlag: { action: null, reason: "", flaggedAt: null },
+    suggestedQty: null, proposed: false, purchaseIds: [],
+    notes: "", userCreated: true, updatedAt: null, updatedBy: null,
+  };
+}
+
+// Fill any missing fields on a saved/seed item (no mutation). Unknown fields are kept.
+export function normalizeShoppingItem(item) {
+  const base = emptyShoppingItem();
+  const src = item || {};
+  return {
+    ...base, ...src,
+    qtyRule: { ...base.qtyRule, ...(isObj(src.qtyRule) ? src.qtyRule : {}) },
+    agentFlag: { ...base.agentFlag, ...(isObj(src.agentFlag) ? src.agentFlag : {}) },
+    candidates: Array.isArray(src.candidates) ? src.candidates : [],
+    purchaseIds: Array.isArray(src.purchaseIds) ? src.purchaseIds : [],
+    episodes: Array.isArray(src.episodes) ? src.episodes : [],
+  };
+}
+
+// ── Quantities ───────────────────────────────────────────────────────────────
+
+// Quantity needed: an explicit override wins; otherwise the rule × the house setting (rounded up,
+// guarding float noise so 1.25 × 24 is exactly 30). Missing/invalid → 0. Never throws.
+export function computeQty(item, settings) {
+  if (!item || typeof item !== "object") return 0;
+  const override = numOrNull(item.qtyOverride);
+  if (override !== null) return override;
+  const rule = isObj(item.qtyRule) ? item.qtyRule : {};
+  const s = settings || DEFAULT_SHOPPING_SETTINGS;
+  if (rule.basis === "fixed") return Math.max(0, num(rule.fixedQty, 0));
+  const count = { guests: s.guestCount, bedrooms: s.bedrooms, bathrooms: s.bathrooms }[rule.basis];
+  if (count === undefined) return 0;
+  return Math.max(0, Math.ceil(num(rule.multiplier, 0) * num(count, 0) - 1e-9));
+}
+
+// Per dish type (items sharing `dishType`, e.g. indoor + outdoor plates): how many guests' worth of a
+// day can the combined inventory cover with one wash cycle a day? Owned quantity (linked, non-Returned
+// purchases) replaces the planned quantity once an item has been bought.
+export function mealsCovered(items, settings, purchases = []) {
+  const s = settings || DEFAULT_SHOPPING_SETTINGS;
+  const groups = new Map();
+  for (const item of items || []) {
+    const uses = numOrNull(item && item.usesPerGuestPerDay);
+    if (!item || uses === null || !item.dishType) continue;
+    const g = groups.get(item.dishType) || { dishType: item.dishType, uses, total: 0 };
+    let qty = computeQty(item, s);
+    if (Array.isArray(item.purchaseIds) && item.purchaseIds.length > 0) {
+      const owned = (purchases || [])
+        .filter(p => p && item.purchaseIds.includes(p.id) && p.status !== "Returned")
+        .reduce((t, p) => t + (Number(p.qty) || 0), 0);
+      if (owned > 0) qty = owned;
+    }
+    g.total += qty;
+    groups.set(item.dishType, g);
+  }
+  const guests = Math.max(1, num(s.guestCount, 1));
+  return [...groups.values()].map(g => {
+    const perGuest = g.total / guests;
+    const needFullDay = g.uses / Math.max(1, num(s.washesPerDay, 1));
+    const needOneMeal = g.uses / Math.max(1, num(s.mealsPerDay, 1));
+    const level = perGuest >= needFullDay - 1e-9 ? "full-day" : perGuest >= needOneMeal - 1e-9 ? "one-meal" : "short";
+    return { dishType: g.dishType, total: g.total, perGuest, needFullDay, needOneMeal, level };
+  });
+}
+
+// ── Sanitizers (used by api/shopping.js and the agent import) ────────────────
+
+function enumField(raw, key, list, dflt) {
+  const v = raw[key];
+  if (v === undefined || v === null || v === "") return { ok: true, value: dflt };
+  return list.includes(v) ? { ok: true, value: v } : { ok: false, error: `Invalid ${key}` };
+}
+
+// Validate/type a candidate; unknown keys are preserved (forward-compatible). Returns null for non-objects.
+export function sanitizeCandidate(raw) {
+  if (!isObj(raw)) return null;
+  const e = emptyCandidate();
+  const out = { ...safeCopy(raw) };
+  const strings = ["id", "vendor", "url", "sku", "brand", "model", "sourceVendor", "promoNote", "returnByDate", "deliveryEta", "warrantyTerm", "checkedAt", "notes"];
+  for (const k of strings) out[k] = str(raw[k], k === "id" ? e.id : "");
+  if (!out.id) out.id = e.id;
+  const numbers = ["unitPrice", "retailUnitPrice", "shipping", "transactionFeePct", "estTax", "discount", "returnWindowDays", "returnShippingCost", "restockingPct", "rating", "ratingCount"];
+  for (const k of numbers) out[k] = numOrNull(raw[k]);
+  out.packSize = Math.max(1, num(raw.packSize, 1));
+  out.qtyToBuy = Math.max(0, num(raw.qtyToBuy, 1));
+  for (const k of ["inStock", "openStock", "commercialGrade"]) out[k] = raw[k] === undefined || raw[k] === null ? null : Boolean(raw[k]);
+  out.freeReturns = Boolean(raw.freeReturns);
+  out.vendorType = VENDOR_TYPES.includes(raw.vendorType) ? raw.vendorType : "other";
+  out.tier = TIERS.includes(raw.tier) ? raw.tier : null;
+  out.source = ["agent", "JM", "KM"].includes(raw.source) ? raw.source : "JM";
+  out.standardsCheck = isObj(raw.standardsCheck)
+    ? { ...safeCopy(raw.standardsCheck), pass: Boolean(raw.standardsCheck.pass),
+        failed: Array.isArray(raw.standardsCheck.failed) ? raw.standardsCheck.failed.map(String) : [],
+        notes: str(raw.standardsCheck.notes) }
+    : null;
+  return out;
+}
+
+// Validate a shopping item. Strict on invalid values, lenient on absent ones (defaults fill in).
+// updatedAt/updatedBy ALWAYS come from `stamp` (server-computed), never from `raw`.
+export function sanitizeShoppingItem(raw, stamp) {
+  if (!isObj(raw)) return { ok: false, error: "Expected an item object" };
+  if (typeof raw.id !== "string" || !ITEM_ID_RE.test(raw.id)) return { ok: false, error: "Invalid id" };
+  if (typeof raw.name !== "string" || !raw.name.trim()) return { ok: false, error: "name is required" };
+  if (!SHOPPING_CATEGORIES.includes(raw.category)) return { ok: false, error: "Invalid category" };
+  const status = enumField(raw, "status", ITEM_STATUSES, "researching");
+  const priority = enumField(raw, "priority", ITEM_PRIORITIES, "launch");
+  const zone = enumField(raw, "zone", ZONES, "both");
+  for (const r of [status, priority, zone]) if (!r.ok) return r;
+  if (raw.candidates !== undefined && !Array.isArray(raw.candidates)) return { ok: false, error: "candidates must be an array" };
+  const candidates = [];
+  for (const c of raw.candidates || []) {
+    const cand = sanitizeCandidate(c);
+    if (!cand) return { ok: false, error: "Invalid candidate" };
+    candidates.push(cand);
+  }
+  const rule = isObj(raw.qtyRule) ? raw.qtyRule : {};
+  if (rule.basis !== undefined && !QTY_BASES.includes(rule.basis)) return { ok: false, error: "Invalid qtyRule.basis" };
+  const flag = isObj(raw.agentFlag) ? raw.agentFlag : {};
+  const person = (v) => (v === "JM" || v === "KM" ? v : null);
+  const item = {
+    ...safeCopy(raw),
+    id: raw.id, name: raw.name.trim(), category: raw.category, room: str(raw.room),
+    zone: zone.value, dishType: str(raw.dishType), usesPerGuestPerDay: numOrNull(raw.usesPerGuestPerDay),
+    qtyRule: { ...safeCopy(rule), basis: rule.basis || "fixed", multiplier: num(rule.multiplier, 1), fixedQty: num(rule.fixedQty, 0) },
+    qtyNeeded: num(raw.qtyNeeded, 0), qtyOverride: numOrNull(raw.qtyOverride),
+    priority: priority.value, status: status.value,
+    candidates,
+    selectedCandidateId: raw.selectedCandidateId ? String(raw.selectedCandidateId) : null,
+    approvedBy: person(raw.approvedBy), approvedAt: raw.approvedAt ? String(raw.approvedAt) : null,
+    claimedBy: person(raw.claimedBy),
+    needBy: raw.needBy ? String(raw.needBy) : null, targetPrice: numOrNull(raw.targetPrice),
+    episodes: Array.isArray(raw.episodes) ? raw.episodes.map(Number).filter(Number.isFinite) : [],
+    finishItemId: raw.finishItemId ? String(raw.finishItemId) : null,
+    agentFlag: {
+      action: AGENT_ACTIONS.includes(flag.action) ? flag.action : null,
+      reason: str(flag.reason), flaggedAt: flag.flaggedAt ? String(flag.flaggedAt) : null,
+    },
+    suggestedQty: numOrNull(raw.suggestedQty), proposed: Boolean(raw.proposed),
+    purchaseIds: Array.isArray(raw.purchaseIds) ? raw.purchaseIds.map(String) : [],
+    notes: str(raw.notes), userCreated: raw.userCreated === undefined ? true : Boolean(raw.userCreated),
+    updatedAt: (stamp && stamp.updatedAt) || null, updatedBy: (stamp && stamp.updatedBy) || null,
+  };
+  if (JSON.stringify(item).length > MAX_RECORD_BYTES) return { ok: false, error: "Record too large" };
+  return { ok: true, item };
+}
+
+export function sanitizeShoppingSettings(raw) {
+  if (!isObj(raw)) return { ok: false, error: "Expected a settings object" };
+  const D = DEFAULT_SHOPPING_SETTINGS;
+  const intIn = (k, lo, hi) => {
+    const v = raw[k] === undefined ? D[k] : raw[k];
+    return Number.isInteger(v) && v >= lo && v <= hi ? { ok: true, value: v } : { ok: false, error: `Invalid ${k}` };
+  };
+  const out = { ...safeCopy(raw) };
+  for (const [k, lo, hi] of [["guestCount", 1, 200], ["bedrooms", 0, 50], ["bathrooms", 0, 50], ["mealsPerDay", 1, 6], ["washesPerDay", 1, 6], ["dishwashers", 0, 10]]) {
+    const r = intIn(k, lo, hi);
+    if (!r.ok) return r;
+    out[k] = r.value;
+  }
+  const budget = raw.budgetTarget === undefined ? null : raw.budgetTarget;
+  if (budget !== null && !(typeof budget === "number" && Number.isFinite(budget) && budget >= 0)) return { ok: false, error: "Invalid budgetTarget" };
+  out.budgetTarget = budget;
+  const ready = raw.readyDate === undefined ? null : raw.readyDate;
+  if (ready !== null && !(typeof ready === "string" && ISO_DATE_RE.test(ready))) return { ok: false, error: "Invalid readyDate" };
+  out.readyDate = ready;
+  const tax = raw.defaultTaxRate === undefined ? D.defaultTaxRate : raw.defaultTaxRate;
+  if (!(typeof tax === "number" && Number.isFinite(tax) && tax >= 0 && tax <= 0.25)) return { ok: false, error: "Invalid defaultTaxRate" };
+  out.defaultTaxRate = tax;
+  const vd = raw.vendorDefaults === undefined ? D.vendorDefaults : raw.vendorDefaults;
+  if (!isObj(vd) || !Object.values(vd).every(isObj)) return { ok: false, error: "Invalid vendorDefaults" };
+  out.vendorDefaults = {};
+  for (const k of Object.keys(vd)) if (!UNSAFE_KEYS.has(k)) out.vendorDefaults[k] = safeCopy(vd[k]);
+  const rv = raw.reimbursableVendors === undefined ? D.reimbursableVendors : raw.reimbursableVendors;
+  if (!Array.isArray(rv) || rv.length > 50 || !rv.every(v => typeof v === "string")) return { ok: false, error: "Invalid reimbursableVendors" };
+  out.reimbursableVendors = rv;
+  if (JSON.stringify(out).length > MAX_RECORD_BYTES) return { ok: false, error: "Record too large" };
+  return { ok: true, settings: out };
+}
+
+// ── Hash fields ──────────────────────────────────────────────────────────────
+
+export const SHOPPING_SETTINGS_FIELD = "settings";
+export function shoppingItemField(id) { return `item:${id}`; }
+export function isShoppingField(field) {
+  return typeof field === "string" && field.length <= 80 && FIELD_RE.test(field);
+}
+
+// Validate one `{ field, value }` write. Tombstones are exactly { id, __deleted:true }.
+export function sanitizeShoppingField(field, value, stamp) {
+  if (!isShoppingField(field)) return { ok: false, error: "Invalid field" };
+  if (field === SHOPPING_SETTINGS_FIELD) {
+    const r = sanitizeShoppingSettings(value);
+    return r.ok ? { ok: true, value: r.settings } : r;
+  }
+  if (!isObj(value)) return { ok: false, error: "Expected an object" };
+  const id = field.slice("item:".length);
+  if (value.__deleted === true) {
+    return value.id === id ? { ok: true, value: { id, __deleted: true } } : { ok: false, error: "Tombstone id mismatch" };
+  }
+  const r = sanitizeShoppingItem(value, stamp);
+  if (!r.ok) return r;
+  if (r.item.id !== id) return { ok: false, error: "Field/id mismatch" };
+  return { ok: true, value: r.item };
+}
+
+// Split an HGETALL-style map (values are objects or JSON strings) into saved items, tombstones, settings.
+export function partitionShoppingFields(map) {
+  const itemsById = {};
+  const deletedIds = [];
+  let settings = null;
+  for (const [field, rawValue] of Object.entries(map || {})) {
+    if (!isShoppingField(field)) continue;
+    let v = rawValue;
+    if (typeof v === "string") { try { v = JSON.parse(v); } catch (e) { continue; } }
+    if (!isObj(v)) continue;
+    if (field === SHOPPING_SETTINGS_FIELD) { settings = v; continue; }
+    const id = field.slice("item:".length);
+    if (v.__deleted === true) deletedIds.push(id);
+    else itemsById[id] = v;
+  }
+  return { itemsById, deletedIds, settings };
+}
+
+// Reconcile seed + saved: seed items (minus tombstoned) with any saved record layered on top, then
+// user-created saved items absent from the seed. Saved edits always win; nothing is resurrected.
+export function mergeShopping(saved, seedItems) {
+  const itemsById = (saved && saved.itemsById) || {};
+  const deleted = new Set((saved && saved.deletedIds) || []);
+  const seedIds = new Set();
+  const items = [];
+  for (const seed of seedItems || []) {
+    seedIds.add(seed.id);
+    if (deleted.has(seed.id)) continue;
+    items.push(normalizeShoppingItem(itemsById[seed.id] ? { ...seed, ...itemsById[seed.id] } : seed));
+  }
+  for (const [id, rec] of Object.entries(itemsById)) {
+    if (seedIds.has(id) || deleted.has(id)) continue;
+    items.push(normalizeShoppingItem(rec));
+  }
+  const D = DEFAULT_SHOPPING_SETTINGS;
+  const sv = (saved && saved.settings) || {};
+  const vendorDefaults = { ...D.vendorDefaults };
+  for (const [k, v] of Object.entries(sv.vendorDefaults || {})) vendorDefaults[k] = { ...(D.vendorDefaults[k] || {}), ...v };
+  return { items, settings: { ...D, ...sv, vendorDefaults } };
+}
