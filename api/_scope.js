@@ -122,3 +122,23 @@ export async function migrateFinishesToHash(redis, { key, legacyKey, toFields })
     await redis.del(lockKey);
   }
 }
+
+// Parse an HGETALL result (field → JSON string or already-parsed object) into an array of records.
+export function purchasesFromHash(map) {
+  if (!map) return [];
+  const out = [];
+  for (const v of Object.values(map)) {
+    // One unparseable record must not break receipt views or purchase deletes for the property.
+    try { out.push(typeof v === 'string' ? JSON.parse(v) : v); } catch (e) { /* skip corrupt record */ }
+  }
+  return out;
+}
+
+// True if any purchase OTHER than `excludePurchaseId` references this receipt pathname. Several
+// purchases (the lines of one order) may share one receipt blob, so a blob may only be deleted
+// or declared unviewable when nothing else still points at it. Tolerates missing receipts.
+export function isReceiptReferenced(purchases, pathname, excludePurchaseId) {
+  return purchases.some((p) =>
+    p && p.id !== excludePurchaseId && Array.isArray(p.receipts) &&
+    p.receipts.some((r) => r && r.pathname === pathname));
+}

@@ -5,8 +5,13 @@
 import assert from 'node:assert/strict';
 import {
   buildCostSegCsv, suggestAssetClass, emptyPurchase, NOT_IN_ALLOWANCE,
+  PURCHASE_TRADES, PURCHASE_STATUSES, ASSET_CLASSES, CONTRACTOR_SCOPE, CONTRACTOR_PURCHASER,
+  assetClassLabel, defaultAllowanceFor, reimbursementDefaultsFor, purchaseDefaults,
+  normalizePurchase, netCost, paymentBadge, summarizePurchases,
+  fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
+  localISODate, daysBetween, returnsClosingSoon, newOrderGroupId, groupByOrder, statusChangePatch, formDefaultsTouched,
 } from '../src/lib/purchases-logic.js';
-import { scopedKey, parseReceiptPathname, migrateFinishesToHash } from '../api/_scope.js';
+import { scopedKey, parseReceiptPathname, migrateFinishesToHash, purchasesFromHash, isReceiptReferenced } from '../api/_scope.js';
 import {
   matchesFinishSearch, buildRoomCopies, mergeFinishes, migrateRoom,
   finishItemField, furnitureField, roomField, tombstone,
@@ -33,7 +38,7 @@ ok('unknown trade → "" (no suggestion)');
 console.log('emptyPurchase():');
 {
   const p = emptyPurchase();
-  const expected = ['id','finishItemId','furnitureId','description','trade','room','vendor','invoiceNo','purchasedBy','ownerPurchased','paymentMethod','qty','unitPrice','tax','shipping','totalPaid','allowanceCategory','status','purchaseDate','receivedDate','placedInServiceDate','assetClass','section','warranty','warrantyTerm','registered','binderPocket','receipts','notes','userCreated'];
+  const expected = ['id','finishItemId','furnitureId','description','trade','room','vendor','invoiceNo','purchasedBy','ownerPurchased','paymentMethod','qty','unitPrice','tax','shipping','totalPaid','allowanceCategory','status','purchaseDate','receivedDate','placedInServiceDate','assetClass','section','warranty','warrantyTerm','registered','binderPocket','receipts','notes','userCreated','returnByDate','returnPolicyNote','refundAmount','refundDate','restockingFee','returnShippingCost','keepConfirmed','inspected','inspectedDate','deliveredTo','orderGroupId','lineNo','reimbursable','reimbursedBy','reimbursementStatus','reimbursedAmount','reimbursedDate','drawNo','sourceVendor','fees','docType','paymentConfirmed','lienWaiverReceived','refundAutoFilled'];
   for (const k of expected) assert.ok(k in p, `missing field: ${k}`);
   ok('has all expected fields');
   assert.equal(p.allowanceCategory, NOT_IN_ALLOWANCE);
@@ -64,7 +69,7 @@ console.log('buildCostSegCsv():');
   assert.equal(count, 3);
   ok('filters to items with BOTH assetClass and placedInServiceDate');
   const body = csv.split('\n');
-  assert.ok(body[2].includes('5-yr'));   // 5-yr (order 1) sorts before 27.5-yr (order 4)
+  assert.ok(body[3].includes('5-yr'));   // 5-yr (order 1) sorts before 27.5-yr (order 4); rows start after 2 preamble lines + header
   ok('grouped by asset class in MACRS order');
   assert.ok(csv.includes('"5-yr subtotal"') && csv.includes('"27.5-yr subtotal"'));
   ok('per-class subtotals present');
@@ -410,6 +415,397 @@ console.log('\nhouse-info-logic:');
   assert.equal(groups['Vintage Category'].length, 1);
   assert.equal(groupHouseInfoByCategory([]).order.join(','), HOUSE_INFO_CATEGORIES.join(','));
   ok('groupHouseInfoByCategory() orders every known category first, then any unrecognized category present in the data, so an item can never silently disappear just because its category fell out of the official list');
+}
+
+console.log('Phase 1 — trades / statuses / asset classes:');
+{
+  assert.equal(PURCHASE_TRADES.length, 22);
+  for (const t of ['Small Appliances', 'Kitchen & Dining', 'Supplies & Consumables', 'Window Treatments', 'Closets & Shelving']) {
+    assert.ok(PURCHASE_TRADES.includes(t), `missing trade ${t}`);
+  }
+  assert.equal(PURCHASE_TRADES[PURCHASE_TRADES.length - 1], 'Other');
+  ok('22 trades incl. the five new ones, "Other" still last');
+  assert.deepEqual(PURCHASE_STATUSES, ['Ordered', 'Received', 'Installed', 'Return started', 'Returned']);
+  assert.ok(ASSET_CLASSES.includes('supplies'));
+  ok('5 statuses and the supplies asset class');
+  assert.equal(suggestAssetClass('Small Appliances'), '5-yr');
+  assert.equal(suggestAssetClass('Kitchen & Dining'), '5-yr');
+  assert.equal(suggestAssetClass('Supplies & Consumables'), 'supplies');
+  assert.equal(suggestAssetClass('Window Treatments'), '5-yr');
+  assert.equal(suggestAssetClass('Closets & Shelving'), '27.5-yr');
+  assert.equal(assetClassLabel('supplies'), 'Supplies / expense (confirm with CPA)');
+  assert.equal(assetClassLabel('5-yr'), '5-yr');
+  ok('new trades suggest the right class; supplies has its CPA label');
+}
+
+console.log('defaultAllowanceFor() / reimbursementDefaultsFor():');
+{
+  const OWNER_TRADES = ['Small Appliances', 'Kitchen & Dining', 'Supplies & Consumables', 'Window Treatments',
+    'Furniture / FF&E', 'Decor & Styling', 'Linens & Soft Goods', 'Electronics / AV'];
+  for (const t of OWNER_TRADES) {
+    assert.equal(defaultAllowanceFor(t, 'Josh'), NOT_IN_ALLOWANCE, `${t}/Josh`);
+    assert.equal(defaultAllowanceFor(t, 'Kerry'), NOT_IN_ALLOWANCE, `${t}/Kerry`);
+  }
+  ok('owner-bought FF&E-type trades default to Not in Allowance (toaster cannot draw down Appliances)');
+  assert.equal(defaultAllowanceFor('Closets & Shelving', 'Sparrow (Contractor)'), 'Shelving');
+  assert.equal(defaultAllowanceFor('Closets & Shelving', 'Josh'), 'Shelving');
+  assert.equal(defaultAllowanceFor('Electrical', 'Josh'), 'Electrical Fixtures');
+  assert.equal(defaultAllowanceFor('Plumbing', 'Sparrow (Contractor)'), 'Plumbing Fixtures');
+  ok('Closets→Shelving, Electrical→Electrical Fixtures, Plumbing→Plumbing Fixtures whoever paid');
+  assert.equal(defaultAllowanceFor('Window Treatments', 'Sparrow (Contractor)'), CONTRACTOR_SCOPE);
+  assert.equal(defaultAllowanceFor('Small Appliances', 'Sparrow (Contractor)'), CONTRACTOR_SCOPE);
+  assert.equal(defaultAllowanceFor('Flooring', 'Sparrow (Contractor)'), null);
+  assert.equal(defaultAllowanceFor('Appliances', 'Josh'), null);
+  assert.equal(defaultAllowanceFor('Small Appliances', ''), null);
+  assert.equal(defaultAllowanceFor('', 'Josh'), null);
+  ok('Sparrow-paid no-category trades → Contractor scope; otherwise no default');
+
+  assert.deepEqual(reimbursementDefaultsFor('Minoan', 'Josh'),
+    { reimbursable: true, reimbursedBy: 'Sparrow (Contractor)', reimbursementStatus: 'pending' });
+  assert.equal(reimbursementDefaultsFor(' minoan ', 'Kerry').reimbursable, true);
+  assert.deepEqual(reimbursementDefaultsFor('Amazon', 'Josh'), { reimbursable: false, reimbursedBy: '', reimbursementStatus: 'none' });
+  assert.deepEqual(reimbursementDefaultsFor('Minoan', 'Sparrow (Contractor)'), { reimbursable: false, reimbursedBy: '', reimbursementStatus: 'none' });
+  assert.equal(reimbursementDefaultsFor('Wayfair', 'Josh', ['Wayfair']).reimbursable, true);
+  ok('Minoan (case/space-insensitive) defaults to reimbursable/pending; not when Sparrow paid; vendor list overridable');
+}
+
+console.log('emptyPurchase() / normalizePurchase() — Phase 1 fields:');
+{
+  const p = emptyPurchase();
+  assert.equal(p.returnByDate, ''); assert.equal(p.refundAmount, null); assert.equal(p.keepConfirmed, false);
+  assert.equal(p.inspected, false); assert.equal(p.deliveredTo, '');
+  assert.equal(p.orderGroupId, null); assert.equal(p.lineNo, null);
+  assert.equal(p.reimbursable, false); assert.equal(p.reimbursementStatus, 'none');
+  assert.equal(p.docType, ''); assert.equal(p.paymentConfirmed, false); assert.equal(p.lienWaiverReceived, false);
+  assert.equal(p.fees, null); assert.equal(p.section, '');
+  ok('emptyPurchase carries every Phase 1 default; section still blank');
+
+  const old = { id: 'pur-old', description: 'x', totalPaid: 10, refundAmount: 5 };
+  const frozen = JSON.stringify(old);
+  const n = normalizePurchase(old);
+  assert.equal(n.id, 'pur-old'); assert.equal(n.description, 'x'); assert.equal(n.totalPaid, 10); assert.equal(n.refundAmount, 5);
+  for (const k of Object.keys(purchaseDefaults())) assert.ok(k in n, `normalize missing ${k}`);
+  assert.equal(JSON.stringify(old), frozen);
+  assert.doesNotThrow(() => normalizePurchase({}));
+  ok('normalizePurchase fills missing fields, keeps saved values, never mutates input');
+}
+
+console.log('netCost() / paymentBadge() / summarizePurchases():');
+{
+  assert.equal(netCost({ totalPaid: 120, refundAmount: 100 }), 20);
+  assert.equal(netCost({ totalPaid: 40 }), 40);
+  assert.equal(netCost({}), 0);
+  assert.equal(netCost({ totalPaid: 50, refundAmount: 80 }), 0);
+  assert.equal(netCost({ totalPaid: '12.5' }), 12.5);
+  ok('netCost = paid − refund, clamped at 0, tolerant of blanks and numeric strings');
+
+  assert.equal(paymentBadge({ docType: 'statement', paymentConfirmed: false, purchasedBy: 'Josh' }), 'Unpaid / no proof of payment');
+  assert.equal(paymentBadge({ docType: 'statement', paymentConfirmed: true, purchasedBy: 'Josh' }), null);
+  assert.equal(paymentBadge({ docType: 'quote', purchasedBy: 'Kerry' }), 'Unpaid / no proof of payment');
+  assert.equal(paymentBadge({ docType: 'statement', purchasedBy: CONTRACTOR_PURCHASER, lienWaiverReceived: false }), 'Contractor-paid: confirm in draw');
+  assert.equal(paymentBadge({ docType: 'statement', purchasedBy: CONTRACTOR_PURCHASER, lienWaiverReceived: true }), null);
+  assert.equal(paymentBadge({ docType: 'receipt' }), null);
+  assert.equal(paymentBadge({}), null);
+  ok('paymentBadge: unpaid for statement/quote, contractor-paid variant needs lien waiver, none otherwise');
+
+  const s = summarizePurchases([
+    { totalPaid: 40, ownerPurchased: true, trade: 'Small Appliances' },
+    { totalPaid: 1000, ownerPurchased: false, trade: 'Appliances' },
+    { totalPaid: 120, refundAmount: 100, ownerPurchased: true, trade: 'Linens & Soft Goods' },
+  ]);
+  assert.equal(s.total, 1060); assert.equal(s.owner, 60); assert.equal(s.contractor, 1000);
+  assert.equal(s.byTrade['Linens & Soft Goods'], 20);
+  assert.doesNotThrow(() => summarizePurchases([{}]));
+  ok('summarizePurchases sums net cost (refund 100 on 120 counts as 20) and tolerates bare records');
+}
+
+console.log('Phase 1 — reimbursements / allowance pool (spec §1.3 fixtures A, B, C):');
+{
+  // Each line's "Total paid" is copied from spec §3.7.
+  const mk = (o) => ({
+    ...emptyPurchase(), ownerPurchased: true, ...o,
+    allowanceCategory: defaultAllowanceFor(o.trade, o.purchasedBy) || NOT_IN_ALLOWANCE,
+    ...reimbursementDefaultsFor(o.vendor, o.purchasedBy),
+  });
+  const A = [['Plumbing', 119.82], ['Electrical', 1512.23], ['Electrical', 3066.99], ['Electrical', 848.59],
+    ['Electrical', 1023.45], ['Electrical', 525.72]]
+    .map(([trade, totalPaid]) => mk({ vendor: 'Minoan', purchasedBy: 'Josh', trade, totalPaid }));
+  const B = [216.46, 200.27, 171.94]
+    .map(totalPaid => mk({ vendor: 'Minoan', purchasedBy: 'Josh', trade: 'Furniture / FF&E', totalPaid }));
+  const all = [...A, ...B];
+  const row = (pool, name) => pool.rows.find(r => r.name === name);
+
+  assert.equal(reimbursementsDue(all).total, 7685.47);
+  assert.equal(reimbursementsDue(all).purchases.length, 9);
+  ok('both Minoan orders as paid by Josh → Due from Sparrow $7,685.47 (exact cents)');
+  const pool = allowancePool(all);
+  assert.equal(row(pool, 'Electrical Fixtures').reimbursedToOwner, 6976.98);
+  assert.equal(row(pool, 'Electrical Fixtures').paidBySparrow, 0);
+  assert.equal(row(pool, 'Electrical Fixtures').ownerDirect, 0);
+  assert.equal(row(pool, 'Plumbing Fixtures').reimbursedToOwner, 119.82);
+  assert.equal(pool.reimbursedNoCategory.total, 588.67);
+  assert.equal(allowanceCredits(all).total, 0);
+  assert.ok(all.every(p => fundingSource(p) === 'Contract (reimbursed by Sparrow)'));
+  assert.equal(pool.poolTotal, 446000);
+  assert.equal(pool.poolCharged, 7685.47);
+  assert.equal(pool.poolRemaining, 438314.53);
+  ok('lighting = Reimbursed to owner under Electrical Fixtures; beds = Reimbursed, no Exhibit B category; owner-paid credits stay $0; pool charged includes both');
+
+  const aDone = A.map(p => ({ ...p, reimbursementStatus: 'reimbursed' }));
+  assert.equal(reimbursementsDue([...aDone, ...B]).total, 588.67);
+  ok('marking fixture A reimbursed drops Due from Sparrow to $588.67');
+
+  const closets = [525, 3525, 1300, 1350, 465, 280, 280, 280, 250, 1000]
+    .map(totalPaid => mk({ vendor: 'First Coast Closets & Window Fashions', purchasedBy: 'Sparrow (Contractor)', ownerPurchased: false, trade: 'Closets & Shelving', totalPaid }));
+  const shades = [mk({ vendor: 'First Coast Closets & Window Fashions', purchasedBy: 'Sparrow (Contractor)', ownerPurchased: false, trade: 'Window Treatments', totalPaid: 9732 })];
+  const C = [...closets, ...shades];
+  const poolC = allowancePool(C);
+  assert.equal(row(poolC, 'Shelving').paidBySparrow, 9255);
+  assert.equal(row(poolC, 'Shelving').remaining, 1245);
+  assert.equal(row(poolC, 'Shelving').pct, 88);
+  assert.equal(poolC.contractorScope.total, 9732);
+  assert.equal(poolC.contractorScope.purchases.length, 1);
+  assert.equal(allowanceCredits(C).total, 0);
+  assert.equal(reimbursementsDue(C).total, 0);
+  assert.ok(C.every(p => fundingSource(p) === 'Contract (paid by Sparrow)'));
+  assert.equal(poolC.poolCharged, 9255);
+  ok('First Coast: closets Paid by Sparrow in Shelving ($1,245 left), shades in Contractor scope (not charged to the pool), no owner credit, nothing due');
+
+  const direct = mk({ vendor: 'Ferguson', purchasedBy: 'Josh', trade: 'Plumbing', totalPaid: 100 });
+  assert.equal(fundingSource(direct), 'Owner direct');
+  assert.equal(allowanceCredits([direct]).total, 100);
+  assert.equal(row(allowancePool([direct]), 'Plumbing Fixtures').ownerDirect, 100);
+  const toaster = mk({ vendor: 'Amazon', purchasedBy: 'Kerry', trade: 'Small Appliances', totalPaid: 40 });
+  const poolT = allowancePool([toaster]);
+  assert.equal(row(poolT, 'Appliances').spent, 0);
+  assert.equal(row(poolT, 'Appliances').remaining, 25000);
+  ok('owner-direct purchase in an Exhibit B category is a credit to settle; a $40 Kerry toaster leaves Appliances at $25,000');
+
+  const refunded = mk({ vendor: 'Minoan', purchasedBy: 'Josh', trade: 'Electrical', totalPaid: 120, refundAmount: 120 });
+  assert.equal(reimbursementsDue([refunded]).total, 0);
+  ok('a fully refunded reimbursable purchase contributes $0 to Due from Sparrow');
+
+  for (const input of [[], [{}]]) {
+    assert.doesNotThrow(() => { reimbursementsDue(input); allowanceCredits(input); allowancePool(input); input.forEach(fundingSource); });
+  }
+  assert.equal(allowancePool([]).poolCharged, 0);
+  ok('every money-flow function tolerates [] and bare legacy records');
+}
+
+console.log('Phase 1 — returns closing / order grouping:');
+{
+  assert.equal(localISODate(new Date(2026, 10, 13)), '2026-11-13');
+  assert.equal(daysBetween('2026-11-13', '2026-11-27'), 14);
+  assert.equal(daysBetween('2026-11-13', 'nope'), null);
+  assert.equal(daysBetween('', '2026-11-13'), null);
+  ok('localISODate uses local date parts; daysBetween is whole days and null for invalid input');
+
+  const today = '2026-11-13';
+  const input = [
+    { id: 'B', returnByDate: '2026-11-27', status: 'Ordered' },
+    { id: 'late', returnByDate: '2026-11-28', status: 'Ordered' },
+    { id: 'A', returnByDate: '2026-11-13', status: 'Received' },
+    { id: 'past', returnByDate: '2026-11-12', status: 'Ordered' },
+    { id: 'ret', returnByDate: '2026-11-15', status: 'Returned' },
+    { id: 'kept', returnByDate: '2026-11-15', status: 'Installed', keepConfirmed: true },
+    { id: 'blank', returnByDate: '', status: 'Ordered' },
+    { id: 'junk', returnByDate: 'garbage', status: 'Ordered' },
+    { id: 'I', returnByDate: '2026-11-20', status: 'Return started' },
+    { id: 'old' },
+  ];
+  assert.deepEqual(returnsClosingSoon(input, today, 14).map(p => p.id), ['A', 'I', 'B']);
+  ok('returns closing: today..today+14 inclusive, soonest first; excludes closed windows, Returned, kept, blank/garbage dates and bare legacy records');
+  assert.deepEqual(returnsClosingSoon(input, today, 3).map(p => p.id), ['A']);
+  ok('the day window is a parameter');
+
+  assert.match(newOrderGroupId(), /^og-[a-z0-9]+-[a-z0-9]{6}$/);
+  assert.notEqual(newOrderGroupId(), newOrderGroupId());
+  ok('newOrderGroupId shape and uniqueness');
+
+  const s1 = { id: 's1' }, s2 = { id: 's2' };
+  const a1 = { id: 'a1', orderGroupId: 'og-1', lineNo: 2, totalPaid: 10 };
+  const a0 = { id: 'a0', orderGroupId: 'og-1', lineNo: 1, totalPaid: 30, refundAmount: 5 };
+  const lone = { id: 'lone', orderGroupId: 'og-2' };
+  const g = groupByOrder([s1, a1, s2, a0, lone]);
+  assert.equal(g.length, 4);
+  assert.deepEqual([g[0].kind, g[0].purchase.id], ['single', 's1']);
+  assert.equal(g[1].kind, 'order');
+  assert.equal(g[1].orderGroupId, 'og-1');
+  assert.deepEqual(g[1].purchases.map(p => p.id), ['a0', 'a1']);
+  assert.equal(g[1].subtotal, 35);
+  assert.deepEqual([g[2].kind, g[2].purchase.id], ['single', 's2']);
+  assert.deepEqual([g[3].kind, g[3].purchase.id], ['single', 'lone']);
+  ok('groupByOrder: group sits at first member, lines sort by lineNo, subtotal is net, one-member group renders as a single');
+  const noLine = groupByOrder([{ id: 'm1', orderGroupId: 'og-3' }, { id: 'm2', orderGroupId: 'og-3', lineNo: 1 }, { id: 'm3', orderGroupId: 'og-3' }]);
+  assert.deepEqual(noLine[0].purchases.map(p => p.id), ['m2', 'm1', 'm3']);
+  assert.doesNotThrow(() => groupByOrder([{}, {}]));
+  ok('lines without lineNo follow numbered ones in input order; bare records never throw');
+}
+
+console.log('Phase 1 — cost-seg CSV (net cost, returned block, funding source):');
+{
+  const base = { placedInServiceDate: '2026-01-01', ownerPurchased: true, vendor: 'V', invoiceNo: '', trade: '', room: '', section: '', purchasedBy: '' };
+  const net = buildCostSegCsv([{ ...base, assetClass: '5-yr', totalPaid: 120, refundAmount: 100, description: 'Rug' }]);
+  assert.match(net.csv, /"5-yr subtotal",,,,"20"/);
+  assert.match(net.csv, /"GRAND TOTAL",,,,"20"/);
+  ok('CSV uses net cost ($120 paid, $100 refunded → 20) in rows, subtotal and grand total');
+
+  const withReturn = buildCostSegCsv([
+    { ...base, assetClass: '5-yr', totalPaid: 100, description: 'Good lamp', status: 'Installed' },
+    { ...base, assetClass: '5-yr', totalPaid: 80, refundAmount: 80, description: 'Bad lamp', status: 'Returned', invoiceNo: 'INV9' },
+  ]);
+  assert.equal(withReturn.count, 1);
+  assert.match(withReturn.csv, /"GRAND TOTAL",,,,"100"/);
+  const iBlock = withReturn.csv.indexOf('Returned (excluded)');
+  assert.ok(iBlock > -1 && withReturn.csv.indexOf('Bad lamp') > iBlock);
+  assert.ok(withReturn.csv.indexOf('GRAND TOTAL') < iBlock);
+  assert.ok(withReturn.csv.includes('INV9'));
+  ok('a Returned line leaves the groups, count and grand total and is listed after a "Returned (excluded)" block');
+  assert.ok(!net.csv.includes('Returned (excluded)'));
+  ok('no Returned purchases → no excluded block');
+
+  const classes = buildCostSegCsv([
+    { ...base, assetClass: 'supplies', totalPaid: 10, description: 'Paper towels' },
+    { ...base, assetClass: '27.5-yr', totalPaid: 20, description: 'Closet' },
+  ]).csv;
+  assert.ok(classes.indexOf('"27.5-yr subtotal"') < classes.indexOf('"supplies subtotal"'));
+  ok('supplies group sorts after 27.5-yr');
+  const partial = buildCostSegCsv([{ ...base, assetClass: '5-yr', totalPaid: 200, refundAmount: 50, status: 'Return started', description: 'Chair' }]);
+  assert.equal(partial.count, 1);
+  assert.match(partial.csv, /"5-yr subtotal",,,,"150"/);
+  ok('Return started with a partial refund stays in its group at net');
+
+  const funded = buildCostSegCsv([{ ...base, assetClass: '5-yr', totalPaid: 300, reimbursable: true, description: 'Pendant' }]).csv;
+  assert.ok(funded.includes('Contract-funded items are already inside the construction contract price; do not add them to basis a second time.'));
+  assert.ok(funded.includes('"Funding Source"') && funded.includes('"Cost Basis (net of refunds)"'));
+  assert.ok(funded.includes('Contract (reimbursed by Sparrow)'));
+  ok('CSV carries the contract-funded note, a Funding Source column (reimbursed by Sparrow) and the net-of-refunds header');
+}
+
+console.log('Phase 1 — shared receipts (isReceiptReferenced / purchasesFromHash):');
+{
+  const path = 'receipts/pp/pur-a/r.pdf';
+  const A = { id: 'pur-a', receipts: [{ pathname: path }] };
+  const B = { id: 'pur-b', receipts: [{ pathname: path }, { pathname: 'receipts/pp/pur-b/own.jpg' }] };
+  assert.equal(isReceiptReferenced([A, B], path, 'pur-a'), true);
+  assert.equal(isReceiptReferenced([A, B], path, 'pur-b'), true);
+  ok('a receipt shared by two purchases stays referenced when either one is excluded (deleting one keeps the blob)');
+  assert.equal(isReceiptReferenced([A], path, 'pur-a'), false);
+  ok('last reference gone → safe to delete (also the removal race: the record being edited still lists the path)');
+  assert.equal(isReceiptReferenced([A, B], 'receipts/pp/pur-x/none.jpg', 'pur-a'), false);
+  assert.equal(isReceiptReferenced([A, B], path), true);
+  ok('unreferenced path → false; no exclusion → any reference counts');
+  assert.doesNotThrow(() => isReceiptReferenced([{ id: 'x' }, { id: 'y', receipts: undefined }, { id: 'z', receipts: [null] }, null], path, 'q'));
+  assert.equal(isReceiptReferenced([{ id: 'x' }, { id: 'z', receipts: [null] }], path), false);
+  ok('records with missing/null receipts never throw');
+
+  assert.deepEqual(purchasesFromHash(null), []);
+  assert.deepEqual(purchasesFromHash({ a: JSON.stringify({ id: 'a' }), b: { id: 'b' } }).map(p => p.id).sort(), ['a', 'b']);
+  ok('purchasesFromHash handles null and mixed JSON-string / object values');
+}
+
+console.log('statusChangePatch() — Returned refund prefill is persisted as a flag, so it undoes across sessions:');
+{
+  const toReturned = statusChangePatch({ status: 'Received', totalPaid: 1512.23, refundAmount: null }, 'Returned');
+  assert.deepEqual(toReturned, { status: 'Returned', refundAmount: 1512.23, refundAutoFilled: true });
+  ok('choosing Returned with no refund pre-fills the amount paid and flags it as automatic');
+
+  const back = statusChangePatch({ status: 'Returned', totalPaid: 1512.23, refundAmount: 1512.23, refundAutoFilled: true }, 'Received');
+  assert.deepEqual(back, { status: 'Received', refundAmount: null, refundAutoFilled: false });
+  ok('mis-tap, even after a Save and reopen: switching away from Returned undoes the automatic refund (the flag is stored on the record)');
+
+  assert.deepEqual(statusChangePatch({ status: 'Returned', totalPaid: 100, refundAmount: 100, refundAutoFilled: false }, 'Received'), { status: 'Received' });
+  assert.deepEqual(statusChangePatch({ status: 'Returned', totalPaid: 100, refundAmount: 60 }, 'Received'), { status: 'Received' });
+  ok('a refund the owner typed (flag false/absent) is never cleared, even when it equals the amount paid');
+
+  assert.deepEqual(statusChangePatch({ status: 'Received', totalPaid: 100, refundAmount: 30 }, 'Returned'), { status: 'Returned' });
+  assert.deepEqual(statusChangePatch({ status: 'Ordered', totalPaid: 10, refundAmount: null }, 'Installed'), { status: 'Installed' });
+  assert.deepEqual(statusChangePatch({ status: 'Received', totalPaid: null, refundAmount: null }, 'Returned'), { status: 'Returned' });
+  assert.equal(statusChangePatch({ status: 'Received', totalPaid: 1512.2299999999998, refundAmount: null }, 'Returned').refundAmount, 1512.23);
+  assert.doesNotThrow(() => statusChangePatch({}, 'Returned'));
+  ok('existing refunds are not overwritten; nothing to fill when no amount paid; money rounds to cents; bare records never throw');
+}
+
+console.log('PR-review fixes — money consistency, form defaults, CSV, tolerant parsing:');
+{
+  // 1. "Due from Sparrow" is only owed on purchases the OWNER paid.
+  const sparrowPaidFlagged = { ownerPurchased: false, reimbursable: true, reimbursementStatus: 'pending', totalPaid: 100, allowanceCategory: NOT_IN_ALLOWANCE };
+  assert.equal(reimbursementsDue([sparrowPaidFlagged]).total, 0);
+  assert.equal(reimbursementsDue([{ ...sparrowPaidFlagged, ownerPurchased: true }]).total, 100);
+  assert.equal(allowancePool([sparrowPaidFlagged]).reimbursedNoCategory.total, 0);
+  assert.equal(allowancePool([sparrowPaidFlagged]).poolCharged, 0);
+  ok('a Sparrow-paid purchase flagged reimbursable is never "Due from Sparrow" and never charged to the pool as reimbursed');
+
+  // 2. Contractor-scope items are listed separately and NOT also charged to the pool.
+  const scopeFlagged = { ownerPurchased: true, reimbursable: true, reimbursementStatus: 'pending', totalPaid: 100, allowanceCategory: CONTRACTOR_SCOPE };
+  const poolS = allowancePool([scopeFlagged]);
+  assert.equal(poolS.contractorScope.total, 100);
+  assert.equal(poolS.reimbursedNoCategory.total, 0);
+  assert.equal(poolS.poolCharged, 0);
+  ok('a reimbursable purchase tagged Contractor scope is counted once (contractor-scope line), not also against the pool');
+
+  // 3. Defaults only follow edits on records that have not been through an owner Save.
+  assert.deepEqual(formDefaultsTouched({ allowanceCategory: NOT_IN_ALLOWANCE, reimbursable: false, reimbursementStatus: 'none', drawNo: '' }, false), { allowance: true, reimb: true });
+  assert.deepEqual(formDefaultsTouched({ allowanceCategory: NOT_IN_ALLOWANCE, reimbursable: false, reimbursementStatus: 'none', drawNo: '' }, true), { allowance: false, reimb: false });
+  assert.deepEqual(formDefaultsTouched({ allowanceCategory: 'Electrical Fixtures', reimbursable: false, reimbursementStatus: 'none' }, true), { allowance: true, reimb: false });
+  assert.deepEqual(formDefaultsTouched({ allowanceCategory: NOT_IN_ALLOWANCE, reimbursable: true, reimbursementStatus: 'pending' }, true), { allowance: false, reimb: true });
+  assert.deepEqual(formDefaultsTouched({}, true), { allowance: false, reimb: false });   // no explicit choice on a bare record = untouched; never throws
+  ok('a saved record starts "touched" so editing it never re-applies defaults over the owner\'s explicit choice; fresh records follow defaults until set');
+
+  // 4. CSV Returned block shows what was NOT refunded, rounded to cents.
+  const rb = buildCostSegCsv([
+    { placedInServiceDate: '2026-01-01', ownerPurchased: true, assetClass: '5-yr', totalPaid: 10, description: 'Keeper', status: 'Installed' },
+    { ownerPurchased: true, totalPaid: 80, refundAmount: 70, description: 'Restocked lamp', vendor: 'V', invoiceNo: 'I1', status: 'Returned' },
+    { ownerPurchased: true, totalPaid: 1512.2299999999998, description: 'Float item', status: 'Returned' },
+  ]).csv;
+  assert.ok(rb.includes('"Net not refunded"'));
+  assert.match(rb, /"Restocked lamp","V","I1","80","70","10"/);
+  assert.ok(rb.includes('"1512.23"') && !rb.includes('1512.2299'));
+  ok('Returned (excluded) block adds a "Net not refunded" column and rounds money to cents');
+
+  // 5. One corrupt record must not break receipt views / purchase deletes for the whole property.
+  assert.deepEqual(purchasesFromHash({ bad: '{not json', good: JSON.stringify({ id: 'good' }) }).map(p => p.id), ['good']);
+  ok('purchasesFromHash skips an unparseable record instead of throwing');
+}
+
+console.log('Repairs — Sparrow-paid scope defaults, legacy Minoan, fixture coverage:');
+{
+  for (const t of ['Paint', 'Decking', 'Doors', 'Drywall', 'Other']) {
+    assert.equal(defaultAllowanceFor(t, 'Sparrow (Contractor)'), CONTRACTOR_SCOPE, t);
+    assert.equal(defaultAllowanceFor(t, 'Josh'), null, t + '/Josh');
+  }
+  assert.equal(defaultAllowanceFor('Flooring', 'Sparrow (Contractor)'), null);
+  ok('Sparrow-paid trades with no Exhibit B equivalent (Paint, Decking, Doors, Drywall, Other) default to Contractor scope; trades that do have one are left for the owner to pick');
+
+  const loose = { ownerPurchased: false, totalPaid: 100, allowanceCategory: NOT_IN_ALLOWANCE, trade: 'Flooring' };
+  const poolL = allowancePool([loose]);
+  assert.equal(poolL.contractorScope.total, 100);
+  assert.equal(poolL.poolCharged, 0);
+  ok('a Sparrow-paid purchase outside every Exhibit B category is listed on the contractor-scope line (not invisible), and not charged to the pool');
+
+  const legacy = normalizePurchase({ id: 'old-minoan', vendor: 'Minoan', purchasedBy: 'Josh', ownerPurchased: true, totalPaid: 100 });
+  assert.equal(legacy.reimbursable, true); assert.equal(legacy.reimbursementStatus, 'pending'); assert.equal(legacy.reimbursedBy, 'Sparrow (Contractor)');
+  assert.equal(normalizePurchase({ id: 'x', vendor: 'Minoan', ownerPurchased: true, reimbursable: false, reimbursementStatus: 'none' }).reimbursable, false);
+  assert.equal(normalizePurchase({ id: 'x', vendor: 'Minoan', purchasedBy: 'Sparrow (Contractor)', ownerPurchased: false }).reimbursable, false);
+  assert.equal(normalizePurchase({ id: 'x', vendor: 'Amazon', purchasedBy: 'Kerry', ownerPurchased: true }).reimbursable, false);
+  assert.equal(reimbursementsDue([legacy]).total, 100);
+  ok('a pre-Phase-1 owner-paid Minoan purchase loads as reimbursable/pending (counts as Due from Sparrow); explicit saved values and other vendors/payers are untouched');
+
+  const mkF = (o) => ({ ...emptyPurchase(), ownerPurchased: true, ...o, allowanceCategory: defaultAllowanceFor(o.trade, o.purchasedBy) || NOT_IN_ALLOWANCE, ...reimbursementDefaultsFor(o.vendor, o.purchasedBy) });
+  const fixA = [['Plumbing', 119.82], ['Electrical', 1512.23], ['Electrical', 3066.99], ['Electrical', 848.59], ['Electrical', 1023.45], ['Electrical', 525.72]]
+    .map(([trade, totalPaid]) => ({ ...mkF({ vendor: 'Minoan', purchasedBy: 'Josh', trade, totalPaid }), assetClass: '27.5-yr', placedInServiceDate: '2026-11-01' }));
+  const { csv: csvA, count: countA } = buildCostSegCsv(fixA);
+  assert.equal(countA, 6);
+  assert.equal(csvA.split('Contract (reimbursed by Sparrow)').length - 1, 6);
+  assert.match(csvA, /"GRAND TOTAL",,,,"7096.8"/);
+  ok('cost-seg CSV on fixture A: every one of the 6 Minoan lines carries Funding Source "Contract (reimbursed by Sparrow)" and the total is $7,096.80');
+
+  const fixC = [525, 3525, 1300, 1350, 465, 280, 280, 280, 250, 1000]
+    .map(totalPaid => ({ ...mkF({ vendor: 'First Coast', purchasedBy: 'Sparrow (Contractor)', ownerPurchased: false, trade: 'Closets & Shelving', totalPaid }), docType: 'statement' }))
+    .concat([{ ...mkF({ vendor: 'First Coast', purchasedBy: 'Sparrow (Contractor)', ownerPurchased: false, trade: 'Window Treatments', totalPaid: 9732 }), docType: 'statement' }]);
+  assert.ok(fixC.every(p => paymentBadge(p) === 'Contractor-paid: confirm in draw'));
+  assert.ok(fixC.every(p => paymentBadge({ ...p, lienWaiverReceived: true }) === null));
+  ok('fixture C: every First Coast statement line shows "Contractor-paid: confirm in draw" until the lien waiver is received');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

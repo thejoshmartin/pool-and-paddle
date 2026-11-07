@@ -1,6 +1,6 @@
 import { Redis } from '@upstash/redis';
 import { del } from '@vercel/blob';
-import { scopedKey } from './_scope.js';
+import { scopedKey, purchasesFromHash, isReceiptReferenced } from './_scope.js';
 
 const redis = new Redis({
   url: process.env.PP_REDIS_URL,
@@ -20,10 +20,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'GET') {
-    const map = await redis.hgetall(key); // { id: purchaseObj|jsonString } or null
-    const list = map
-      ? Object.values(map).map((v) => (typeof v === 'string' ? JSON.parse(v) : v))
-      : [];
+    const list = purchasesFromHash(await redis.hgetall(key)); // tolerant of one corrupt record
     return res.status(200).json(list);
   }
 
@@ -41,15 +38,14 @@ export default async function handler(req, res) {
     if (!id || typeof id !== 'string') {
       return res.status(400).json({ error: 'Expected id' });
     }
-    // Clean up receipt blobs so deleting a purchase never leaves orphaned files.
-    const raw = await redis.hget(key, id);
-    if (raw) {
-      const purchase = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      const receipts = Array.isArray(purchase.receipts) ? purchase.receipts : [];
-      for (const r of receipts) {
-        if (r && r.pathname) {
-          try { await del(r.pathname); } catch (e) { /* best-effort cleanup */ }
-        }
+    // Clean up receipt blobs so deleting a purchase never leaves orphaned files — but never
+    // delete a blob another purchase (a sibling line of the same order) still references.
+    const all = purchasesFromHash(await redis.hgetall(key));
+    const purchase = all.find((p) => p && p.id === id);
+    const receipts = purchase && Array.isArray(purchase.receipts) ? purchase.receipts : [];
+    for (const r of receipts) {
+      if (r && r.pathname && !isReceiptReferenced(all, r.pathname, id)) {
+        try { await del(r.pathname); } catch (e) { /* best-effort cleanup */ }
       }
     }
     await redis.hdel(key, id);

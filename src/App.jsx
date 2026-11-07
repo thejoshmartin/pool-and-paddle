@@ -7,6 +7,10 @@ import {
   PURCHASE_TRADES, PURCHASED_BY_OPTIONS, CONTRACTOR_PURCHASER, PAYMENT_METHODS,
   PURCHASE_STATUSES, NOT_IN_ALLOWANCE, ALLOWANCE_CATEGORIES, EXHIBIT_B_TOTAL,
   ASSET_CLASSES, suggestAssetClass, buildCostSegCsv, fmtUSD, emptyPurchase,
+  DELIVERED_TO_OPTIONS, REIMBURSEMENT_STATUSES, DOC_TYPES, CONTRACTOR_SCOPE, assetClassLabel,
+  defaultAllowanceFor, reimbursementDefaultsFor, normalizePurchase, netCost, paymentBadge,
+  summarizePurchases, fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
+  groupByOrder, newOrderGroupId, returnsClosingSoon, localISODate, daysBetween, statusChangePatch, formDefaultsTouched,
 } from "./lib/purchases-logic.js";
 import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, furnitureField, roomField, tombstone, BUDGET_FIELD, partitionFinishFields } from "./lib/design-logic.js";
 import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, groupHouseInfoByCategory } from "./lib/house-info-logic.js";
@@ -95,6 +99,8 @@ const C = {
   mintDark: "#238C62",
   ocean: "#2D7DD2",
   oceanLight: "#E3EFF9",
+  warnText: "#B7791F",   // warning chips / badges
+  warnBg: "#FEFCBF",
   charcoal: "#333333",
   textSecondary: "#666666",
   textMuted: "#999999",
@@ -357,7 +363,7 @@ function StatCard({ label, value, sub, accent }) {
   );
 }
 
-function Dashboard({ tasks, podcastData, finishes, onNavigateToItem }) {
+function Dashboard({ tasks, podcastData, finishes, onNavigateToItem, purchases = [], onOpenPurchase }) {
   const completed = tasks.filter(t => t.done).length;
   const total = tasks.length;
   const critical = tasks.filter(t => t.priority === "critical");
@@ -511,6 +517,35 @@ function Dashboard({ tasks, podcastData, finishes, onNavigateToItem }) {
                       {isOverdue ? "Overdue · " : ""}{new Date(a.dueDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}
                     </span>
                   </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Returns closing — purchases whose return window closes within 14 days */}
+      {(() => {
+        const today = localISODate();
+        const closing = returnsClosingSoon(purchases, today, 14);
+        if (closing.length === 0) return null;
+        return (
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: 28, marginBottom: 32, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+            <h3 style={{ fontFamily: font, fontSize: 18, fontWeight: 700, color: C.charcoal, margin: "0 0 4px 0" }}>Returns closing</h3>
+            <p style={{ fontFamily: font, fontSize: 12, color: C.textMuted, margin: "0 0 16px 0" }}>Return windows closing in the next 14 days. Open one to test it, then keep it or start a return.</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {closing.map(p => {
+                const left = daysBetween(today, p.returnByDate);
+                const label = left === 0 ? "today" : left === 1 ? "1 day left" : `${left} days left`;
+                const urgent = left <= 3;
+                return (
+                  <button key={p.id} onClick={() => onOpenPurchase && onOpenPurchase(p.id)} style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", minHeight: 44, textAlign: "left", background: C.offWhite, border: `1px solid ${C.borderLight}`, borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontFamily: font }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: C.charcoal, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.description || "(untitled)"}</div>
+                      <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{[p.vendor, p.sourceVendor].filter(Boolean).join(" · ") || "—"} · {fmtUSD(netCost(p))}</div>
+                    </div>
+                    <span style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, color: urgent ? "#E53E3E" : C.warnText, background: urgent ? "#FED7D7" : C.warnBg, padding: "3px 10px", borderRadius: 6 }}>{label}</span>
+                  </button>
                 );
               })}
             </div>
@@ -3162,7 +3197,7 @@ function loadPurchasesFromCache(propertyId) {
     const raw = localStorage.getItem(lsKey(LS_PURCHASES, propertyId));
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return parsed.map(normalizePurchase);
     }
   } catch (e) { /* fall through to empty */ }
   return [];
@@ -3353,7 +3388,7 @@ function ReceiptUploader({ propertyId, purchaseId, receipts, onChange, viewableP
       fetch("/api/receipts-delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pathname }),
+        body: JSON.stringify({ pathname, purchaseId }),
       }).catch(() => {});
     }
   };
@@ -3417,6 +3452,7 @@ function ReceiptUploader({ propertyId, purchaseId, receipts, onChange, viewableP
 const MEANINGFUL_PURCHASE_FIELDS = [
   "description", "vendor", "invoiceNo", "trade", "room", "notes",
   "purchaseDate", "receivedDate", "qty", "unitPrice", "tax", "shipping", "totalPaid",
+  "sourceVendor", "docType", "fees", "returnByDate", "returnPolicyNote", "refundAmount", "drawNo",
 ];
 function draftHasContent(parsed) {
   if (!parsed || typeof parsed !== "object" || !parsed.id) return false;
@@ -3426,7 +3462,7 @@ function draftHasContent(parsed) {
     return typeof v === "string" ? v.trim() !== "" : (v !== null && v !== undefined);
   });
 }
-function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKey }) {
+function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKey, fresh = false }) {
   const [d, setD] = useState(() => {
     // Restore an in-progress draft (e.g. after an accidental pull-to-refresh or a
     // backgrounded-tab discard on mobile) so the owner never loses a long form. Only restore
@@ -3434,7 +3470,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
     if (draftKey) {
       try {
         const raw = localStorage.getItem(draftKey);
-        if (raw) { const parsed = JSON.parse(raw); if (draftHasContent(parsed)) return parsed; }
+        if (raw) { const parsed = JSON.parse(raw); if (draftHasContent(parsed)) return normalizePurchase(parsed); }
       } catch (e) { /* ignore malformed draft */ }
     }
     return initial;
@@ -3452,7 +3488,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
   const sessionUploadedRef = useRef((d.receipts || []).filter(r => r && !initialReceiptPaths.has(r.pathname)).map(r => r.pathname));
   const savedRef = useRef(false);           // did the owner Save (vs. discard)?
   const deleteBlobs = (pathnames) => pathnames.forEach(pathname =>
-    fetch("/api/receipts-delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pathname }) }).catch(() => {}));
+    fetch("/api/receipts-delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pathname, purchaseId: d.id }) }).catch(() => {}));
 
   // Teardown cleanup: if the form is discarded (not Saved), best-effort delete blobs uploaded
   // this session that were never committed. Skip when a draft still persists (a reload/tab
@@ -3476,7 +3512,26 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
     onSave(d);
     deleteBlobs(orphaned);
   };
-  const computedTotal = (Number(d.qty) || 0) * (Number(d.unitPrice) || 0) + (Number(d.tax) || 0) + (Number(d.shipping) || 0);
+  // "Touched" refs: a default (allowance category, reimbursement) only follows trade/payer/vendor
+  // edits while the user has not set that field themselves. A saved record starts touched (see
+  // formDefaultsTouched), so editing it never silently overrides what the owner chose.
+  // A record that has already been through an owner Save (`fresh` false) always starts touched.
+  const initialTouched = formDefaultsTouched(d, fresh);
+  const allowanceTouched = useRef(initialTouched.allowance);
+  const reimbTouched = useRef(initialTouched.reimb);
+  const allowanceFor = (trade, paidBy) => defaultAllowanceFor(trade, paidBy) || NOT_IN_ALLOWANCE;
+  const num = (k) => (e) => set({ [k]: e.target.value === "" ? null : Number(e.target.value) });
+  const checkRow = (k, text, extra) => (
+    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.charcoal, padding: "9px 0", minHeight: 44, boxSizing: "border-box" }}>
+      <input type="checkbox" checked={!!d[k]} onChange={e => set({ [k]: e.target.checked, ...(extra ? extra(e.target.checked) : {}) })} style={{ accentColor: C.mint, width: 16, height: 16 }} /> {text}
+    </label>
+  );
+  const groupHead = (title, note) => (
+    <div style={{ marginTop: 4, marginBottom: 6, fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+      {title}{note && <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0 }}> — {note}</span>}
+    </div>
+  );
+  const computedTotal = Math.round(((Number(d.qty) || 0) * (Number(d.unitPrice) || 0) + (Number(d.tax) || 0) + (Number(d.shipping) || 0) + (Number(d.fees) || 0)) * 100) / 100;
 
   const field = (label, node) => (
     <div style={{ flex: 1, minWidth: isMobile ? "100%" : 140 }}><label style={ppLabel}>{label}</label>{node}</div>
@@ -3488,20 +3543,20 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
         {field("Item / Description", <input autoFocus style={ppInput} value={d.description} onChange={e => set({ description: e.target.value })} placeholder="e.g. Blanco undermount sink" />)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-        {field("Trade", <select style={ppInput} value={d.trade} onChange={e => set({ trade: e.target.value, assetClass: d.assetClass || suggestAssetClass(e.target.value) })}><option value="">—</option>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>)}
+        {field("Trade", <select style={ppInput} value={d.trade} onChange={e => { const trade = e.target.value; const patch = { trade, assetClass: d.assetClass || suggestAssetClass(trade) }; if (!allowanceTouched.current) patch.allowanceCategory = allowanceFor(trade, d.purchasedBy); set(patch); }}><option value="">—</option>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>)}
         {field("Room / Area", <input style={ppInput} value={d.room} onChange={e => set({ room: e.target.value })} placeholder="e.g. Kitchen" />)}
-        {field("Status", <select style={ppInput} value={d.status} onChange={e => set({ status: e.target.value })}>{PURCHASE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>)}
+        {field("Status", <select style={ppInput} value={d.status} onChange={e => set(statusChangePatch(d, e.target.value))}>{PURCHASE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-        {field("Vendor", <input style={ppInput} value={d.vendor} onChange={e => set({ vendor: e.target.value })} placeholder="e.g. Ferguson" />)}
+        {field("Vendor", <input style={ppInput} value={d.vendor} onChange={e => { const vendor = e.target.value; set(reimbTouched.current ? { vendor } : { vendor, ...reimbursementDefaultsFor(vendor, d.purchasedBy) }); }} placeholder="e.g. Ferguson" />)}
         {field("Order / Invoice #", <input style={ppInput} value={d.invoiceNo} onChange={e => set({ invoiceNo: e.target.value })} />)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-        {field("Paid by", <select style={ppInput} value={d.purchasedBy} onChange={e => set({ purchasedBy: e.target.value, ownerPurchased: e.target.value !== CONTRACTOR_PURCHASER })}><option value="">—</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
+        {field("Paid by", <select style={ppInput} value={d.purchasedBy} onChange={e => { const v = e.target.value; const patch = { purchasedBy: v, ownerPurchased: v !== CONTRACTOR_PURCHASER }; if (!allowanceTouched.current) patch.allowanceCategory = allowanceFor(d.trade, v); if (!reimbTouched.current || v === CONTRACTOR_PURCHASER) Object.assign(patch, reimbursementDefaultsFor(d.vendor, v)); set(patch); }}><option value="">—</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
         {field("Payment method", <select style={ppInput} value={d.paymentMethod} onChange={e => set({ paymentMethod: e.target.value })}><option value="">—</option>{PAYMENT_METHODS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
         {field("Whose money?", (
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.charcoal, padding: "9px 0" }}>
-            <input type="checkbox" checked={!!d.ownerPurchased} onChange={e => set({ ownerPurchased: e.target.checked })} style={{ accentColor: C.mint, width: 16, height: 16 }} />
+            <input type="checkbox" checked={!!d.ownerPurchased} onChange={e => set({ ownerPurchased: e.target.checked, ...(e.target.checked ? {} : reimbursementDefaultsFor("", "")) })} style={{ accentColor: C.mint, width: 16, height: 16 }} />
             {d.ownerPurchased ? "Owner-purchased (our money)" : "Contractor / Exhibit B allowance"}
           </label>
         ))}
@@ -3511,6 +3566,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
         {field("Unit price ($)", <input type="number" step="0.01" style={ppInput} value={d.unitPrice ?? ""} onChange={e => set({ unitPrice: e.target.value === "" ? null : Number(e.target.value) })} />)}
         {field("Tax ($)", <input type="number" step="0.01" style={ppInput} value={d.tax ?? ""} onChange={e => set({ tax: e.target.value === "" ? null : Number(e.target.value) })} />)}
         {field("Shipping ($)", <input type="number" step="0.01" style={ppInput} value={d.shipping ?? ""} onChange={e => set({ shipping: e.target.value === "" ? null : Number(e.target.value) })} />)}
+        {field("Fees ($)", <input type="number" step="0.01" style={ppInput} value={d.fees ?? ""} onChange={num("fees")} placeholder="transaction / processing" />)}
         {field("Total paid ($)", (
           <div>
             <input type="number" step="0.01" style={ppInput} value={d.totalPaid ?? ""} onChange={e => set({ totalPaid: e.target.value === "" ? null : Number(e.target.value) })} placeholder={computedTotal ? String(computedTotal) : ""} />
@@ -3521,7 +3577,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
         ))}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-        {field("Allowance category", <select style={ppInput} value={d.allowanceCategory} onChange={e => set({ allowanceCategory: e.target.value })}><option value={NOT_IN_ALLOWANCE}>{NOT_IN_ALLOWANCE}</option>{ALLOWANCE_CATEGORIES.map(a => <option key={a.name} value={a.name}>{a.name}</option>)}</select>)}
+        {field("Allowance category", <select style={ppInput} value={d.allowanceCategory} onChange={e => { allowanceTouched.current = true; set({ allowanceCategory: e.target.value }); }}><option value={NOT_IN_ALLOWANCE}>{NOT_IN_ALLOWANCE}</option><option value={CONTRACTOR_SCOPE}>{CONTRACTOR_SCOPE}</option>{ALLOWANCE_CATEGORIES.map(a => <option key={a.name} value={a.name}>{a.name}</option>)}</select>)}
         {field("Purchase date", <input type="date" style={ppInput} value={d.purchaseDate || ""} onChange={e => set({ purchaseDate: e.target.value })} />)}
         {field("Received date", <input type="date" style={ppInput} value={d.receivedDate || ""} onChange={e => set({ receivedDate: e.target.value })} />)}
       </div>
@@ -3539,12 +3595,45 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
         ))}
         {field("Binder pocket", <input style={ppInput} value={d.binderPocket} onChange={e => set({ binderPocket: e.target.value })} />)}
       </div>
+      {groupHead("Sparrow reimbursement", "Sparrow reimburses owner-paid purchases through loan draws")}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Sparrow reimburses", checkRow("reimbursable", "Reimbursable", (on) => { reimbTouched.current = true; return on ? { reimbursedBy: CONTRACTOR_PURCHASER, reimbursementStatus: d.reimbursementStatus === "none" ? "pending" : d.reimbursementStatus } : { reimbursedBy: "", reimbursementStatus: "none" }; }))}
+        {field("Reimbursement status", <select style={ppInput} value={d.reimbursementStatus} onChange={e => { reimbTouched.current = true; const st = e.target.value; const patch = { reimbursementStatus: st }; if (st === "reimbursed" && d.reimbursedAmount == null) patch.reimbursedAmount = netCost(d); set(patch); }}>{REIMBURSEMENT_STATUSES.map(r => <option key={r} value={r}>{r}</option>)}</select>)}
+        {field("Reimbursed amount ($)", <input type="number" step="0.01" style={ppInput} value={d.reimbursedAmount ?? ""} onChange={e => { reimbTouched.current = true; num("reimbursedAmount")(e); }} />)}
+        {field("Reimbursed date", <input type="date" style={ppInput} value={d.reimbursedDate || ""} onChange={e => { reimbTouched.current = true; set({ reimbursedDate: e.target.value }); }} />)}
+        {field("Draw #", <input style={ppInput} value={d.drawNo || ""} onChange={e => { reimbTouched.current = true; set({ drawNo: e.target.value }); }} placeholder="e.g. 3" />)}
+      </div>
+      {groupHead("Marketplace & payment proof")}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Source vendor (brand behind a marketplace order)", <input style={ppInput} value={d.sourceVendor || ""} onChange={e => set({ sourceVendor: e.target.value })} placeholder="e.g. Ferguson Home" />)}
+        {field("Document type", <select style={ppInput} value={d.docType || ""} onChange={e => set({ docType: e.target.value })}><option value="">—</option>{DOC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}</select>)}
+        {d.purchasedBy === CONTRACTOR_PURCHASER
+          ? field("Lien waiver", checkRow("lienWaiverReceived", "Lien waiver received"))
+          : field("Payment", checkRow("paymentConfirmed", "Payment confirmed"))}
+        {paymentBadge(d) && <div style={{ alignSelf: "center", fontSize: 12, fontWeight: 700, color: C.warnText, background: C.warnBg, padding: "4px 10px", borderRadius: 8 }}>{paymentBadge(d)}</div>}
+      </div>
+      {groupHead("Returns")}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Return by", <input type="date" style={ppInput} value={d.returnByDate || ""} onChange={e => set({ returnByDate: e.target.value })} />)}
+        {field("Return policy note", <input style={ppInput} value={d.returnPolicyNote || ""} onChange={e => set({ returnPolicyNote: e.target.value })} placeholder="e.g. 30 days, brand pays shipping" />)}
+        {field("Refund amount ($)", <input type="number" step="0.01" style={ppInput} value={d.refundAmount ?? ""} onChange={e => set({ refundAmount: e.target.value === "" ? null : Number(e.target.value), refundAutoFilled: false })} />)}
+        {field("Refund date", <input type="date" style={ppInput} value={d.refundDate || ""} onChange={e => set({ refundDate: e.target.value })} />)}
+        {field("Restocking fee ($)", <input type="number" step="0.01" style={ppInput} value={d.restockingFee ?? ""} onChange={num("restockingFee")} />)}
+        {field("Return shipping ($)", <input type="number" step="0.01" style={ppInput} value={d.returnShippingCost ?? ""} onChange={num("returnShippingCost")} />)}
+        {field("Decision", checkRow("keepConfirmed", "Decided to keep"))}
+      </div>
+      {groupHead("Receiving")}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+        {field("Inspected", checkRow("inspected", "Inspected / tested"))}
+        {field("Inspected date", <input type="date" style={ppInput} value={d.inspectedDate || ""} onChange={e => set({ inspectedDate: e.target.value })} />)}
+        {field("Delivered to", <select style={ppInput} value={d.deliveredTo || ""} onChange={e => set({ deliveredTo: e.target.value })}><option value="">—</option>{DELIVERED_TO_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}</select>)}
+      </div>
       <div style={{ marginTop: 4, marginBottom: 6, fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.04em" }}>
         Cost-seg <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0 }}>— suggested; confirm with your CPA</span>
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
         {field("Placed in service", <input type="date" style={ppInput} value={d.placedInServiceDate || ""} onChange={e => set({ placedInServiceDate: e.target.value })} />)}
-        {field("Asset class", <select style={ppInput} value={d.assetClass} onChange={e => set({ assetClass: e.target.value })}><option value="">— (unset)</option>{ASSET_CLASSES.map(a => <option key={a} value={a}>{a}</option>)}</select>)}
+        {field("Asset class", <select style={ppInput} value={d.assetClass} onChange={e => set({ assetClass: e.target.value })}><option value="">— (unset)</option>{ASSET_CLASSES.map(a => <option key={a} value={a}>{assetClassLabel(a)}</option>)}</select>)}
         {field("Section", <select style={ppInput} value={d.section} onChange={e => set({ section: e.target.value })}><option value="">— (blank)</option><option value="1245">§1245 (personal property)</option><option value="1250">§1250 (real property)</option></select>)}
       </div>
       <div style={{ marginBottom: 14 }}>
@@ -3573,7 +3662,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
   );
 }
 
-function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, focusPurchaseId, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
+function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, onAddLine, focusPurchaseId, focusPurchaseMode, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
   const [editingId, setEditingId] = useState(null);   // id | "new" | null
   const [expandedId, setExpandedId] = useState(null);
   const [query, setQuery] = useState("");
@@ -3596,35 +3685,33 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
   useEffect(() => {
     if (focusPurchaseId && purchases.some(p => p.id === focusPurchaseId)) {
       setQuery("");                 // clear any active search so the promoted purchase is visible
+      setTradeFilter("");           // ...and the trade / due-from-Sparrow filters (a new "Add line" has no trade yet)
+      setDueFilter(false);
       setExpandedId(focusPurchaseId);
-      setEditingId(focusPurchaseId);
+      setEditingId(focusPurchaseMode === "view" ? null : focusPurchaseId);
+      setFreshEditId(focusPurchaseMode === "view" ? null : focusPurchaseId);
+      const focusId = focusPurchaseId;
+      setTimeout(() => { const el = document.getElementById(`purchase-${focusId}`); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 60);
       if (onFocusHandled) onFocusHandled();
     }
-  }, [focusPurchaseId, purchases, onFocusHandled]);
+  }, [focusPurchaseId, focusPurchaseMode, purchases, onFocusHandled]);
 
-  const stats = useMemo(() => {
-    let total = 0, owner = 0, contractor = 0;
-    const byAllowance = {};
-    const byTrade = {};
-    for (const p of purchases) {
-      const amt = Number(p.totalPaid) || 0;
-      total += amt;
-      if (p.ownerPurchased) owner += amt; else contractor += amt;
-      if (p.allowanceCategory && p.allowanceCategory !== NOT_IN_ALLOWANCE) {
-        byAllowance[p.allowanceCategory] = (byAllowance[p.allowanceCategory] || 0) + amt;
-      }
-      if (p.trade) byTrade[p.trade] = (byTrade[p.trade] || 0) + amt;
-    }
-    return { total, owner, contractor, byAllowance, byTrade };
-  }, [purchases]);
+  const [freshEditId, setFreshEditId] = useState(null);   // record opened for edit right after promote/add-line (defaults may still apply)
+  const [dueFilter, setDueFilter] = useState(false);
+  const [tradeFilter, setTradeFilter] = useState("");
+  const stats = useMemo(() => summarizePurchases(purchases), [purchases]);
+  const due = useMemo(() => reimbursementsDue(purchases), [purchases]);
+  const credits = useMemo(() => allowanceCredits(purchases), [purchases]);
+  const pool = useMemo(() => allowancePool(purchases), [purchases]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = q
-      ? purchases.filter(p => [p.description, p.vendor, p.trade, p.room, p.allowanceCategory].some(v => (v || "").toLowerCase().includes(q)))
-      : purchases;
+    let list = purchases;
+    if (dueFilter) { const ids = new Set(due.purchases.map(p => p.id)); list = list.filter(p => ids.has(p.id)); }
+    if (tradeFilter) list = list.filter(p => p.trade === tradeFilter);
+    if (q) list = list.filter(p => [p.description, p.vendor, p.sourceVendor, p.trade, p.room, p.allowanceCategory].some(v => (v || "").toLowerCase().includes(q)));
     return [...list].sort((a, b) => (b.purchaseDate || "").localeCompare(a.purchaseDate || "") || (b.id > a.id ? 1 : -1));
-  }, [purchases, query]);
+  }, [purchases, query, dueFilter, tradeFilter, due]);
 
   const exportCostSeg = () => {
     const { csv, count } = buildCostSegCsv(purchases);
@@ -3658,6 +3745,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
           <PurchaseForm
             key={`new-${activeProperty || "base"}`}
             initial={{ ...emptyPurchase(), placedInServiceDate: propertyInServiceDate || "" }}
+            fresh
             onSave={(p) => { onSave(p); setEditingId(null); setExpandedId(p.id); }}
             onCancel={() => setEditingId(null)}
             propertyId={activeProperty}
@@ -3670,57 +3758,70 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
       {/* Summary cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 18 }}>
         {[
-          { label: "Total spent", value: fmtUSD(stats.total) },
+          { label: "Total spent (net of refunds)", value: fmtUSD(stats.total) },
           { label: "Purchases logged", value: String(purchases.length) },
-          { label: "Owner-purchased", value: fmtUSD(stats.owner) },
+          { label: "Owner-purchased", value: fmtUSD(stats.owner), sub: "includes money Sparrow reimburses" },
           { label: "Contractor / allowance", value: fmtUSD(stats.contractor) },
-        ].map(c => (
-          <div key={c.label} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px" }}>
+          { label: "Due from Sparrow", value: fmtUSD(due.total), sub: dueFilter ? "showing these — tap to clear" : "tap to filter the list", onClick: () => setDueFilter(f => !f), active: dueFilter },
+          { label: "Owner-paid allowance items", value: fmtUSD(credits.total), sub: "credit to settle in writing" },
+        ].map(c => {
+          const style = { background: C.white, border: `1px solid ${c.active ? C.mint : C.border}`, borderRadius: 12, padding: "14px 16px", textAlign: "left", fontFamily: font };
+          const body = (<>
             <div style={{ fontSize: 12, color: C.textMuted, fontWeight: 600 }}>{c.label}</div>
             <div style={{ fontSize: 22, fontWeight: 800, color: C.charcoal, marginTop: 4 }}>{c.value}</div>
-          </div>
-        ))}
+            {c.sub && <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{c.sub}</div>}
+          </>);
+          return c.onClick
+            ? <button key={c.label} onClick={c.onClick} style={{ ...style, cursor: "pointer", minHeight: 44 }}>{body}</button>
+            : <div key={c.label} style={style}>{body}</div>;
+        })}
       </div>
 
       {/* Exhibit B allowance reconciliation */}
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 22 }}>
         <h3 style={{ fontSize: 15, fontWeight: 700, color: C.charcoal, margin: "0 0 4px" }}>Exhibit B allowance reconciliation</h3>
-        <p style={{ fontSize: 12, color: C.textMuted, margin: "0 0 12px" }}>Allowances total {fmtUSD(EXHIBIT_B_TOTAL)} (Construction Agreement, Exhibit B). Spend below is drawn from purchases tagged to each category.</p>
+        <p style={{ fontSize: 12, color: C.textMuted, margin: "0 0 12px" }}>Allowances total {fmtUSD(EXHIBIT_B_TOTAL)} (Construction Agreement, Exhibit B). Spend is split by who funded it: Sparrow paid directly, owner paid then reimbursed by Sparrow, or owner direct (a credit to settle in writing).</p>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ color: C.textSecondary, textAlign: "right" }}>
                 <th style={{ textAlign: "left", padding: "6px 8px", fontWeight: 600 }}>Category</th>
                 <th style={{ padding: "6px 8px", fontWeight: 600 }}>Allowance</th>
-                <th style={{ padding: "6px 8px", fontWeight: 600 }}>Spent</th>
+                <th style={{ padding: "6px 8px", fontWeight: 600 }}>Paid by Sparrow</th>
+                <th style={{ padding: "6px 8px", fontWeight: 600 }}>Reimbursed to owner</th>
+                <th style={{ padding: "6px 8px", fontWeight: 600 }}>Owner direct</th>
                 <th style={{ padding: "6px 8px", fontWeight: 600 }}>Remaining</th>
                 <th style={{ padding: "6px 8px", fontWeight: 600 }}>% used</th>
               </tr>
             </thead>
             <tbody>
-              {ALLOWANCE_CATEGORIES.map(a => {
-                const spent = stats.byAllowance[a.name] || 0;
-                const remaining = a.allowance - spent;
-                const pct = a.allowance ? Math.round((spent / a.allowance) * 100) : 0;
-                return (
-                  <tr key={a.name} style={{ borderTop: `1px solid ${C.borderLight}`, textAlign: "right" }}>
-                    <td style={{ textAlign: "left", padding: "7px 8px", color: C.charcoal }}>{a.name}</td>
-                    <td style={{ padding: "7px 8px", color: C.textSecondary }}>{fmtUSD(a.allowance)}</td>
-                    <td style={{ padding: "7px 8px", color: C.charcoal, fontWeight: 600 }}>{fmtUSD(spent)}</td>
-                    <td style={{ padding: "7px 8px", color: remaining < 0 ? C.ocean : C.textSecondary }}>{fmtUSD(remaining)}</td>
-                    <td style={{ padding: "7px 8px", color: pct > 100 ? C.ocean : C.mint, fontWeight: 600 }}>{pct}%</td>
-                  </tr>
-                );
-              })}
+              {pool.rows.map(r => (
+                <tr key={r.name} style={{ borderTop: `1px solid ${C.borderLight}`, textAlign: "right" }}>
+                  <td style={{ textAlign: "left", padding: "7px 8px", color: C.charcoal }}>{r.name}</td>
+                  <td style={{ padding: "7px 8px", color: C.textSecondary }}>{fmtUSD(r.allowance)}</td>
+                  <td style={{ padding: "7px 8px", color: C.charcoal }}>{fmtUSD(r.paidBySparrow)}</td>
+                  <td style={{ padding: "7px 8px", color: C.charcoal }}>{fmtUSD(r.reimbursedToOwner)}</td>
+                  <td style={{ padding: "7px 8px", color: r.ownerDirect > 0 ? C.ocean : C.charcoal }}>{fmtUSD(r.ownerDirect)}</td>
+                  <td style={{ padding: "7px 8px", color: r.remaining < 0 ? C.ocean : C.textSecondary, fontWeight: 600 }}>{fmtUSD(r.remaining)}</td>
+                  <td style={{ padding: "7px 8px", color: r.pct > 100 ? C.ocean : C.mint, fontWeight: 600 }}>{r.pct}%</td>
+                </tr>
+              ))}
               <tr style={{ borderTop: `2px solid ${C.border}`, textAlign: "right", fontWeight: 800 }}>
                 <td style={{ textAlign: "left", padding: "8px", color: C.charcoal }}>Total</td>
-                <td style={{ padding: "8px", color: C.charcoal }}>{fmtUSD(EXHIBIT_B_TOTAL)}</td>
-                <td style={{ padding: "8px", color: C.charcoal }}>{fmtUSD(Object.values(stats.byAllowance).reduce((s, v) => s + v, 0))}</td>
-                <td style={{ padding: "8px", color: C.charcoal }}>{fmtUSD(EXHIBIT_B_TOTAL - Object.values(stats.byAllowance).reduce((s, v) => s + v, 0))}</td>
+                <td style={{ padding: "8px", color: C.charcoal }}>{fmtUSD(pool.poolTotal)}</td>
+                <td style={{ padding: "8px", color: C.charcoal }}>{fmtUSD(pool.rows.reduce((t, r) => t + r.paidBySparrow, 0))}</td>
+                <td style={{ padding: "8px", color: C.charcoal }}>{fmtUSD(pool.rows.reduce((t, r) => t + r.reimbursedToOwner, 0))}</td>
+                <td style={{ padding: "8px", color: C.charcoal }}>{fmtUSD(pool.rows.reduce((t, r) => t + r.ownerDirect, 0))}</td>
+                <td style={{ padding: "8px", color: C.charcoal }}>{fmtUSD(pool.rows.reduce((t, r) => t + r.remaining, 0))}</td>
                 <td style={{ padding: "8px" }}></td>
               </tr>
             </tbody>
           </table>
+        </div>
+        <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8, fontSize: 13, color: C.textSecondary }}>
+          <div><strong style={{ color: C.charcoal }}>Reimbursed, no Exhibit B category:</strong> {fmtUSD(pool.reimbursedNoCategory.total)} ({pool.reimbursedNoCategory.purchases.length} purchases). Counts against the lump-sum pool.</div>
+          <div><strong style={{ color: C.charcoal }}>Allowance pool:</strong> {fmtUSD(pool.poolTotal)} total · {fmtUSD(pool.poolCharged)} charged against it (including the line above) · {fmtUSD(pool.poolRemaining)} remaining.</div>
+          <div><strong style={{ color: C.charcoal }}>Contractor scope (base contract):</strong> {fmtUSD(pool.contractorScope.total)} ({pool.contractorScope.purchases.length} purchases). Not charged to the pool — confirm each is inside the contract price and not a future change order.</div>
         </div>
       </div>
 
@@ -3742,29 +3843,41 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
 
       {/* Search */}
       {purchases.length > 0 && (
-        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search purchases…" style={{ ...ppInput, marginBottom: 12, maxWidth: 320 }} />
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 12 }}>
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search purchases…" style={{ ...ppInput, maxWidth: 320 }} />
+          <select value={tradeFilter} onChange={e => setTradeFilter(e.target.value)} style={{ ...ppInput, maxWidth: 220 }} aria-label="Filter by trade">
+            <option value="">All trades</option>
+            {PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          {dueFilter && <button onClick={() => setDueFilter(false)} style={{ padding: "8px 14px", minHeight: 44, borderRadius: 20, border: `1px solid ${C.mint}`, background: C.seafoamFaint, color: C.mintDark, fontFamily: font, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>Showing: due from Sparrow ✕</button>}
+        </div>
       )}
 
       {/* Purchase list */}
       {filtered.length === 0 && editingId !== "new" && (
-        <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>No purchases yet. Click “+ Add purchase” to log your first one.</p>
+        <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>{purchases.length > 0 ? "No purchases match your search or filters." : "No purchases yet. Click “+ Add purchase” to log your first one."}</p>
       )}
-      {filtered.map(p => {
+      {(() => {
+      const renderPurchase = (p) => {
         const isOpen = expandedId === p.id;
         const isEditing = editingId === p.id;
         return (
-          <div key={p.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
+          <div key={p.id} id={`purchase-${p.id}`} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
             <button onClick={() => { if (editingId === "new") { try { localStorage.removeItem(`pp-purchase-draft:${activeProperty || "base"}:new`); } catch (e) { /* ignore */ } } setExpandedId(isOpen ? null : p.id); setEditingId(null); }} style={{ width: "100%", textAlign: "left", background: "none", border: "none", padding: "14px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, color: C.charcoal, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.description || "(untitled)"}</div>
                 <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>
                   {[p.trade, p.room, p.vendor].filter(Boolean).join(" · ") || "—"}
                 </div>
+                {Number(p.refundAmount) > 0 && <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>paid {fmtUSD(p.totalPaid)} · refunded {fmtUSD(p.refundAmount)}</div>}
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                {p.status && p.status !== "Ordered" && <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, background: C.pageBg, padding: "3px 9px", borderRadius: 12 }}>{p.status}</span>}
+                {p.status === "Returned" && p.refundAmount == null && <span style={{ fontSize: 11, fontWeight: 700, color: C.warnText, background: C.warnBg, padding: "3px 9px", borderRadius: 12 }}>refund not recorded</span>}
+                {paymentBadge(p) && <span style={{ fontSize: 11, fontWeight: 700, color: C.warnText, background: C.warnBg, padding: "3px 9px", borderRadius: 12 }}>{paymentBadge(p)}</span>}
                 {(p.receipts || []).length > 0 && <span style={{ fontSize: 11, color: C.textMuted }}>📎 {(p.receipts || []).length}</span>}
                 <span style={{ fontSize: 11, fontWeight: 600, color: p.ownerPurchased ? C.mint : C.ocean, background: p.ownerPurchased ? C.seafoamFaint : C.oceanLight, padding: "3px 9px", borderRadius: 12 }}>{p.ownerPurchased ? "Owner" : "Contractor"}</span>
-                <span style={{ fontSize: 15, fontWeight: 800, color: C.charcoal }}>{fmtUSD(p.totalPaid)}</span>
+                <span style={{ fontSize: 15, fontWeight: 800, color: C.charcoal }}>{fmtUSD(netCost(p))}</span>
               </div>
             </button>
             {isOpen && !isEditing && (
@@ -3773,6 +3886,11 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
                   {p.invoiceNo && <>Invoice: {p.invoiceNo}<br /></>}
                   {p.purchasedBy && <>Paid by: {p.purchasedBy} · {p.paymentMethod || "—"}<br /></>}
                   Allowance: {p.allowanceCategory} · Status: {p.status}<br />
+                  Funding: {fundingSource(p)}<br />
+                  {p.reimbursable && <>Sparrow reimbursement: {p.reimbursementStatus}{p.reimbursedAmount != null ? ` · ${fmtUSD(p.reimbursedAmount)}` : ""}{p.reimbursedDate ? ` · ${p.reimbursedDate}` : ""}{p.drawNo ? ` · draw ${p.drawNo}` : ""}<br /></>}
+                  {(p.sourceVendor || p.docType || Number(p.fees) > 0) && <>{[p.sourceVendor && `Source vendor: ${p.sourceVendor}`, p.docType && `Document: ${p.docType}`, Number(p.fees) > 0 && `Fees: ${fmtUSD(p.fees)}`].filter(Boolean).join(" · ")}<br /></>}
+                  {(p.returnByDate || p.returnPolicyNote || p.refundAmount != null || Number(p.restockingFee) > 0 || Number(p.returnShippingCost) > 0) && <>{[p.returnByDate && `Return by ${p.returnByDate}${p.keepConfirmed ? " (keeping)" : ""}`, p.returnPolicyNote, p.refundAmount != null && `Refund ${fmtUSD(p.refundAmount)}${p.refundDate ? ` on ${p.refundDate}` : ""}`, Number(p.restockingFee) > 0 && `Restocking fee ${fmtUSD(p.restockingFee)}`, Number(p.returnShippingCost) > 0 && `Return shipping ${fmtUSD(p.returnShippingCost)}`].filter(Boolean).join(" · ")}<br /></>}
+                  {(p.inspected || p.deliveredTo) && <>{[p.inspected && `Inspected${p.inspectedDate ? ` ${p.inspectedDate}` : ""}`, p.deliveredTo && `Delivered to ${p.deliveredTo}`].filter(Boolean).join(" · ")}<br /></>}
                   {(p.warranty || p.warrantyTerm) && <>Warranty: {p.warrantyTerm || "yes"}{p.registered ? " (registered)" : ""}{p.binderPocket ? ` · Binder ${p.binderPocket}` : ""}<br /></>}
                   {p.notes && <span style={{ color: C.textMuted }}>{p.notes}</span>}
                 </div>
@@ -3787,9 +3905,13 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
                   />
                 </div>
 
-                <div style={{ display: "flex", gap: 10 }}>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {p.returnByDate && !p.keepConfirmed && p.status !== "Returned" && (
+                    <button onClick={() => onSave({ ...p, keepConfirmed: true })} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.mint}`, background: C.seafoamFaint, color: C.mintDark, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Keep</button>
+                  )}
+                  <button onClick={() => onAddLine && onAddLine(p)} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Add line to this order</button>
                   <button onClick={() => { setEditingId(p.id); }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Edit</button>
-                  <button onClick={() => { if (window.confirm("Delete this purchase and its receipts?")) { onDelete(p.id); setExpandedId(null); } }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ocean, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Delete</button>
+                  <button onClick={() => { if (window.confirm("Delete this purchase? Its receipts are deleted too, except any shared with other lines of the same order.")) { onDelete(p.id); setExpandedId(null); } }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ocean, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Delete</button>
                 </div>
               </div>
             )}
@@ -3797,7 +3919,8 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
               <div style={{ padding: "0 16px 16px" }}>
                 <PurchaseForm
                   initial={p}
-                  onSave={(updated) => { onSave(updated); setEditingId(null); }}
+                  fresh={freshEditId === p.id}
+                  onSave={(updated) => { onSave(updated); setEditingId(null); setFreshEditId(null); }}
                   onCancel={() => setEditingId(null)}
                   propertyId={activeProperty}
                   isMobile={isMobile}
@@ -3806,7 +3929,22 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
             )}
           </div>
         );
-      })}
+      };
+      // Header totals describe the WHOLE order even when a filter hides some of its lines.
+      const orderHeader = (g) => {
+        const all = purchases.filter(m => m.orderGroupId === g.orderGroupId);
+        const sub = all.reduce((t, m) => t + netCost(m), 0);
+        return `Order · ${g.purchases[0].vendor || "no vendor"} · ${g.purchases[0].invoiceNo || "no invoice #"} · ${all.length} lines · subtotal ${fmtUSD(sub)}${g.purchases.length < all.length ? ` (showing ${g.purchases.length})` : ""}`;
+      };
+      return groupByOrder(filtered).map(g => g.kind === "single" ? renderPurchase(g.purchase) : (
+        <div key={g.orderGroupId} style={{ border: `1px solid ${C.seafoam}`, borderRadius: 14, padding: 8, marginBottom: 12, background: C.seafoamFaint }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.mintDark, padding: "4px 8px 8px" }}>
+            {orderHeader(g)}
+          </div>
+          {g.purchases.map(renderPurchase)}
+        </div>
+      ));
+      })()}
     </div>
   );
 }
@@ -4126,6 +4264,7 @@ export default function App() {
   const [focusItemId, setFocusItemId] = useState(null);
   const [focusItemSource, setFocusItemSource] = useState(null);
   const [focusPurchaseId, setFocusPurchaseId] = useState(null);
+  const [focusPurchaseMode, setFocusPurchaseMode] = useState("edit");   // "edit" (promote paths) | "view" (Dashboard deep link)
 
   const navigateToItem = (source, itemId) => {
     setFocusItemId(itemId);
@@ -4252,7 +4391,7 @@ export default function App() {
       .then(data => {
         if (cancelled) return;
         purchasesServerLoaded.current = true;
-        if (Array.isArray(data)) setPurchases(data);
+        if (Array.isArray(data)) setPurchases(data.map(normalizePurchase));
       })
       .catch(() => { if (!cancelled) purchasesServerLoaded.current = true; });
     return () => { cancelled = true; };
@@ -4423,6 +4562,34 @@ export default function App() {
   const changePurchaseReceipts = (id, receipts) => {
     const target = purchases.find(p => p.id === id);
     if (target) savePurchase({ ...target, receipts });
+  };
+  // "Add line to this order": give the source an order group if it has none, then create a new
+  // line that shares the order-level fields and the SAME receipt pathnames (by reference).
+  // Persisted immediately, like promote; each save is a targeted single-record PUT.
+  const addLineToOrder = (source) => {
+    let src = source;
+    if (!src.orderGroupId) {
+      src = { ...source, orderGroupId: newOrderGroupId(), lineNo: 1 };
+      savePurchase(src);
+    }
+    const members = purchases.filter(p => p.orderGroupId === src.orderGroupId);
+    const maxLine = members.reduce((m, p) => Math.max(m, Number(p.lineNo) || 0), 0);
+    const line = {
+      ...emptyPurchase(),
+      vendor: src.vendor, invoiceNo: src.invoiceNo, purchasedBy: src.purchasedBy,
+      ownerPurchased: src.ownerPurchased, paymentMethod: src.paymentMethod,
+      purchaseDate: src.purchaseDate, docType: src.docType, sourceVendor: src.sourceVendor,
+      reimbursable: src.reimbursable, reimbursedBy: src.reimbursedBy,
+      reimbursementStatus: src.reimbursable ? "pending" : "none",
+      orderGroupId: src.orderGroupId,
+      lineNo: Math.max(maxLine, members.length, 1) + 1,
+      receipts: src.receipts || [],
+      placedInServiceDate: activeInServiceDate,
+    };
+    savePurchase(line);
+    setFocusPurchaseMode("edit");
+    setFocusPurchaseId(line.id);
+    setActiveView("purchases");
   };
 
   // House info — per-record server mutations (HSET/HDEL one field via api/house-info.js),
@@ -4599,14 +4766,18 @@ export default function App() {
       unitPrice: item.unitPrice ?? null,
       qty: item.quantity ?? null,
       assetClass: suggestAssetClass(trade),
+      allowanceCategory: defaultAllowanceFor(trade, "") || NOT_IN_ALLOWANCE,
       placedInServiceDate: activeInServiceDate,
       notes: item.url ? `Promoted from design selection · ${item.url}` : "Promoted from design selection",
     };
     savePurchase(draft);
+    setFocusPurchaseMode("edit");
     setFocusPurchaseId(draft.id);
     setActiveView("purchases");
   };
-  const handlePurchaseFocusCleared = useCallback(() => setFocusPurchaseId(null), []);
+  const handlePurchaseFocusCleared = useCallback(() => { setFocusPurchaseId(null); setFocusPurchaseMode("edit"); }, []);
+  // Dashboard "Returns closing" → open that purchase expanded (not in edit mode) on the Purchases tab.
+  const openPurchase = (id) => { setFocusPurchaseMode("view"); setFocusPurchaseId(id); setActiveView("purchases"); };
 
   // Which room-furniture items already have a purchase (drives the "✓" badge).
   const promotedFurnitureIds = useMemo(
@@ -4633,6 +4804,7 @@ export default function App() {
       notes: furn.url ? `From design furniture · ${furn.url}` : "From design furniture",
     };
     savePurchase(draft);
+    setFocusPurchaseMode("edit");
     setFocusPurchaseId(draft.id);
     setActiveView("purchases");
   };
@@ -4660,12 +4832,12 @@ export default function App() {
           {syncError}{!syncError.includes('house info') ? ' — changes saved locally only' : ''}
         </div>
       )}
-      {activeView === "dashboard" && <Dashboard tasks={tasks} podcastData={PODCAST_DATABASE} finishes={finishes} onNavigateToItem={navigateToItem} />}
+      {activeView === "dashboard" && <Dashboard tasks={tasks} podcastData={PODCAST_DATABASE} finishes={finishes} onNavigateToItem={navigateToItem} purchases={purchases} onOpenPurchase={openPurchase} />}
       {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
-      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} focusPurchaseId={focusPurchaseId} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
+      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
       {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} loadError={houseInfoLoadError} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 
       {showMigrationModal && migrationNeeded && (
