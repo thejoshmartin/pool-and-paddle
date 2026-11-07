@@ -17,6 +17,8 @@ import {
 } from '../src/lib/purchases-logic.js';
 import * as SH from '../src/lib/shopping-logic.js';
 import * as RL from '../src/lib/receipt-logic.js';
+import { extractReceipt, buildExtractionPrompt } from '../api/_extract.js';
+import { processInboxRecord } from '../api/_extract-record.js';
 import { scopedKey, parseReceiptPathname, migrateFinishesToHash, purchasesFromHash, isReceiptReferenced } from '../api/_scope.js';
 import {
   matchesFinishSearch, buildRoomCopies, mergeFinishes, migrateRoom,
@@ -1711,6 +1713,132 @@ console.log('Phase 3 — matching, duplicates, address check, merge, filing (fix
   const fallback = RL.buildPurchasesFromInbox({ record: rec('ri-l', { ...exAm, lines: [{ ...line, sku: 'nomatch' }] }), order: { purchasedBy: 'Kerry' }, shoppingItems: [withItem], settings: D, propertyInServiceDate: '' })[0];
   assert.equal(fallback.returnByDate, '2026-12-15');
   ok('a line linked to a shopping item carries shoppingItemId and the matching candidate\'s return-by date (the selected candidate\'s when no SKU matches)');
+}
+
+console.log('Phase 3 — Claude extraction helper (fake client, no network):');
+{
+  const fixA = JSON.parse(fs.readFileSync(new URL('./fixtures/receipts/minoan-F3F3D4B0.json', import.meta.url), 'utf8'));
+  const modelReply = Object.fromEntries(Object.entries(fixA).filter(([k]) => !k.startsWith('_')));
+  const calls = [];
+  const fake = (impl) => ({ messages: { create: async (req) => { calls.push(req); return impl(req); } } });
+  const reply = (text, extra = {}) => ({ stop_reason: 'end_turn', content: [{ type: 'text', text }], model: 'claude-sonnet-5-5', ...extra });
+  const PROP = '6401 Broward St, St. Augustine, FL 32080';
+  const run = (client, o = {}) => extractReceipt({ client, mediaType: 'application/pdf', base64: 'JVBERi0=', propertyAddress: PROP, now: '2026-11-07T00:00:00.000Z', ...o });
+
+  const good = await run(fake(() => reply('```json\n' + JSON.stringify(modelReply) + '\n```')));
+  assert.equal(good.ok, true); assert.equal(good.extraction.reconciles, true); assert.equal(good.extraction.lines.length, 6);
+  assert.equal(good.extraction.model, 'claude-sonnet-5-5');
+  const prose = await run(fake(() => reply(`Here is the receipt you asked for:\n${JSON.stringify({ ...modelReply, lines: modelReply.lines.map((l, i) => i === 0 ? { ...l, description: 'Rod } 60" with a brace' } : l) })}\nHope that helps!`)));
+  assert.equal(prose.ok, true); assert.ok(prose.extraction.lines[0].description.includes('Rod } 60'));
+  assert.equal((await run(fake(() => reply(JSON.stringify(modelReply))))).ok, true);
+  ok('fenced JSON, bare JSON and JSON wrapped in prose (with braces inside strings) all parse and validate; reconciles is recomputed');
+
+  const failure = async (impl, re) => { const r = await run(fake(impl)); assert.equal(r.ok, false); assert.match(r.error, re); assert.equal(typeof r.error, 'string'); };
+  await failure(() => reply('', { stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'general_harms' } }), /declined/i);
+  await failure(() => reply('{"docType":"receipt"', { stop_reason: 'max_tokens' }), /too long|cut off/i);
+  await failure(() => ({ stop_reason: 'end_turn', content: [{ type: 'thinking', thinking: '' }] }), /no text|nothing/i);
+  await failure(() => reply('I could not read this receipt, sorry.'), /valid JSON/i);
+  await failure(() => reply('{"docType": "receipt", "lines": ['), /valid JSON/i);
+  await failure(() => reply(JSON.stringify({ ...modelReply, docType: 'napkin' })), /not usable/i);
+  await failure(() => { throw Object.assign(new Error('401 invalid x-api-key'), { status: 401 }); }, /ANTHROPIC_API_KEY|authentication/i);
+  await failure(() => { throw Object.assign(new Error('Request timed out.'), { name: 'APIConnectionTimeoutError' }); }, /timed out/i);
+  await failure(() => { throw Object.assign(new Error('rate limited'), { status: 429 }); }, /busy|rate/i);
+  await failure(() => { throw new Error('socket hang up'); }, /socket hang up/);
+  await failure(() => null, /no text|nothing|valid/i);
+  const leaked = await run(fake(() => { throw new Error('boom card 4111 1111 1111 1111'); }));
+  assert.ok(!leaked.error.includes('4111 1111 1111 1111'));
+  ok('every failure mode — refusal, truncation, empty reply, prose-only reply, bad JSON, unusable shape, 401, timeout, 429, network error, null — comes back as a readable { ok:false, error } and never throws');
+
+  calls.length = 0;
+  await run(fake(() => reply(JSON.stringify(modelReply))));
+  await run(fake(() => reply(JSON.stringify(modelReply))), { mediaType: 'image/jpeg' });
+  const [pdfReq, imgReq] = calls;
+  for (const req of [pdfReq, imgReq]) {
+    assert.equal(req.model, RL.EXTRACTION_MODEL);
+    assert.ok(req.max_tokens >= 4096);
+    for (const bad of ['temperature', 'top_p', 'top_k', 'tool_choice', 'thinking', 'betas', 'fallbacks']) assert.ok(!(bad in req), `request must not send ${bad}`);
+    assert.equal(req.messages[req.messages.length - 1].role, 'user');
+    assert.equal(req.messages.length, 1);
+    assert.equal(typeof req.system, 'string');
+    const kinds = req.messages[0].content.map(b => b.type);
+    assert.equal(kinds[kinds.length - 1], 'text');
+  }
+  assert.deepEqual(pdfReq.messages[0].content[0], { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' } });
+  assert.deepEqual(imgReq.messages[0].content[0], { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'JVBERi0=' } });
+  ok('the request is a single user turn (no prefill) with the file as a base64 document (PDF) or image block before the text, the pinned model, and none of the parameters Sonnet 5.5 rejects');
+
+  const prompt = buildExtractionPrompt({ propertyAddress: PROP });
+  for (const t of PURCHASE_TRADES) assert.ok(prompt.includes(t), `prompt must list trade ${t}`);
+  assert.equal(PURCHASE_TRADES.length, 22);
+  for (const must of [PROP, 'last 4', 'guess', 'issues', 'sourceVendor', 'statement', 'JSON', 'asset class', 'handwritten', 'fees']) assert.ok(prompt.toLowerCase().includes(must.toLowerCase()), `prompt must mention "${must}"`);
+  for (const c of SH.SHOPPING_CATEGORIES) assert.ok(prompt.includes(c), `prompt must list category ${c}`);
+  ok('the prompt lists all 22 trades and the shopping categories and carries the spec rules (last 4 only, never guess → null + issues, fees separate, statement ≠ paid, marketplace vendor, no asset class) and the property address');
+
+  const withCard = await run(fake(() => reply(JSON.stringify({ ...modelReply, paymentMethod: 'Visa 4111 1111 1111 1111', cardLast4: '4111111111111111', issues: ['paid with 5500 0055 5555 5559'] }))));
+  assert.equal(withCard.ok, true);
+  assert.ok(!JSON.stringify(withCard.extraction).includes('4111 1111 1111 1111') && !JSON.stringify(withCard.extraction).includes('5500 0055 5555 5559'));
+  assert.equal(withCard.extraction.cardLast4, '1111');
+  ok('a model reply containing a full card number comes back with only the last 4 and the rest redacted');
+}
+
+console.log('Phase 3 — extraction route logic (fake redis / blob / client):');
+{
+  const fixA = JSON.parse(fs.readFileSync(new URL('./fixtures/receipts/minoan-F3F3D4B0.json', import.meta.url), 'utf8'));
+  const modelReply = JSON.stringify(Object.fromEntries(Object.entries(fixA).filter(([k]) => !k.startsWith('_'))));
+  const mkRedis = (records = {}, registry = null) => {
+    const hash = Object.fromEntries(Object.entries(records).map(([k, v]) => [k, JSON.stringify(v)]));
+    return { hash, hget: async (_k, id) => hash[id] ?? null, hset: async (_k, obj) => { Object.assign(hash, obj); }, get: async () => registry };
+  };
+  const pending = (o = {}) => ({ id: 'ri-1', status: 'pending', receipt: { pathname: 'receipts/pp/inbox/ri-1/receipt.pdf', name: 'r.pdf', contentType: 'application/pdf', uploadedAt: 'x', hash: 'h' }, extraction: null, error: null, purchaseIds: [], ...o });
+  const goodClient = () => ({ messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: modelReply }], model: 'claude-sonnet-5-5' }) } });
+  const base = (over) => ({ redis: mkRedis({ 'ri-1': pending() }), key: 'receipt-inbox:pp', inboxId: 'ri-1', readBlob: async () => 'JVBERi0=', createClient: goodClient, apiKey: 'sk-test', user: 'JM', now: '2026-11-07T00:00:00.000Z', propertyId: 'pp', defaultAddress: '6401 Broward St', ...over });
+  const saved = (r) => JSON.parse(r.hash['ri-1']);
+
+  const okRun = await processInboxRecord(base());
+  assert.equal(okRun.status, 200); assert.equal(okRun.body.ok, true);
+  assert.equal(okRun.body.record.status, 'extracted'); assert.equal(okRun.body.record.extraction.reconciles, true); assert.equal(okRun.body.record.error, null);
+  assert.equal(okRun.body.record.updatedBy, 'JM');
+  ok('a pending upload is read from storage, extracted, validated and saved as "extracted" with the server stamp');
+
+  const redis1 = mkRedis({ 'ri-1': pending() });
+  let built = 0;
+  const noKey = await processInboxRecord(base({ redis: redis1, apiKey: '', createClient: () => { built += 1; return goodClient(); } }));
+  assert.equal(noKey.status, 200); assert.equal(noKey.body.ok, false);
+  assert.equal(noKey.body.record.status, 'needs-manual'); assert.match(noKey.body.record.error, /ANTHROPIC_API_KEY/);
+  assert.equal(saved(redis1).status, 'needs-manual'); assert.equal(built, 0);
+  const noKey2 = await processInboxRecord(base({ apiKey: undefined }));
+  assert.equal(noKey2.body.record.status, 'needs-manual');
+  ok('with no API key the record becomes "needs-manual" with a clear message (saved, not a crash), and no client is ever constructed');
+
+  const unreadable = await processInboxRecord(base({ readBlob: async () => null }));
+  assert.equal(unreadable.body.record.status, 'needs-manual'); assert.match(unreadable.body.record.error, /read the uploaded file/i);
+  const blobThrows = await processInboxRecord(base({ readBlob: async () => { throw new Error('blob store down'); } }));
+  assert.equal(blobThrows.status, 200); assert.equal(blobThrows.body.record.status, 'needs-manual'); assert.match(blobThrows.body.record.error, /blob store down/);
+  const noFile = await processInboxRecord(base({ redis: mkRedis({ 'ri-1': pending({ receipt: null }) }) }));
+  assert.equal(noFile.body.record.status, 'needs-manual');
+  ok('an unreadable, missing or throwing blob read also lands as needs-manual with the receipt untouched');
+
+  // Review Focus 3: API failure → needs-manual; Retry succeeds and clears the error
+  const redis2 = mkRedis({ 'ri-1': pending() });
+  const failing = await processInboxRecord(base({ redis: redis2, createClient: () => ({ messages: { create: async () => { throw Object.assign(new Error('nope'), { status: 401 }); } } }) }));
+  assert.equal(failing.body.record.status, 'needs-manual'); assert.match(failing.body.record.error, /authenticate|ANTHROPIC_API_KEY/i);
+  const retry = await processInboxRecord(base({ redis: redis2 }));
+  assert.equal(retry.body.record.status, 'extracted'); assert.equal(retry.body.record.error, null);
+  assert.equal(saved(redis2).status, 'extracted');
+  const badJson = await processInboxRecord(base({ createClient: () => ({ messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'sorry' }] }) } }) }));
+  assert.equal(badJson.body.record.status, 'needs-manual');
+  const createThrows = await processInboxRecord(base({ createClient: () => { throw new Error('sdk init failed'); } }));
+  assert.equal(createThrows.status, 200); assert.equal(createThrows.body.record.status, 'needs-manual');
+  ok('an API error, bad reply or SDK failure → needs-manual; pressing Retry afterwards extracts successfully and clears the error');
+
+  assert.equal((await processInboxRecord(base({ redis: mkRedis({}) }))).status, 404);
+  const filed = await processInboxRecord(base({ redis: mkRedis({ 'ri-1': pending({ status: 'filed' }) }) }));
+  assert.equal(filed.status, 409);
+  assert.equal((await processInboxRecord(base({ redis: mkRedis({ 'ri-1': pending({ status: 'dismissed' }) }) }))).status, 409);
+  const fromRegistry = [];
+  await processInboxRecord(base({ redis: mkRedis({ 'ri-1': pending() }, { properties: [{ id: 'pp', address: '99 Test Ln' }] }), createClient: () => ({ messages: { create: async (req) => { fromRegistry.push(req.system); return { stop_reason: 'end_turn', content: [{ type: 'text', text: modelReply }] }; } } }) }));
+  assert.ok(fromRegistry[0].includes('99 Test Ln'));
+  ok('a missing record is 404, an already filed or dismissed receipt is 409 (never re-extracted), and the property address for the prompt comes from the registry');
 }
 
 console.log(`\nAll ${passed} checks passed.`);
