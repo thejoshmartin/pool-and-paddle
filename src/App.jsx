@@ -3353,7 +3353,7 @@ function ReceiptUploader({ propertyId, purchaseId, receipts, onChange, viewableP
       fetch("/api/receipts-delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pathname }),
+        body: JSON.stringify({ pathname, purchaseId }),
       }).catch(() => {});
     }
   };
@@ -3452,7 +3452,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
   const sessionUploadedRef = useRef((d.receipts || []).filter(r => r && !initialReceiptPaths.has(r.pathname)).map(r => r.pathname));
   const savedRef = useRef(false);           // did the owner Save (vs. discard)?
   const deleteBlobs = (pathnames) => pathnames.forEach(pathname =>
-    fetch("/api/receipts-delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pathname }) }).catch(() => {}));
+    fetch("/api/receipts-delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pathname, purchaseId: d.id }) }).catch(() => {}));
 
   // Teardown cleanup: if the form is discarded (not Saved), best-effort delete blobs uploaded
   // this session that were never committed. Skip when a draft still persists (a reload/tab

@@ -11,7 +11,7 @@ import {
   fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
   localISODate, daysBetween, returnsClosingSoon, newOrderGroupId, groupByOrder,
 } from '../src/lib/purchases-logic.js';
-import { scopedKey, parseReceiptPathname, migrateFinishesToHash } from '../api/_scope.js';
+import { scopedKey, parseReceiptPathname, migrateFinishesToHash, purchasesFromHash, isReceiptReferenced } from '../api/_scope.js';
 import {
   matchesFinishSearch, buildRoomCopies, mergeFinishes, migrateRoom,
   finishItemField, furnitureField, roomField, tombstone,
@@ -680,6 +680,28 @@ console.log('Phase 1 — cost-seg CSV (net cost, returned block, funding source)
   assert.ok(funded.includes('"Funding Source"') && funded.includes('"Cost Basis (net of refunds)"'));
   assert.ok(funded.includes('Contract (reimbursed by Sparrow)'));
   ok('CSV carries the contract-funded note, a Funding Source column (reimbursed by Sparrow) and the net-of-refunds header');
+}
+
+console.log('Phase 1 — shared receipts (isReceiptReferenced / purchasesFromHash):');
+{
+  const path = 'receipts/pp/pur-a/r.pdf';
+  const A = { id: 'pur-a', receipts: [{ pathname: path }] };
+  const B = { id: 'pur-b', receipts: [{ pathname: path }, { pathname: 'receipts/pp/pur-b/own.jpg' }] };
+  assert.equal(isReceiptReferenced([A, B], path, 'pur-a'), true);
+  assert.equal(isReceiptReferenced([A, B], path, 'pur-b'), true);
+  ok('a receipt shared by two purchases stays referenced when either one is excluded (deleting one keeps the blob)');
+  assert.equal(isReceiptReferenced([A], path, 'pur-a'), false);
+  ok('last reference gone → safe to delete (also the removal race: the record being edited still lists the path)');
+  assert.equal(isReceiptReferenced([A, B], 'receipts/pp/pur-x/none.jpg', 'pur-a'), false);
+  assert.equal(isReceiptReferenced([A, B], path), true);
+  ok('unreferenced path → false; no exclusion → any reference counts');
+  assert.doesNotThrow(() => isReceiptReferenced([{ id: 'x' }, { id: 'y', receipts: undefined }, { id: 'z', receipts: [null] }, null], path, 'q'));
+  assert.equal(isReceiptReferenced([{ id: 'x' }, { id: 'z', receipts: [null] }], path), false);
+  ok('records with missing/null receipts never throw');
+
+  assert.deepEqual(purchasesFromHash(null), []);
+  assert.deepEqual(purchasesFromHash({ a: JSON.stringify({ id: 'a' }), b: { id: 'b' } }).map(p => p.id).sort(), ['a', 'b']);
+  ok('purchasesFromHash handles null and mixed JSON-string / object values');
 }
 
 console.log(`\nAll ${passed} checks passed.`);
