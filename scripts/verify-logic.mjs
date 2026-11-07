@@ -5,6 +5,9 @@
 import assert from 'node:assert/strict';
 import {
   buildCostSegCsv, suggestAssetClass, emptyPurchase, NOT_IN_ALLOWANCE,
+  PURCHASE_TRADES, PURCHASE_STATUSES, ASSET_CLASSES, CONTRACTOR_SCOPE, CONTRACTOR_PURCHASER,
+  assetClassLabel, defaultAllowanceFor, reimbursementDefaultsFor, purchaseDefaults,
+  normalizePurchase, netCost, paymentBadge, summarizePurchases,
 } from '../src/lib/purchases-logic.js';
 import { scopedKey, parseReceiptPathname, migrateFinishesToHash } from '../api/_scope.js';
 import {
@@ -33,7 +36,7 @@ ok('unknown trade → "" (no suggestion)');
 console.log('emptyPurchase():');
 {
   const p = emptyPurchase();
-  const expected = ['id','finishItemId','furnitureId','description','trade','room','vendor','invoiceNo','purchasedBy','ownerPurchased','paymentMethod','qty','unitPrice','tax','shipping','totalPaid','allowanceCategory','status','purchaseDate','receivedDate','placedInServiceDate','assetClass','section','warranty','warrantyTerm','registered','binderPocket','receipts','notes','userCreated'];
+  const expected = ['id','finishItemId','furnitureId','description','trade','room','vendor','invoiceNo','purchasedBy','ownerPurchased','paymentMethod','qty','unitPrice','tax','shipping','totalPaid','allowanceCategory','status','purchaseDate','receivedDate','placedInServiceDate','assetClass','section','warranty','warrantyTerm','registered','binderPocket','receipts','notes','userCreated','returnByDate','returnPolicyNote','refundAmount','refundDate','restockingFee','returnShippingCost','keepConfirmed','inspected','inspectedDate','deliveredTo','orderGroupId','lineNo','reimbursable','reimbursedBy','reimbursementStatus','reimbursedAmount','reimbursedDate','drawNo','sourceVendor','fees','docType','paymentConfirmed','lienWaiverReceived'];
   for (const k of expected) assert.ok(k in p, `missing field: ${k}`);
   ok('has all expected fields');
   assert.equal(p.allowanceCategory, NOT_IN_ALLOWANCE);
@@ -410,6 +413,108 @@ console.log('\nhouse-info-logic:');
   assert.equal(groups['Vintage Category'].length, 1);
   assert.equal(groupHouseInfoByCategory([]).order.join(','), HOUSE_INFO_CATEGORIES.join(','));
   ok('groupHouseInfoByCategory() orders every known category first, then any unrecognized category present in the data, so an item can never silently disappear just because its category fell out of the official list');
+}
+
+console.log('Phase 1 — trades / statuses / asset classes:');
+{
+  assert.equal(PURCHASE_TRADES.length, 22);
+  for (const t of ['Small Appliances', 'Kitchen & Dining', 'Supplies & Consumables', 'Window Treatments', 'Closets & Shelving']) {
+    assert.ok(PURCHASE_TRADES.includes(t), `missing trade ${t}`);
+  }
+  assert.equal(PURCHASE_TRADES[PURCHASE_TRADES.length - 1], 'Other');
+  ok('22 trades incl. the five new ones, "Other" still last');
+  assert.deepEqual(PURCHASE_STATUSES, ['Ordered', 'Received', 'Installed', 'Return started', 'Returned']);
+  assert.ok(ASSET_CLASSES.includes('supplies'));
+  ok('5 statuses and the supplies asset class');
+  assert.equal(suggestAssetClass('Small Appliances'), '5-yr');
+  assert.equal(suggestAssetClass('Kitchen & Dining'), '5-yr');
+  assert.equal(suggestAssetClass('Supplies & Consumables'), 'supplies');
+  assert.equal(suggestAssetClass('Window Treatments'), '5-yr');
+  assert.equal(suggestAssetClass('Closets & Shelving'), '27.5-yr');
+  assert.equal(assetClassLabel('supplies'), 'Supplies / expense (confirm with CPA)');
+  assert.equal(assetClassLabel('5-yr'), '5-yr');
+  ok('new trades suggest the right class; supplies has its CPA label');
+}
+
+console.log('defaultAllowanceFor() / reimbursementDefaultsFor():');
+{
+  const OWNER_TRADES = ['Small Appliances', 'Kitchen & Dining', 'Supplies & Consumables', 'Window Treatments',
+    'Furniture / FF&E', 'Decor & Styling', 'Linens & Soft Goods', 'Electronics / AV'];
+  for (const t of OWNER_TRADES) {
+    assert.equal(defaultAllowanceFor(t, 'Josh'), NOT_IN_ALLOWANCE, `${t}/Josh`);
+    assert.equal(defaultAllowanceFor(t, 'Kerry'), NOT_IN_ALLOWANCE, `${t}/Kerry`);
+  }
+  ok('owner-bought FF&E-type trades default to Not in Allowance (toaster cannot draw down Appliances)');
+  assert.equal(defaultAllowanceFor('Closets & Shelving', 'Sparrow (Contractor)'), 'Shelving');
+  assert.equal(defaultAllowanceFor('Closets & Shelving', 'Josh'), 'Shelving');
+  assert.equal(defaultAllowanceFor('Electrical', 'Josh'), 'Electrical Fixtures');
+  assert.equal(defaultAllowanceFor('Plumbing', 'Sparrow (Contractor)'), 'Plumbing Fixtures');
+  ok('Closets→Shelving, Electrical→Electrical Fixtures, Plumbing→Plumbing Fixtures whoever paid');
+  assert.equal(defaultAllowanceFor('Window Treatments', 'Sparrow (Contractor)'), CONTRACTOR_SCOPE);
+  assert.equal(defaultAllowanceFor('Small Appliances', 'Sparrow (Contractor)'), CONTRACTOR_SCOPE);
+  assert.equal(defaultAllowanceFor('Flooring', 'Sparrow (Contractor)'), null);
+  assert.equal(defaultAllowanceFor('Appliances', 'Josh'), null);
+  assert.equal(defaultAllowanceFor('Small Appliances', ''), null);
+  assert.equal(defaultAllowanceFor('', 'Josh'), null);
+  ok('Sparrow-paid no-category trades → Contractor scope; otherwise no default');
+
+  assert.deepEqual(reimbursementDefaultsFor('Minoan', 'Josh'),
+    { reimbursable: true, reimbursedBy: 'Sparrow (Contractor)', reimbursementStatus: 'pending' });
+  assert.equal(reimbursementDefaultsFor(' minoan ', 'Kerry').reimbursable, true);
+  assert.deepEqual(reimbursementDefaultsFor('Amazon', 'Josh'), { reimbursable: false, reimbursedBy: '', reimbursementStatus: 'none' });
+  assert.deepEqual(reimbursementDefaultsFor('Minoan', 'Sparrow (Contractor)'), { reimbursable: false, reimbursedBy: '', reimbursementStatus: 'none' });
+  assert.equal(reimbursementDefaultsFor('Wayfair', 'Josh', ['Wayfair']).reimbursable, true);
+  ok('Minoan (case/space-insensitive) defaults to reimbursable/pending; not when Sparrow paid; vendor list overridable');
+}
+
+console.log('emptyPurchase() / normalizePurchase() — Phase 1 fields:');
+{
+  const p = emptyPurchase();
+  assert.equal(p.returnByDate, ''); assert.equal(p.refundAmount, null); assert.equal(p.keepConfirmed, false);
+  assert.equal(p.inspected, false); assert.equal(p.deliveredTo, '');
+  assert.equal(p.orderGroupId, null); assert.equal(p.lineNo, null);
+  assert.equal(p.reimbursable, false); assert.equal(p.reimbursementStatus, 'none');
+  assert.equal(p.docType, ''); assert.equal(p.paymentConfirmed, false); assert.equal(p.lienWaiverReceived, false);
+  assert.equal(p.fees, null); assert.equal(p.section, '');
+  ok('emptyPurchase carries every Phase 1 default; section still blank');
+
+  const old = { id: 'pur-old', description: 'x', totalPaid: 10, refundAmount: 5 };
+  const frozen = JSON.stringify(old);
+  const n = normalizePurchase(old);
+  assert.equal(n.id, 'pur-old'); assert.equal(n.description, 'x'); assert.equal(n.totalPaid, 10); assert.equal(n.refundAmount, 5);
+  for (const k of Object.keys(purchaseDefaults())) assert.ok(k in n, `normalize missing ${k}`);
+  assert.equal(JSON.stringify(old), frozen);
+  assert.doesNotThrow(() => normalizePurchase({}));
+  ok('normalizePurchase fills missing fields, keeps saved values, never mutates input');
+}
+
+console.log('netCost() / paymentBadge() / summarizePurchases():');
+{
+  assert.equal(netCost({ totalPaid: 120, refundAmount: 100 }), 20);
+  assert.equal(netCost({ totalPaid: 40 }), 40);
+  assert.equal(netCost({}), 0);
+  assert.equal(netCost({ totalPaid: 50, refundAmount: 80 }), 0);
+  assert.equal(netCost({ totalPaid: '12.5' }), 12.5);
+  ok('netCost = paid − refund, clamped at 0, tolerant of blanks and numeric strings');
+
+  assert.equal(paymentBadge({ docType: 'statement', paymentConfirmed: false, purchasedBy: 'Josh' }), 'Unpaid / no proof of payment');
+  assert.equal(paymentBadge({ docType: 'statement', paymentConfirmed: true, purchasedBy: 'Josh' }), null);
+  assert.equal(paymentBadge({ docType: 'quote', purchasedBy: 'Kerry' }), 'Unpaid / no proof of payment');
+  assert.equal(paymentBadge({ docType: 'statement', purchasedBy: CONTRACTOR_PURCHASER, lienWaiverReceived: false }), 'Contractor-paid: confirm in draw');
+  assert.equal(paymentBadge({ docType: 'statement', purchasedBy: CONTRACTOR_PURCHASER, lienWaiverReceived: true }), null);
+  assert.equal(paymentBadge({ docType: 'receipt' }), null);
+  assert.equal(paymentBadge({}), null);
+  ok('paymentBadge: unpaid for statement/quote, contractor-paid variant needs lien waiver, none otherwise');
+
+  const s = summarizePurchases([
+    { totalPaid: 40, ownerPurchased: true, trade: 'Small Appliances' },
+    { totalPaid: 1000, ownerPurchased: false, trade: 'Appliances' },
+    { totalPaid: 120, refundAmount: 100, ownerPurchased: true, trade: 'Linens & Soft Goods' },
+  ]);
+  assert.equal(s.total, 1060); assert.equal(s.owner, 60); assert.equal(s.contractor, 1000);
+  assert.equal(s.byTrade['Linens & Soft Goods'], 20);
+  assert.doesNotThrow(() => summarizePurchases([{}]));
+  ok('summarizePurchases sums net cost (refund 100 on 120 counts as 20) and tolerates bare records');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

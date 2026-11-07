@@ -6,13 +6,23 @@ export const PURCHASE_TRADES = [
   "Flooring", "Shower/Bath Tile", "Kitchens", "Countertops", "Paint", "Decking",
   "Appliances", "Electrical", "Plumbing", "Drywall", "Furniture / FF&E",
   "Decor & Styling", "Linens & Soft Goods", "Electronics / AV", "Outdoor & Landscape",
-  "Pool & Spa", "Other",
+  "Pool & Spa", "Small Appliances", "Kitchen & Dining", "Supplies & Consumables",
+  "Window Treatments", "Closets & Shelving", "Other",
 ];
 export const PURCHASED_BY_OPTIONS = ["Josh", "Kerry", "Sparrow (Contractor)", "Other"];
 export const CONTRACTOR_PURCHASER = "Sparrow (Contractor)";
 export const PAYMENT_METHODS = ["Credit Card", "ACH / Bank Transfer", "Minoan", "Check", "Cash", "Other"];
-export const PURCHASE_STATUSES = ["Ordered", "Received", "Installed"];
+export const PURCHASE_STATUSES = ["Ordered", "Received", "Installed", "Return started", "Returned"];
+export const DELIVERED_TO_OPTIONS = ["Home", "Storage", "Property", "Other"];
+export const REIMBURSEMENT_STATUSES = ["none", "pending", "requested", "reimbursed"];
+export const DOC_TYPES = ["receipt", "invoice", "statement", "quote"];
 export const NOT_IN_ALLOWANCE = "Not in Allowance / Owner FF&E";
+// Items Sparrow pays for that have no Exhibit B category (e.g. window shades). Shown on its own
+// reconciliation line so each can be confirmed as inside the base contract price.
+export const CONTRACTOR_SCOPE = "Contractor scope (base contract)";
+// Seed list of vendors whose purchases Sparrow reimburses (via loan draws). Phase 2 moves this
+// into shopping settings; the logic functions already take the list as a parameter.
+export const DEFAULT_REIMBURSABLE_VENDORS = ["Minoan"];
 export const ALLOWANCE_CATEGORIES = [
   { name: "Plumbing Fixtures", allowance: 22000 },
   { name: "Electrical Fixtures", allowance: 20000 },
@@ -27,12 +37,17 @@ export const ALLOWANCE_CATEGORIES = [
   { name: "Glass Shower Enclosures", allowance: 10000 },
 ];
 export const EXHIBIT_B_TOTAL = 446000;
+export const EXHIBIT_B_NAMES = ALLOWANCE_CATEGORIES.map(a => a.name);
 
 // Cost-seg (Phase 3). Asset classes are SUGGESTIONS only — always confirmed with the CPA.
-export const ASSET_CLASSES = ["5-yr", "7-yr", "15-yr", "27.5-yr"];
+export const ASSET_CLASSES = ["5-yr", "7-yr", "15-yr", "27.5-yr", "supplies"];
+const ASSET_CLASS_LABELS = { supplies: "Supplies / expense (confirm with CPA)" };
+export function assetClassLabel(c) { return ASSET_CLASS_LABELS[c] || c; }
 export const ASSET_CLASS_BY_TRADE = {
   "Appliances": "5-yr", "Furniture / FF&E": "5-yr", "Decor & Styling": "5-yr",
   "Linens & Soft Goods": "5-yr", "Electronics / AV": "5-yr",
+  "Small Appliances": "5-yr", "Kitchen & Dining": "5-yr", "Window Treatments": "5-yr",
+  "Supplies & Consumables": "supplies", "Closets & Shelving": "27.5-yr",
   "Decking": "15-yr", "Outdoor & Landscape": "15-yr", "Pool & Spa": "15-yr",
   "Flooring": "27.5-yr", "Shower/Bath Tile": "27.5-yr", "Kitchens": "27.5-yr",
   "Countertops": "27.5-yr", "Paint": "27.5-yr", "Electrical": "27.5-yr",
@@ -79,14 +94,90 @@ export function fmtUSD(n) {
   return v.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 }
 
-export function emptyPurchase() {
+export function purchaseDefaults() {
   return {
-    id: newPurchaseId(), finishItemId: null, furnitureId: null, description: "", trade: "", room: "",
+    finishItemId: null, furnitureId: null, description: "", trade: "", room: "",
     vendor: "", invoiceNo: "", purchasedBy: "", ownerPurchased: true, paymentMethod: "",
     qty: null, unitPrice: null, tax: null, shipping: null, totalPaid: null,
     allowanceCategory: NOT_IN_ALLOWANCE, status: "Ordered", purchaseDate: "", receivedDate: "",
     placedInServiceDate: "", assetClass: "", section: "",
     warranty: false, warrantyTerm: "", registered: false, binderPocket: "",
     receipts: [], notes: "", userCreated: true,
+    // Returns
+    returnByDate: "", returnPolicyNote: "", refundAmount: null, refundDate: "",
+    restockingFee: null, returnShippingCost: null, keepConfirmed: false,
+    // Receiving
+    inspected: false, inspectedDate: "", deliveredTo: "",
+    // Order grouping
+    orderGroupId: null, lineNo: null,
+    // Reimbursement (Sparrow reimburses owner-paid purchases via loan draws)
+    reimbursable: false, reimbursedBy: "", reimbursementStatus: "none",
+    reimbursedAmount: null, reimbursedDate: "", drawNo: "",
+    // Marketplace / payment proof
+    sourceVendor: "", fees: null, docType: "", paymentConfirmed: false, lienWaiverReceived: false,
   };
+}
+
+export function emptyPurchase() {
+  return { id: newPurchaseId(), ...purchaseDefaults() };
+}
+
+// Fill any missing fields on a saved record (in memory only — nothing is written back).
+export function normalizePurchase(p) {
+  return { ...purchaseDefaults(), ...p };
+}
+
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+// Money actually spent: paid minus refunded, never negative.
+export function netCost(p) {
+  return Math.max(0, round2((Number(p && p.totalPaid) || 0) - (Number(p && p.refundAmount) || 0)));
+}
+
+// Trades where an owner (Josh/Kerry) buy is not drawn from any Exhibit B allowance.
+const OWNER_FFE_TRADES = [
+  "Small Appliances", "Kitchen & Dining", "Supplies & Consumables", "Window Treatments",
+  "Furniture / FF&E", "Decor & Styling", "Linens & Soft Goods", "Electronics / AV",
+];
+const TRADE_ALLOWANCE = {
+  "Closets & Shelving": "Shelving", "Electrical": "Electrical Fixtures", "Plumbing": "Plumbing Fixtures",
+};
+
+// Suggested allowance category for a (trade, payer) pair, or null for "no default — user picks".
+export function defaultAllowanceFor(trade, purchasedBy) {
+  const owner = purchasedBy === "Josh" || purchasedBy === "Kerry";
+  if (owner && OWNER_FFE_TRADES.includes(trade)) return NOT_IN_ALLOWANCE;
+  if (TRADE_ALLOWANCE[trade]) return TRADE_ALLOWANCE[trade];
+  if (purchasedBy === CONTRACTOR_PURCHASER && OWNER_FFE_TRADES.includes(trade)) return CONTRACTOR_SCOPE;
+  return null;
+}
+
+// Reimbursement defaults for a vendor. Nothing to reimburse when Sparrow paid directly.
+export function reimbursementDefaultsFor(vendor, purchasedBy, vendors = DEFAULT_REIMBURSABLE_VENDORS) {
+  const v = String(vendor || "").trim().toLowerCase();
+  const match = v !== "" && vendors.some(x => String(x).trim().toLowerCase() === v);
+  if (match && purchasedBy !== CONTRACTOR_PURCHASER) {
+    return { reimbursable: true, reimbursedBy: CONTRACTOR_PURCHASER, reimbursementStatus: "pending" };
+  }
+  return { reimbursable: false, reimbursedBy: "", reimbursementStatus: "none" };
+}
+
+// Badge for statements/quotes (which are not proof of payment). Null when nothing to flag.
+export function paymentBadge(p) {
+  if (!p || (p.docType !== "statement" && p.docType !== "quote")) return null;
+  if (p.purchasedBy === CONTRACTOR_PURCHASER) return p.lienWaiverReceived ? null : "Contractor-paid: confirm in draw";
+  return p.paymentConfirmed ? null : "Unpaid / no proof of payment";
+}
+
+// Totals for the stat cards, on net cost (refunds subtracted).
+export function summarizePurchases(purchases) {
+  let total = 0, owner = 0, contractor = 0;
+  const byTrade = {};
+  for (const p of purchases) {
+    const amt = netCost(p);
+    total += amt;
+    if (p.ownerPurchased) owner += amt; else contractor += amt;
+    if (p.trade) byTrade[p.trade] = round2((byTrade[p.trade] || 0) + amt);
+  }
+  return { total: round2(total), owner: round2(owner), contractor: round2(contractor), byTrade };
 }
