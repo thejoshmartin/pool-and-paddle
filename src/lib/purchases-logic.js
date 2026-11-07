@@ -115,8 +115,8 @@ export function purchaseDefaults() {
     placedInServiceDate: "", assetClass: "", section: "",
     warranty: false, warrantyTerm: "", registered: false, binderPocket: "",
     receipts: [], notes: "", userCreated: true,
-    // Returns
-    returnByDate: "", returnPolicyNote: "", refundAmount: null, refundDate: "",
+    // Returns (refundAutoFilled: true while refundAmount was filled in automatically by choosing Returned)
+    returnByDate: "", returnPolicyNote: "", refundAmount: null, refundDate: "", refundAutoFilled: false,
     restockingFee: null, returnShippingCost: null, keepConfirmed: false,
     // Receiving
     inspected: false, inspectedDate: "", deliveredTo: "",
@@ -135,8 +135,15 @@ export function emptyPurchase() {
 }
 
 // Fill any missing fields on a saved record (in memory only — nothing is written back).
+// A pre-Phase-1 record has no reimbursement fields at all; an owner-paid purchase from a
+// reimbursable vendor (Minoan) is treated as reimbursable/pending in memory (persisted on its next
+// save). Explicitly saved values — including reimbursable:false — are never overridden.
 export function normalizePurchase(p) {
-  return { ...purchaseDefaults(), ...p };
+  const out = { ...purchaseDefaults(), ...p };
+  if (p && p.reimbursable === undefined && out.ownerPurchased) {
+    Object.assign(out, reimbursementDefaultsFor(out.vendor, out.purchasedBy));
+  }
+  return out;
 }
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -151,6 +158,8 @@ const OWNER_FFE_TRADES = [
   "Small Appliances", "Kitchen & Dining", "Supplies & Consumables", "Window Treatments",
   "Furniture / FF&E", "Decor & Styling", "Linens & Soft Goods", "Electronics / AV",
 ];
+// Sparrow-paid trades with no Exhibit B equivalent also fall under base-contract scope.
+const NO_EXHIBIT_B_TRADES = [...OWNER_FFE_TRADES, "Paint", "Decking", "Doors", "Drywall", "Other"];
 const TRADE_ALLOWANCE = {
   "Closets & Shelving": "Shelving", "Electrical": "Electrical Fixtures", "Plumbing": "Plumbing Fixtures",
 };
@@ -160,7 +169,7 @@ export function defaultAllowanceFor(trade, purchasedBy) {
   const owner = purchasedBy === "Josh" || purchasedBy === "Kerry";
   if (owner && OWNER_FFE_TRADES.includes(trade)) return NOT_IN_ALLOWANCE;
   if (TRADE_ALLOWANCE[trade]) return TRADE_ALLOWANCE[trade];
-  if (purchasedBy === CONTRACTOR_PURCHASER && OWNER_FFE_TRADES.includes(trade)) return CONTRACTOR_SCOPE;
+  if (purchasedBy === CONTRACTOR_PURCHASER && NO_EXHIBIT_B_TRADES.includes(trade)) return CONTRACTOR_SCOPE;
   return null;
 }
 
@@ -237,7 +246,8 @@ export function allowancePool(purchases, allowances = ALLOWANCE_CATEGORIES) {
     };
   });
   const noCat = purchases.filter(p => p.ownerPurchased && p.reimbursable && !names.includes(p.allowanceCategory) && p.allowanceCategory !== CONTRACTOR_SCOPE);
-  const scope = purchases.filter(p => p.allowanceCategory === CONTRACTOR_SCOPE);
+  // Contractor scope: tagged so, or Sparrow-paid and outside every Exhibit B category.
+  const scope = purchases.filter(p => p.allowanceCategory === CONTRACTOR_SCOPE || (!p.ownerPurchased && !names.includes(p.allowanceCategory)));
   const poolTotal = round2(allowances.reduce((s, a) => s + a.allowance, 0));
   const reimbursedNoCategory = { total: sumNet(noCat), purchases: noCat };
   const poolCharged = round2(rows.reduce((s, r) => s + r.spent, 0) + reimbursedNoCategory.total);
@@ -310,20 +320,20 @@ export function groupByOrder(purchases) {
 }
 
 // Patch for a Status change in the purchase form. Moving to Returned pre-fills the refund with the
-// amount paid (when none is entered) and remembers that it was automatic; moving away from Returned
-// undoes ONLY that automatic fill, so a mis-tap never zeroes a purchase and a refund the owner typed
-// is never cleared. Returns { patch, autoFilled } — callers keep `autoFilled` in a ref.
-export function statusChangePatch(d, nextStatus, autoFilled) {
+// amount paid (when none is entered) and flags it as automatic (`refundAutoFilled`, stored on the
+// record); moving away from Returned undoes ONLY an automatic fill — even after a Save and reopen —
+// so a mis-tap never zeroes a purchase, and a refund the owner typed is never cleared.
+export function statusChangePatch(d, nextStatus) {
   const patch = { status: nextStatus };
-  if (nextStatus === "Returned" && d.status !== "Returned" && d.refundAmount == null) {
-    patch.refundAmount = d.totalPaid;
-    return { patch, autoFilled: true };
-  }
-  if (d.status === "Returned" && nextStatus !== "Returned" && autoFilled && d.refundAmount === d.totalPaid) {
+  const paid = Number(d.totalPaid);
+  if (nextStatus === "Returned" && d.status !== "Returned" && d.refundAmount == null && Number.isFinite(paid) && paid > 0) {
+    patch.refundAmount = round2(paid);
+    patch.refundAutoFilled = true;
+  } else if (d.status === "Returned" && nextStatus !== "Returned" && d.refundAutoFilled) {
     patch.refundAmount = null;
-    return { patch, autoFilled: false };
+    patch.refundAutoFilled = false;
   }
-  return { patch, autoFilled: nextStatus === "Returned" ? autoFilled : false };
+  return patch;
 }
 
 // Whether the form's smart defaults (allowance category, reimbursement) start out "touched" — i.e.

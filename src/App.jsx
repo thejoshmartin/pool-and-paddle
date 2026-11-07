@@ -3519,7 +3519,6 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
   const initialTouched = formDefaultsTouched(d, fresh);
   const allowanceTouched = useRef(initialTouched.allowance);
   const reimbTouched = useRef(initialTouched.reimb);
-  const refundAutoFilled = useRef(false);   // true while the refund amount was filled in automatically by choosing Returned
   const allowanceFor = (trade, paidBy) => defaultAllowanceFor(trade, paidBy) || NOT_IN_ALLOWANCE;
   const num = (k) => (e) => set({ [k]: e.target.value === "" ? null : Number(e.target.value) });
   const checkRow = (k, text, extra) => (
@@ -3546,7 +3545,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
         {field("Trade", <select style={ppInput} value={d.trade} onChange={e => { const trade = e.target.value; const patch = { trade, assetClass: d.assetClass || suggestAssetClass(trade) }; if (!allowanceTouched.current) patch.allowanceCategory = allowanceFor(trade, d.purchasedBy); set(patch); }}><option value="">—</option>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>)}
         {field("Room / Area", <input style={ppInput} value={d.room} onChange={e => set({ room: e.target.value })} placeholder="e.g. Kitchen" />)}
-        {field("Status", <select style={ppInput} value={d.status} onChange={e => { const r = statusChangePatch(d, e.target.value, refundAutoFilled.current); refundAutoFilled.current = r.autoFilled; set(r.patch); }}>{PURCHASE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>)}
+        {field("Status", <select style={ppInput} value={d.status} onChange={e => set(statusChangePatch(d, e.target.value))}>{PURCHASE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
         {field("Vendor", <input style={ppInput} value={d.vendor} onChange={e => { const vendor = e.target.value; set(reimbTouched.current ? { vendor } : { vendor, ...reimbursementDefaultsFor(vendor, d.purchasedBy) }); }} placeholder="e.g. Ferguson" />)}
@@ -3617,7 +3616,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
         {field("Return by", <input type="date" style={ppInput} value={d.returnByDate || ""} onChange={e => set({ returnByDate: e.target.value })} />)}
         {field("Return policy note", <input style={ppInput} value={d.returnPolicyNote || ""} onChange={e => set({ returnPolicyNote: e.target.value })} placeholder="e.g. 30 days, brand pays shipping" />)}
-        {field("Refund amount ($)", <input type="number" step="0.01" style={ppInput} value={d.refundAmount ?? ""} onChange={e => { refundAutoFilled.current = false; num("refundAmount")(e); }} />)}
+        {field("Refund amount ($)", <input type="number" step="0.01" style={ppInput} value={d.refundAmount ?? ""} onChange={e => set({ refundAmount: e.target.value === "" ? null : Number(e.target.value), refundAutoFilled: false })} />)}
         {field("Refund date", <input type="date" style={ppInput} value={d.refundDate || ""} onChange={e => set({ refundDate: e.target.value })} />)}
         {field("Restocking fee ($)", <input type="number" step="0.01" style={ppInput} value={d.restockingFee ?? ""} onChange={num("restockingFee")} />)}
         {field("Return shipping ($)", <input type="number" step="0.01" style={ppInput} value={d.returnShippingCost ?? ""} onChange={num("returnShippingCost")} />)}
@@ -3761,7 +3760,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
         {[
           { label: "Total spent (net of refunds)", value: fmtUSD(stats.total) },
           { label: "Purchases logged", value: String(purchases.length) },
-          { label: "Owner-purchased", value: fmtUSD(stats.owner) },
+          { label: "Owner-purchased", value: fmtUSD(stats.owner), sub: "includes money Sparrow reimburses" },
           { label: "Contractor / allowance", value: fmtUSD(stats.contractor) },
           { label: "Due from Sparrow", value: fmtUSD(due.total), sub: dueFilter ? "showing these — tap to clear" : "tap to filter the list", onClick: () => setDueFilter(f => !f), active: dueFilter },
           { label: "Owner-paid allowance items", value: fmtUSD(credits.total), sub: "credit to settle in writing" },
@@ -3856,7 +3855,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
 
       {/* Purchase list */}
       {filtered.length === 0 && editingId !== "new" && (
-        <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>No purchases yet. Click “+ Add purchase” to log your first one.</p>
+        <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>{purchases.length > 0 ? "No purchases match your search or filters." : "No purchases yet. Click “+ Add purchase” to log your first one."}</p>
       )}
       {(() => {
       const renderPurchase = (p) => {

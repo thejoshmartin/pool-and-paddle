@@ -26,9 +26,18 @@ export default async function handler(req, res) {
   const parsed = parseReceiptPathname(pathname);
   if (!parsed) return res.status(400).json({ error: 'Bad pathname' });
 
-  // Confirm the pathname is referenced by a real purchase in this property.
-  const purchases = purchasesFromHash(await redis.hgetall(scopedKey('purchases', parsed.propertyId)));
-  const referenced = isReceiptReferenced(purchases, pathname);
+  // Confirm the pathname is referenced by a real purchase in this property. Fast path: the
+  // uploader's own record (id is in the path) usually still references it — one HGET. Otherwise
+  // (shared receipts, or that purchase was deleted) scan the property's purchases.
+  const key = scopedKey('purchases', parsed.propertyId);
+  let referenced = false;
+  try {
+    const direct = await redis.hget(key, parsed.purchaseId);
+    if (direct) referenced = isReceiptReferenced([typeof direct === 'string' ? JSON.parse(direct) : direct], pathname);
+  } catch (e) { /* fall through to the full scan */ }
+  if (!referenced) {
+    referenced = isReceiptReferenced(purchasesFromHash(await redis.hgetall(key)), pathname);
+  }
   if (!referenced) return res.status(404).json({ error: 'Not found' });
 
   const result = await get(pathname, { access: 'private' });
