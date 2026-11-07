@@ -10,6 +10,7 @@ import {
   DELIVERED_TO_OPTIONS, REIMBURSEMENT_STATUSES, DOC_TYPES, CONTRACTOR_SCOPE, assetClassLabel,
   defaultAllowanceFor, reimbursementDefaultsFor, normalizePurchase, netCost, paymentBadge,
   summarizePurchases, fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
+  groupByOrder, newOrderGroupId,
 } from "./lib/purchases-logic.js";
 import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, furnitureField, roomField, tombstone, BUDGET_FIELD, partitionFinishFields } from "./lib/design-logic.js";
 import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, groupHouseInfoByCategory } from "./lib/house-info-logic.js";
@@ -3627,7 +3628,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
   );
 }
 
-function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, focusPurchaseId, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
+function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, onAddLine, focusPurchaseId, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
   const [editingId, setEditingId] = useState(null);   // id | "new" | null
   const [expandedId, setExpandedId] = useState(null);
   const [query, setQuery] = useState("");
@@ -3815,7 +3816,8 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
       {filtered.length === 0 && editingId !== "new" && (
         <p style={{ color: C.textMuted, fontSize: 14, textAlign: "center", padding: 32 }}>No purchases yet. Click “+ Add purchase” to log your first one.</p>
       )}
-      {filtered.map(p => {
+      {(() => {
+      const renderPurchase = (p) => {
         const isOpen = expandedId === p.id;
         const isEditing = editingId === p.id;
         return (
@@ -3866,6 +3868,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
                   {p.returnByDate && !p.keepConfirmed && p.status !== "Returned" && (
                     <button onClick={() => onSave({ ...p, keepConfirmed: true })} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.mint}`, background: C.seafoamFaint, color: C.mintDark, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Keep</button>
                   )}
+                  <button onClick={() => onAddLine && onAddLine(p)} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Add line to this order</button>
                   <button onClick={() => { setEditingId(p.id); }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Edit</button>
                   <button onClick={() => { if (window.confirm("Delete this purchase and its receipts?")) { onDelete(p.id); setExpandedId(null); } }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ocean, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Delete</button>
                 </div>
@@ -3884,7 +3887,16 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
             )}
           </div>
         );
-      })}
+      };
+      return groupByOrder(filtered).map(g => g.kind === "single" ? renderPurchase(g.purchase) : (
+        <div key={g.orderGroupId} style={{ border: `1px solid ${C.seafoam}`, borderRadius: 14, padding: 8, marginBottom: 12, background: C.seafoamFaint }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.mintDark, padding: "4px 8px 8px" }}>
+            Order · {g.purchases[0].vendor || "no vendor"} · {g.purchases[0].invoiceNo || "no invoice #"} · {g.purchases.length} lines · subtotal {fmtUSD(g.subtotal)}
+          </div>
+          {g.purchases.map(renderPurchase)}
+        </div>
+      ));
+      })()}
     </div>
   );
 }
@@ -4502,6 +4514,33 @@ export default function App() {
     const target = purchases.find(p => p.id === id);
     if (target) savePurchase({ ...target, receipts });
   };
+  // "Add line to this order": give the source an order group if it has none, then create a new
+  // line that shares the order-level fields and the SAME receipt pathnames (by reference).
+  // Persisted immediately, like promote; each save is a targeted single-record PUT.
+  const addLineToOrder = (source) => {
+    let src = source;
+    if (!src.orderGroupId) {
+      src = { ...source, orderGroupId: newOrderGroupId(), lineNo: 1 };
+      savePurchase(src);
+    }
+    const members = purchases.filter(p => p.orderGroupId === src.orderGroupId);
+    const maxLine = members.reduce((m, p) => Math.max(m, Number(p.lineNo) || 0), 0);
+    const line = {
+      ...emptyPurchase(),
+      vendor: src.vendor, invoiceNo: src.invoiceNo, purchasedBy: src.purchasedBy,
+      ownerPurchased: src.ownerPurchased, paymentMethod: src.paymentMethod,
+      purchaseDate: src.purchaseDate, docType: src.docType, sourceVendor: src.sourceVendor,
+      reimbursable: src.reimbursable, reimbursedBy: src.reimbursedBy,
+      reimbursementStatus: src.reimbursable ? "pending" : "none",
+      orderGroupId: src.orderGroupId,
+      lineNo: Math.max(maxLine, members.length, 1) + 1,
+      receipts: src.receipts || [],
+      placedInServiceDate: activeInServiceDate,
+    };
+    savePurchase(line);
+    setFocusPurchaseId(line.id);
+    setActiveView("purchases");
+  };
 
   // House info — per-record server mutations (HSET/HDEL one field via api/house-info.js),
   // never a whole-array write. The PUT response carries the server-stamped item (real
@@ -4743,7 +4782,7 @@ export default function App() {
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
-      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} focusPurchaseId={focusPurchaseId} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
+      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} focusPurchaseId={focusPurchaseId} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
       {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} loadError={houseInfoLoadError} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 
       {showMigrationModal && migrationNeeded && (
