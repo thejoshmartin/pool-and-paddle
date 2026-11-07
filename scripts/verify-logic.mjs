@@ -3,6 +3,10 @@
  * Run: node scripts/verify-logic.mjs   (or `npm test`, which runs this + the phase-1 checks)
  */
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
   buildCostSegCsv, suggestAssetClass, emptyPurchase, NOT_IN_ALLOWANCE,
   PURCHASE_TRADES, PURCHASE_STATUSES, ASSET_CLASSES, CONTRACTOR_SCOPE, CONTRACTOR_PURCHASER,
@@ -1050,6 +1054,76 @@ console.log('Phase 2 — shopping API write rules (regression pins for api/shopp
     assert.equal(SH.sanitizeShoppingField(f, item, stamp).ok, false, f);
   }
   ok('a PUT body is typed per field, keeps unknown candidate fields, stamps the server user, and every malformed field name or value shape is rejected');
+}
+
+console.log('Phase 2 — seed list (§2.6 tables) and master-list parser:');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const seed = JSON.parse(fs.readFileSync(new URL('../src/shopping-seed.json', import.meta.url), 'utf8'));
+  const items = seed.items;
+  const stamp = { updatedAt: null, updatedBy: null };
+  assert.ok(Array.isArray(items) && items.length >= 40);
+  assert.equal(new Set(items.map(i => i.id)).size, items.length);
+  for (const i of items) {
+    assert.match(i.id, /^sh-seed-[a-z0-9-]+$/);
+    assert.equal(SH.sanitizeShoppingItem(i, stamp).ok, true, `seed item invalid: ${i.id}`);
+    assert.equal(i.proposed, false); assert.equal(i.status, 'researching'); assert.equal(i.approvedBy, null); assert.equal(i.userCreated, false);
+  }
+  ok('seed items are unique, valid, un-approved, not proposed and marked as seed (not user-created)');
+
+  const byId = Object.fromEntries(items.map(i => [i.id, i]));
+  const qty = (id, g = 24) => SH.computeQty(byId[id], { ...D, guestCount: g });
+  const expect24 = { 'sh-seed-dinner-plates-indoor': 36, 'sh-seed-dinner-plates-outdoor': 30, 'sh-seed-everyday-tumblers-indoor': 36, 'sh-seed-everyday-tumblers-outdoor': 48,
+    'sh-seed-coffee-mugs-indoor': 36, 'sh-seed-wine-glasses-indoor': 30, 'sh-seed-juice-small-glasses-indoor': 24, 'sh-seed-kids-cups-with-lids-outdoor': 12,
+    'sh-seed-serving-platters-indoor': 6, 'sh-seed-serving-platters-outdoor': 4, 'sh-seed-serving-bowls-indoor': 8, 'sh-seed-serving-utensils-indoor': 16, 'sh-seed-serving-utensils-outdoor': 8,
+    'sh-seed-dinner-forks': 72, 'sh-seed-salad-dessert-forks': 48, 'sh-seed-dinner-knives': 48, 'sh-seed-steak-knives': 24, 'sh-seed-teaspoons': 72, 'sh-seed-soup-dessert-spoons': 36,
+    'sh-seed-drip-coffee-maker': 2, 'sh-seed-toaster': 2, 'sh-seed-electric-griddle': 2, 'sh-seed-slow-cooker': 2, 'sh-seed-blender-indoor': 1, 'sh-seed-blender-outdoor': 1,
+    'sh-seed-ice-maker': 1, 'sh-seed-drink-dispenser': 2 };
+  for (const [id, n] of Object.entries(expect24)) { assert.ok(byId[id], `missing seed item ${id}`); assert.equal(qty(id), n, id); }
+  ok('seed quantities at 24 guests match the §2.6 tables (plates 36/30, tumblers 36/48, flatware 72/48/48/24/72/36, serving pieces, appliance counts)');
+  assert.equal(qty('sh-seed-dinner-plates-indoor', 20), 30);
+  assert.equal(qty('sh-seed-steak-knives', 20), 24);
+  const overridden = items.filter(i => i.qtyOverride !== null && i.qtyOverride !== undefined);
+  assert.ok(overridden.length >= 2);
+  for (const i of overridden) assert.equal(SH.computeQty(i, { ...D, guestCount: 10 }), i.qtyOverride);
+  ok('24 → 20 guests recomputes rule-based seed quantities but not fixed counts or overrides (linen placeholders)');
+
+  const levels = SH.mealsCovered(items, D);
+  assert.ok(levels.length >= 12);   // 7 dish types + 5 flatware pieces that scale with guests
+  for (const r of levels) assert.equal(r.level, 'full-day', `${r.dishType} is ${r.level}`);
+  assert.equal(levels.find(r => r.dishType === 'Dinner plates').total, 66);
+  assert.equal(levels.find(r => r.dishType === 'Everyday tumblers').total, 84);
+  ok('the seeded indoor + outdoor sets cover a full day at 24 guests for every dish type (66 plates, 84 tumblers)');
+  for (const i of items.filter(x => x.category === 'Outdoor / Pool Dining')) assert.equal(i.zone, 'outdoor', i.id);
+  assert.ok(items.some(i => i.category === 'Outdoor / Pool Dining'));
+  ok('every Outdoor / Pool Dining seed item is zone: outdoor');
+
+  // master-list parser (CSV → seed shape). Skipped when python3 is unavailable.
+  const py = spawnSync('python3', ['--version']);
+  if (py.error) { ok('parse-shopping-list.py check skipped (python3 not installed)'); }
+  else {
+    const src = fs.readFileSync(new URL('../scripts/parse-shopping-list.py', import.meta.url), 'utf8');
+    const catStart = src.indexOf('CATEGORIES = [');
+    const catBlock = src.slice(catStart, src.indexOf(']', catStart));
+    const pyCats = [...catBlock.matchAll(/"([^"]+)"/g)].map(m => m[1]);
+    assert.deepEqual(pyCats, SH.SHOPPING_CATEGORIES);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-parse-'));
+    const out = path.join(tmp, 'seed.json');
+    const run = spawnSync('python3', ['scripts/parse-shopping-list.py', 'scripts/fixtures/shopping-list-sample.csv', '--out', out], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    const parsed = JSON.parse(fs.readFileSync(out, 'utf8')).items;
+    assert.ok(parsed.length >= 5);
+    for (const i of parsed) assert.equal(SH.sanitizeShoppingItem(i, stamp).ok, true, `parsed item invalid: ${i.id}`);
+    const withTier = parsed.find(i => i.qualityTier === 'Premium');
+    assert.ok(withTier && withTier.requirements && typeof withTier.kerryDecides === 'boolean');
+    assert.equal(SH.computeQty(parsed[0], D), parsed[0].qtyRule.fixedQty);
+    const bad = path.join(tmp, 'bad.csv');
+    fs.writeFileSync(bad, 'Item,Category,Final qty\nGood item,Dinnerware,4\nBad item,Not A Category,2\n');
+    const badRun = spawnSync('python3', ['scripts/parse-shopping-list.py', bad, '--check'], { encoding: 'utf8' });
+    assert.notEqual(badRun.status, 0);
+    assert.match(badRun.stderr + badRun.stdout, /row 3/i);
+    ok('parse-shopping-list.py turns a master-list CSV into valid seed items (keeping quality tier / requirements / Kerry-decides) and rejects a bad category with the row number');
+  }
 }
 
 console.log(`\nAll ${passed} checks passed.`);

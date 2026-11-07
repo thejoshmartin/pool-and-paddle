@@ -1,0 +1,6 @@
+Item ID,Item,Category,Zone,Room,Final qty,Quality tier,Requirements,Kerry decides,Priority,Notes,Uses per guest per day
+,Dinner plates (indoor),Dinnerware,indoor,Kitchen,36,Premium,Dishwasher-safe stoneware; open stock,No,launch-critical,Guests see and touch these,2
+MS-0102,12–14 cup programmable drip coffee maker,Small Appliances,indoor,Kitchen,2,Premium,Thermal carafe; 12 cup or larger,Yes,launch-critical,One pot ≈ 6 mugs,
+,Hangers (starter kit),Supplies & Consumables,both,Closets,150,Value,Non-slip velvet; white,No,launch,One recommended pack size,
+,Pool towels,Linens & Towels,outdoor,Pool deck,60,Value,Quick-dry; not white,Yes,nice-to-have,,
+,Shatter-resistant tumblers (outdoor),Outdoor / Pool Dining,outdoor,Summer kitchen,48,Value,Tritan; BPA-free; dishwasher-safe,No,launch-critical,,2.5
