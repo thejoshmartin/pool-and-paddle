@@ -10,7 +10,7 @@ import {
   DELIVERED_TO_OPTIONS, REIMBURSEMENT_STATUSES, DOC_TYPES, CONTRACTOR_SCOPE, assetClassLabel,
   defaultAllowanceFor, reimbursementDefaultsFor, normalizePurchase, netCost, paymentBadge,
   summarizePurchases, fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
-  groupByOrder, newOrderGroupId, returnsClosingSoon, localISODate, daysBetween, statusChangePatch,
+  groupByOrder, newOrderGroupId, returnsClosingSoon, localISODate, daysBetween, statusChangePatch, formDefaultsTouched,
 } from "./lib/purchases-logic.js";
 import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, furnitureField, roomField, tombstone, BUDGET_FIELD, partitionFinishFields } from "./lib/design-logic.js";
 import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, groupHouseInfoByCategory } from "./lib/house-info-logic.js";
@@ -99,6 +99,8 @@ const C = {
   mintDark: "#238C62",
   ocean: "#2D7DD2",
   oceanLight: "#E3EFF9",
+  warnText: "#B7791F",   // warning chips / badges
+  warnBg: "#FEFCBF",
   charcoal: "#333333",
   textSecondary: "#666666",
   textMuted: "#999999",
@@ -542,7 +544,7 @@ function Dashboard({ tasks, podcastData, finishes, onNavigateToItem, purchases =
                       <div style={{ fontSize: 13, fontWeight: 600, color: C.charcoal, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.description || "(untitled)"}</div>
                       <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{[p.vendor, p.sourceVendor].filter(Boolean).join(" · ") || "—"} · {fmtUSD(netCost(p))}</div>
                     </div>
-                    <span style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, color: urgent ? "#E53E3E" : "#B7791F", background: urgent ? "#FED7D7" : "#FEFCBF", padding: "3px 10px", borderRadius: 6 }}>{label}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, color: urgent ? "#E53E3E" : C.warnText, background: urgent ? "#FED7D7" : C.warnBg, padding: "3px 10px", borderRadius: 6 }}>{label}</span>
                   </button>
                 );
               })}
@@ -3450,6 +3452,7 @@ function ReceiptUploader({ propertyId, purchaseId, receipts, onChange, viewableP
 const MEANINGFUL_PURCHASE_FIELDS = [
   "description", "vendor", "invoiceNo", "trade", "room", "notes",
   "purchaseDate", "receivedDate", "qty", "unitPrice", "tax", "shipping", "totalPaid",
+  "sourceVendor", "docType", "fees", "returnByDate", "returnPolicyNote", "refundAmount", "drawNo",
 ];
 function draftHasContent(parsed) {
   if (!parsed || typeof parsed !== "object" || !parsed.id) return false;
@@ -3459,7 +3462,7 @@ function draftHasContent(parsed) {
     return typeof v === "string" ? v.trim() !== "" : (v !== null && v !== undefined);
   });
 }
-function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKey }) {
+function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKey, fresh = false }) {
   const [d, setD] = useState(() => {
     // Restore an in-progress draft (e.g. after an accidental pull-to-refresh or a
     // backgrounded-tab discard on mobile) so the owner never loses a long form. Only restore
@@ -3467,7 +3470,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
     if (draftKey) {
       try {
         const raw = localStorage.getItem(draftKey);
-        if (raw) { const parsed = JSON.parse(raw); if (draftHasContent(parsed)) return parsed; }
+        if (raw) { const parsed = JSON.parse(raw); if (draftHasContent(parsed)) return normalizePurchase(parsed); }
       } catch (e) { /* ignore malformed draft */ }
     }
     return initial;
@@ -3510,15 +3513,17 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
     deleteBlobs(orphaned);
   };
   // "Touched" refs: a default (allowance category, reimbursement) only follows trade/payer/vendor
-  // edits while the user has not set that field themselves. A saved record with non-default values
-  // starts touched, so editing it never silently overrides what was stored.
-  const allowanceTouched = useRef(d.allowanceCategory !== NOT_IN_ALLOWANCE);
-  const reimbTouched = useRef(!!d.reimbursable || (d.reimbursementStatus || "none") !== "none" || !!d.drawNo);
+  // edits while the user has not set that field themselves. A saved record starts touched (see
+  // formDefaultsTouched), so editing it never silently overrides what the owner chose.
+  // A record that has already been through an owner Save (`fresh` false) always starts touched.
+  const initialTouched = formDefaultsTouched(d, fresh);
+  const allowanceTouched = useRef(initialTouched.allowance);
+  const reimbTouched = useRef(initialTouched.reimb);
   const refundAutoFilled = useRef(false);   // true while the refund amount was filled in automatically by choosing Returned
   const allowanceFor = (trade, paidBy) => defaultAllowanceFor(trade, paidBy) || NOT_IN_ALLOWANCE;
   const num = (k) => (e) => set({ [k]: e.target.value === "" ? null : Number(e.target.value) });
   const checkRow = (k, text, extra) => (
-    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.charcoal, padding: "9px 0" }}>
+    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.charcoal, padding: "9px 0", minHeight: 44, boxSizing: "border-box" }}>
       <input type="checkbox" checked={!!d[k]} onChange={e => set({ [k]: e.target.checked, ...(extra ? extra(e.target.checked) : {}) })} style={{ accentColor: C.mint, width: 16, height: 16 }} /> {text}
     </label>
   );
@@ -3527,7 +3532,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
       {title}{note && <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0 }}> — {note}</span>}
     </div>
   );
-  const computedTotal = (Number(d.qty) || 0) * (Number(d.unitPrice) || 0) + (Number(d.tax) || 0) + (Number(d.shipping) || 0) + (Number(d.fees) || 0);
+  const computedTotal = Math.round(((Number(d.qty) || 0) * (Number(d.unitPrice) || 0) + (Number(d.tax) || 0) + (Number(d.shipping) || 0) + (Number(d.fees) || 0)) * 100) / 100;
 
   const field = (label, node) => (
     <div style={{ flex: 1, minWidth: isMobile ? "100%" : 140 }}><label style={ppLabel}>{label}</label>{node}</div>
@@ -3548,11 +3553,11 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
         {field("Order / Invoice #", <input style={ppInput} value={d.invoiceNo} onChange={e => set({ invoiceNo: e.target.value })} />)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-        {field("Paid by", <select style={ppInput} value={d.purchasedBy} onChange={e => { const v = e.target.value; const patch = { purchasedBy: v, ownerPurchased: v !== CONTRACTOR_PURCHASER }; if (!allowanceTouched.current) patch.allowanceCategory = allowanceFor(d.trade, v); if (!reimbTouched.current) Object.assign(patch, reimbursementDefaultsFor(d.vendor, v)); set(patch); }}><option value="">—</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
+        {field("Paid by", <select style={ppInput} value={d.purchasedBy} onChange={e => { const v = e.target.value; const patch = { purchasedBy: v, ownerPurchased: v !== CONTRACTOR_PURCHASER }; if (!allowanceTouched.current) patch.allowanceCategory = allowanceFor(d.trade, v); if (!reimbTouched.current || v === CONTRACTOR_PURCHASER) Object.assign(patch, reimbursementDefaultsFor(d.vendor, v)); set(patch); }}><option value="">—</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
         {field("Payment method", <select style={ppInput} value={d.paymentMethod} onChange={e => set({ paymentMethod: e.target.value })}><option value="">—</option>{PAYMENT_METHODS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
         {field("Whose money?", (
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.charcoal, padding: "9px 0" }}>
-            <input type="checkbox" checked={!!d.ownerPurchased} onChange={e => set({ ownerPurchased: e.target.checked })} style={{ accentColor: C.mint, width: 16, height: 16 }} />
+            <input type="checkbox" checked={!!d.ownerPurchased} onChange={e => set({ ownerPurchased: e.target.checked, ...(e.target.checked ? {} : reimbursementDefaultsFor("", "")) })} style={{ accentColor: C.mint, width: 16, height: 16 }} />
             {d.ownerPurchased ? "Owner-purchased (our money)" : "Contractor / Exhibit B allowance"}
           </label>
         ))}
@@ -3606,7 +3611,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
         {d.purchasedBy === CONTRACTOR_PURCHASER
           ? field("Lien waiver", checkRow("lienWaiverReceived", "Lien waiver received"))
           : field("Payment", checkRow("paymentConfirmed", "Payment confirmed"))}
-        {paymentBadge(d) && <div style={{ alignSelf: "center", fontSize: 12, fontWeight: 700, color: "#B7791F", background: "#FEFCBF", padding: "4px 10px", borderRadius: 8 }}>{paymentBadge(d)}</div>}
+        {paymentBadge(d) && <div style={{ alignSelf: "center", fontSize: 12, fontWeight: 700, color: C.warnText, background: C.warnBg, padding: "4px 10px", borderRadius: 8 }}>{paymentBadge(d)}</div>}
       </div>
       {groupHead("Returns")}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
@@ -3685,10 +3690,14 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
       setDueFilter(false);
       setExpandedId(focusPurchaseId);
       setEditingId(focusPurchaseMode === "view" ? null : focusPurchaseId);
+      setFreshEditId(focusPurchaseMode === "view" ? null : focusPurchaseId);
+      const focusId = focusPurchaseId;
+      setTimeout(() => { const el = document.getElementById(`purchase-${focusId}`); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 60);
       if (onFocusHandled) onFocusHandled();
     }
   }, [focusPurchaseId, focusPurchaseMode, purchases, onFocusHandled]);
 
+  const [freshEditId, setFreshEditId] = useState(null);   // record opened for edit right after promote/add-line (defaults may still apply)
   const [dueFilter, setDueFilter] = useState(false);
   const [tradeFilter, setTradeFilter] = useState("");
   const stats = useMemo(() => summarizePurchases(purchases), [purchases]);
@@ -3737,6 +3746,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
           <PurchaseForm
             key={`new-${activeProperty || "base"}`}
             initial={{ ...emptyPurchase(), placedInServiceDate: propertyInServiceDate || "" }}
+            fresh
             onSave={(p) => { onSave(p); setEditingId(null); setExpandedId(p.id); }}
             onCancel={() => setEditingId(null)}
             propertyId={activeProperty}
@@ -3853,7 +3863,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
         const isOpen = expandedId === p.id;
         const isEditing = editingId === p.id;
         return (
-          <div key={p.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
+          <div key={p.id} id={`purchase-${p.id}`} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
             <button onClick={() => { if (editingId === "new") { try { localStorage.removeItem(`pp-purchase-draft:${activeProperty || "base"}:new`); } catch (e) { /* ignore */ } } setExpandedId(isOpen ? null : p.id); setEditingId(null); }} style={{ width: "100%", textAlign: "left", background: "none", border: "none", padding: "14px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, color: C.charcoal, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.description || "(untitled)"}</div>
@@ -3864,8 +3874,8 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
                 {p.status && p.status !== "Ordered" && <span style={{ fontSize: 11, fontWeight: 600, color: C.textSecondary, background: C.pageBg, padding: "3px 9px", borderRadius: 12 }}>{p.status}</span>}
-                {p.status === "Returned" && p.refundAmount == null && <span style={{ fontSize: 11, fontWeight: 700, color: "#B7791F", background: "#FEFCBF", padding: "3px 9px", borderRadius: 12 }}>refund not recorded</span>}
-                {paymentBadge(p) && <span style={{ fontSize: 11, fontWeight: 700, color: "#B7791F", background: "#FEFCBF", padding: "3px 9px", borderRadius: 12 }}>{paymentBadge(p)}</span>}
+                {p.status === "Returned" && p.refundAmount == null && <span style={{ fontSize: 11, fontWeight: 700, color: C.warnText, background: C.warnBg, padding: "3px 9px", borderRadius: 12 }}>refund not recorded</span>}
+                {paymentBadge(p) && <span style={{ fontSize: 11, fontWeight: 700, color: C.warnText, background: C.warnBg, padding: "3px 9px", borderRadius: 12 }}>{paymentBadge(p)}</span>}
                 {(p.receipts || []).length > 0 && <span style={{ fontSize: 11, color: C.textMuted }}>📎 {(p.receipts || []).length}</span>}
                 <span style={{ fontSize: 11, fontWeight: 600, color: p.ownerPurchased ? C.mint : C.ocean, background: p.ownerPurchased ? C.seafoamFaint : C.oceanLight, padding: "3px 9px", borderRadius: 12 }}>{p.ownerPurchased ? "Owner" : "Contractor"}</span>
                 <span style={{ fontSize: 15, fontWeight: 800, color: C.charcoal }}>{fmtUSD(netCost(p))}</span>
@@ -3896,13 +3906,13 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
                   />
                 </div>
 
-                <div style={{ display: "flex", gap: 10 }}>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                   {p.returnByDate && !p.keepConfirmed && p.status !== "Returned" && (
                     <button onClick={() => onSave({ ...p, keepConfirmed: true })} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.mint}`, background: C.seafoamFaint, color: C.mintDark, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Keep</button>
                   )}
                   <button onClick={() => onAddLine && onAddLine(p)} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Add line to this order</button>
                   <button onClick={() => { setEditingId(p.id); }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Edit</button>
-                  <button onClick={() => { if (window.confirm("Delete this purchase and its receipts?")) { onDelete(p.id); setExpandedId(null); } }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ocean, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Delete</button>
+                  <button onClick={() => { if (window.confirm("Delete this purchase? Its receipts are deleted too, except any shared with other lines of the same order.")) { onDelete(p.id); setExpandedId(null); } }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ocean, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Delete</button>
                 </div>
               </div>
             )}
@@ -3910,7 +3920,8 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
               <div style={{ padding: "0 16px 16px" }}>
                 <PurchaseForm
                   initial={p}
-                  onSave={(updated) => { onSave(updated); setEditingId(null); }}
+                  fresh={freshEditId === p.id}
+                  onSave={(updated) => { onSave(updated); setEditingId(null); setFreshEditId(null); }}
                   onCancel={() => setEditingId(null)}
                   propertyId={activeProperty}
                   isMobile={isMobile}
@@ -3920,10 +3931,16 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
           </div>
         );
       };
+      // Header totals describe the WHOLE order even when a filter hides some of its lines.
+      const orderHeader = (g) => {
+        const all = purchases.filter(m => m.orderGroupId === g.orderGroupId);
+        const sub = all.reduce((t, m) => t + netCost(m), 0);
+        return `Order · ${g.purchases[0].vendor || "no vendor"} · ${g.purchases[0].invoiceNo || "no invoice #"} · ${all.length} lines · subtotal ${fmtUSD(sub)}${g.purchases.length < all.length ? ` (showing ${g.purchases.length})` : ""}`;
+      };
       return groupByOrder(filtered).map(g => g.kind === "single" ? renderPurchase(g.purchase) : (
         <div key={g.orderGroupId} style={{ border: `1px solid ${C.seafoam}`, borderRadius: 14, padding: 8, marginBottom: 12, background: C.seafoamFaint }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.mintDark, padding: "4px 8px 8px" }}>
-            Order · {g.purchases[0].vendor || "no vendor"} · {g.purchases[0].invoiceNo || "no invoice #"} · {g.purchases.length} lines · subtotal {fmtUSD(g.subtotal)}
+            {orderHeader(g)}
           </div>
           {g.purchases.map(renderPurchase)}
         </div>
@@ -4571,6 +4588,7 @@ export default function App() {
       placedInServiceDate: activeInServiceDate,
     };
     savePurchase(line);
+    setFocusPurchaseMode("edit");
     setFocusPurchaseId(line.id);
     setActiveView("purchases");
   };
@@ -4749,10 +4767,12 @@ export default function App() {
       unitPrice: item.unitPrice ?? null,
       qty: item.quantity ?? null,
       assetClass: suggestAssetClass(trade),
+      allowanceCategory: defaultAllowanceFor(trade, "") || NOT_IN_ALLOWANCE,
       placedInServiceDate: activeInServiceDate,
       notes: item.url ? `Promoted from design selection · ${item.url}` : "Promoted from design selection",
     };
     savePurchase(draft);
+    setFocusPurchaseMode("edit");
     setFocusPurchaseId(draft.id);
     setActiveView("purchases");
   };
@@ -4785,6 +4805,7 @@ export default function App() {
       notes: furn.url ? `From design furniture · ${furn.url}` : "From design furniture",
     };
     savePurchase(draft);
+    setFocusPurchaseMode("edit");
     setFocusPurchaseId(draft.id);
     setActiveView("purchases");
   };

@@ -20,10 +20,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'GET') {
-    const map = await redis.hgetall(key); // { id: purchaseObj|jsonString } or null
-    const list = map
-      ? Object.values(map).map((v) => (typeof v === 'string' ? JSON.parse(v) : v))
-      : [];
+    const list = purchasesFromHash(await redis.hgetall(key)); // tolerant of one corrupt record
     return res.status(200).json(list);
   }
 

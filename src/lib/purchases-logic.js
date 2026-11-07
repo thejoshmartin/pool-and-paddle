@@ -90,9 +90,9 @@ export function buildCostSegCsv(purchases) {
   if (returned.length > 0) {
     lines.push("");
     lines.push(esc("Returned (excluded)"));
-    lines.push(["Description", "Vendor", "Invoice #", "Paid", "Refund"].map(esc).join(","));
+    lines.push(["Description", "Vendor", "Invoice #", "Paid", "Refund", "Net not refunded"].map(esc).join(","));
     for (const p of returned) {
-      lines.push([esc(p.description), esc(p.vendor), esc(p.invoiceNo), esc(Number(p.totalPaid) || 0), esc(Number(p.refundAmount) || 0)].join(","));
+      lines.push([esc(p.description), esc(p.vendor), esc(p.invoiceNo), esc(round2(Number(p.totalPaid) || 0)), esc(round2(Number(p.refundAmount) || 0)), esc(netCost(p))].join(","));
     }
   }
   return { csv: lines.join("\n"), count: rows.length };
@@ -206,7 +206,8 @@ const sumNet = (list) => round2(list.reduce((s, p) => s + netCost(p), 0));
 // "Due from Sparrow": reimbursable purchases not yet reimbursed, on net cost (fully refunded
 // lines drop out). reimbursedAmount is informational only.
 export function reimbursementsDue(purchases) {
-  const list = purchases.filter(p => p.reimbursable && p.reimbursementStatus !== "reimbursed" && netCost(p) > 0);
+  // Only owner-paid purchases can be owed by Sparrow; a Sparrow-paid line flagged reimbursable is not.
+  const list = purchases.filter(p => p.ownerPurchased && p.reimbursable && p.reimbursementStatus !== "reimbursed" && netCost(p) > 0);
   return { total: sumNet(list), purchases: list };
 }
 
@@ -235,7 +236,7 @@ export function allowancePool(purchases, allowances = ALLOWANCE_CATEGORIES) {
       pct: a.allowance ? Math.round((spent / a.allowance) * 100) : 0,
     };
   });
-  const noCat = purchases.filter(p => p.reimbursable && !names.includes(p.allowanceCategory));
+  const noCat = purchases.filter(p => p.ownerPurchased && p.reimbursable && !names.includes(p.allowanceCategory) && p.allowanceCategory !== CONTRACTOR_SCOPE);
   const scope = purchases.filter(p => p.allowanceCategory === CONTRACTOR_SCOPE);
   const poolTotal = round2(allowances.reduce((s, a) => s + a.allowance, 0));
   const reimbursedNoCategory = { total: sumNet(noCat), purchases: noCat };
@@ -323,4 +324,17 @@ export function statusChangePatch(d, nextStatus, autoFilled) {
     return { patch, autoFilled: false };
   }
   return { patch, autoFilled: nextStatus === "Returned" ? autoFilled : false };
+}
+
+// Whether the form's smart defaults (allowance category, reimbursement) start out "touched" — i.e.
+// must NOT follow trade/payer/vendor edits. A record that has already been through an owner Save
+// (fresh === false) always starts touched, so editing it never silently re-applies a default over a
+// deliberate choice (even when the choice equals the default). A fresh record (new form, promote,
+// add-line) follows the defaults until the owner sets the field, or already carries non-default values.
+export function formDefaultsTouched(d, fresh) {
+  if (!fresh) return { allowance: true, reimb: true };
+  return {
+    allowance: !!d.allowanceCategory && d.allowanceCategory !== NOT_IN_ALLOWANCE,
+    reimb: !!d.reimbursable || (d.reimbursementStatus || "none") !== "none" || !!d.drawNo,
+  };
 }

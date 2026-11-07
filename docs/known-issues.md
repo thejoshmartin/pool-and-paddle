@@ -126,3 +126,7 @@ Consciously chosen behavior — don't re-litigate without Josh:
 - The payment badge appears only for `docType` statement/quote and clears only via the explicit checkbox (`paymentConfirmed`, or `lienWaiverReceived` when Sparrow paid) — attaching a file does not clear it.
 - "Add line to this order" persists the new line immediately (like Design promote), so it can exist with a blank description until edited.
 - Receipt blobs can be shared by several purchases; `receipts-delete` fails safe (keeps the blob) if it can't read Redis, which can leave an orphan blob (harmless) — same best-effort stance as known issue #3.
+- The automatic refund pre-fill (choosing `Returned`) is undone only within the same form session; if you save as Returned and later switch back to Received, clear the refund amount yourself (the row shows "paid X · refunded X").
+- Sparrow-paid purchases in trades with no automatic default (e.g. Paint, Drywall, Decking, Other) land in "Not in Allowance / Owner FF&E" and appear in no reconciliation line until you pick a category.
+- Receipt routes read the whole purchases hash (`HGETALL`) to check shared references; fine at this scale, and one corrupt record is skipped rather than breaking the property.
+- The Returned (excluded) CSV block lists every Returned line with a "Net not refunded" column; those lines are not part of cost-seg basis even if only partly refunded (a restocking fee is an expense, not basis) — confirm with the CPA.

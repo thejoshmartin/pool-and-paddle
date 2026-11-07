@@ -9,7 +9,7 @@ import {
   assetClassLabel, defaultAllowanceFor, reimbursementDefaultsFor, purchaseDefaults,
   normalizePurchase, netCost, paymentBadge, summarizePurchases,
   fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
-  localISODate, daysBetween, returnsClosingSoon, newOrderGroupId, groupByOrder, statusChangePatch,
+  localISODate, daysBetween, returnsClosingSoon, newOrderGroupId, groupByOrder, statusChangePatch, formDefaultsTouched,
 } from '../src/lib/purchases-logic.js';
 import { scopedKey, parseReceiptPathname, migrateFinishesToHash, purchasesFromHash, isReceiptReferenced } from '../api/_scope.js';
 import {
@@ -729,6 +729,48 @@ console.log('Final-review fix — statusChangePatch() (Returned refund prefill m
   assert.deepEqual(statusChangePatch({ status: 'Ordered', totalPaid: 10, refundAmount: null }, 'Installed', false), { patch: { status: 'Installed' }, autoFilled: false });
   assert.doesNotThrow(() => statusChangePatch({}, 'Returned', false));
   ok('other status changes touch only the status; bare records never throw');
+}
+
+console.log('PR-review fixes — money consistency, form defaults, CSV, tolerant parsing:');
+{
+  // 1. "Due from Sparrow" is only owed on purchases the OWNER paid.
+  const sparrowPaidFlagged = { ownerPurchased: false, reimbursable: true, reimbursementStatus: 'pending', totalPaid: 100, allowanceCategory: NOT_IN_ALLOWANCE };
+  assert.equal(reimbursementsDue([sparrowPaidFlagged]).total, 0);
+  assert.equal(reimbursementsDue([{ ...sparrowPaidFlagged, ownerPurchased: true }]).total, 100);
+  assert.equal(allowancePool([sparrowPaidFlagged]).reimbursedNoCategory.total, 0);
+  assert.equal(allowancePool([sparrowPaidFlagged]).poolCharged, 0);
+  ok('a Sparrow-paid purchase flagged reimbursable is never "Due from Sparrow" and never charged to the pool as reimbursed');
+
+  // 2. Contractor-scope items are listed separately and NOT also charged to the pool.
+  const scopeFlagged = { ownerPurchased: true, reimbursable: true, reimbursementStatus: 'pending', totalPaid: 100, allowanceCategory: CONTRACTOR_SCOPE };
+  const poolS = allowancePool([scopeFlagged]);
+  assert.equal(poolS.contractorScope.total, 100);
+  assert.equal(poolS.reimbursedNoCategory.total, 0);
+  assert.equal(poolS.poolCharged, 0);
+  ok('a reimbursable purchase tagged Contractor scope is counted once (contractor-scope line), not also against the pool');
+
+  // 3. Defaults only follow edits on records that have not been through an owner Save.
+  assert.deepEqual(formDefaultsTouched({ allowanceCategory: NOT_IN_ALLOWANCE, reimbursable: false, reimbursementStatus: 'none', drawNo: '' }, false), { allowance: true, reimb: true });
+  assert.deepEqual(formDefaultsTouched({ allowanceCategory: NOT_IN_ALLOWANCE, reimbursable: false, reimbursementStatus: 'none', drawNo: '' }, true), { allowance: false, reimb: false });
+  assert.deepEqual(formDefaultsTouched({ allowanceCategory: 'Electrical Fixtures', reimbursable: false, reimbursementStatus: 'none' }, true), { allowance: true, reimb: false });
+  assert.deepEqual(formDefaultsTouched({ allowanceCategory: NOT_IN_ALLOWANCE, reimbursable: true, reimbursementStatus: 'pending' }, true), { allowance: false, reimb: true });
+  assert.deepEqual(formDefaultsTouched({}, true), { allowance: false, reimb: false });   // no explicit choice on a bare record = untouched; never throws
+  ok('a saved record starts "touched" so editing it never re-applies defaults over the owner\'s explicit choice; fresh records follow defaults until set');
+
+  // 4. CSV Returned block shows what was NOT refunded, rounded to cents.
+  const rb = buildCostSegCsv([
+    { placedInServiceDate: '2026-01-01', ownerPurchased: true, assetClass: '5-yr', totalPaid: 10, description: 'Keeper', status: 'Installed' },
+    { ownerPurchased: true, totalPaid: 80, refundAmount: 70, description: 'Restocked lamp', vendor: 'V', invoiceNo: 'I1', status: 'Returned' },
+    { ownerPurchased: true, totalPaid: 1512.2299999999998, description: 'Float item', status: 'Returned' },
+  ]).csv;
+  assert.ok(rb.includes('"Net not refunded"'));
+  assert.match(rb, /"Restocked lamp","V","I1","80","70","10"/);
+  assert.ok(rb.includes('"1512.23"') && !rb.includes('1512.2299'));
+  ok('Returned (excluded) block adds a "Net not refunded" column and rounds money to cents');
+
+  // 5. One corrupt record must not break receipt views / purchase deletes for the whole property.
+  assert.deepEqual(purchasesFromHash({ bad: '{not json', good: JSON.stringify({ id: 'good' }) }).map(p => p.id), ['good']);
+  ok('purchasesFromHash skips an unparseable record instead of throwing');
 }
 
 console.log(`\nAll ${passed} checks passed.`);
