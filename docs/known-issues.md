@@ -114,3 +114,15 @@ mobile audit + 3 adversarial review rounds. Key design decisions worth not re-li
 ## Explicitly NOT done (scope discipline)
 Splitting `App.jsx` into modules · a test framework (vitest) — pure-logic node scripts suffice ·
 a receipt-cleanup cron · registry optimistic-locking. All would be over-engineering here.
+
+## 2026-11 Phase 1 purchases upgrade (returns, reimbursements, order grouping)
+Consciously chosen behavior — don't re-litigate without Josh:
+- `netCost` is clamped at 0; `refundAmount` means money actually back in hand (net of restocking fee); `restockingFee` and `returnShippingCost` are recorded but do **not** change `netCost`.
+- Setting a purchase to `Returned` pre-fills `refundAmount` with `totalPaid` (editable); a Returned line with no refund shows a "refund not recorded" chip, and its net cost stays at the full amount until a refund is entered.
+- "Returns closing" lists only windows that have not yet closed (today through +14 days); `Return started` stays listed.
+- "Due from Sparrow" is summed on net cost where `reimbursable` and status ≠ `reimbursed`; `reimbursedAmount` is informational (partial reimbursements aren't subtracted).
+- The reimbursable-vendor list is a code constant (`DEFAULT_REIMBURSABLE_VENDORS`, seed Minoan) until Phase 2's settings exist; reimbursement defaults are not applied when Sparrow paid.
+- Contractor-scope default for Sparrow-paid items covers only the 8 trades with no Exhibit B equivalent (Small Appliances, Kitchen & Dining, Supplies & Consumables, Window Treatments, Furniture / FF&E, Decor & Styling, Linens & Soft Goods, Electronics / AV); other Sparrow-paid trades get no automatic category.
+- The payment badge appears only for `docType` statement/quote and clears only via the explicit checkbox (`paymentConfirmed`, or `lienWaiverReceived` when Sparrow paid) — attaching a file does not clear it.
+- "Add line to this order" persists the new line immediately (like Design promote), so it can exist with a blank description until edited.
+- Receipt blobs can be shared by several purchases; `receipts-delete` fails safe (keeps the blob) if it can't read Redis, which can leave an orphan blob (harmless) — same best-effort stance as known issue #3.
