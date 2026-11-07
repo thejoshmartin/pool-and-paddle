@@ -34,6 +34,9 @@ export default async function handler(req, res) {
       // house info is a Redis hash (field = itemId); includes credentials verbatim — the
       // backup has always been a full, unmasked snapshot (see house-info design spec).
       houseInfo: await redis.hgetall(`house-info:${id}`),
+      // shopping list edits are a Redis hash (fields item:<id> / settings / tombstones); the seed
+      // list itself ships in the app bundle, so only saved changes live here.
+      shopping: await redis.hgetall(`shopping:${id}`),
     };
   }
 

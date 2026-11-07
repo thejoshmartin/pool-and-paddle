@@ -1034,4 +1034,22 @@ console.log('Phase 2 — landed cost, best value, warnings, spend forecast:');
   ok('forecast = selected-candidate landed totals for unpurchased items + net cost of linked purchases (returned items and dangling links handled)');
 }
 
+console.log('Phase 2 — shopping API write rules (regression pins for api/shopping.js):');
+{
+  const stamp = { updatedAt: '2026-11-07T00:00:00.000Z', updatedBy: 'KM' };
+  const item = { ...SH.emptyShoppingItem(), id: 'sh-api-1', name: 'Kettle', category: 'Small Appliances' };
+  const withCand = SH.sanitizeShoppingField('item:sh-api-1', { ...item, candidates: [{ vendor: 'Amazon', unitPrice: '24.99', futureField: [1, 2] }] }, stamp);
+  assert.equal(withCand.ok, true);
+  assert.equal(withCand.value.candidates[0].unitPrice, 24.99);
+  assert.deepEqual(withCand.value.candidates[0].futureField, [1, 2]);
+  assert.match(withCand.value.candidates[0].id, /^c-/);
+  assert.equal(withCand.value.updatedBy, 'KM');
+  for (const bad of [null, 'str', 5, [item]]) assert.equal(SH.sanitizeShoppingField('item:sh-api-1', bad, stamp).ok, false);
+  assert.equal(SH.sanitizeShoppingField('item:sh-api-1', { ...item, candidates: [null] }, stamp).ok, false);
+  for (const f of ['item:sh-a:b', 'item:' + 'x'.repeat(1000), '__proto__', 'constructor', 'item:', 'ITEM:sh-a', '']) {
+    assert.equal(SH.sanitizeShoppingField(f, item, stamp).ok, false, f);
+  }
+  ok('a PUT body is typed per field, keeps unknown candidate fields, stamps the server user, and every malformed field name or value shape is rejected');
+}
+
 console.log(`\nAll ${passed} checks passed.`);
