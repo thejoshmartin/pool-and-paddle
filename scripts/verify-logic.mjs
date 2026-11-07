@@ -2001,4 +2001,89 @@ console.log('Phase 3 review fixes (Opus final review):');
   ok('only statements and quotes file with paymentConfirmed:false — receipts and invoices are treated as paid');
 }
 
+console.log('Phase 3 deferred items (all fixed):');
+{
+  const PL = await import('../src/lib/purchases-logic.js');
+  // negative allocation: tiny amount over many lines never leaves a negative share; sums stay exact
+  const twelve = Array.from({ length: 12 }, () => ({ lineTotal: 10 }));   // equal lines: every share rounds up, the remainder is negative
+  const tiny = RL.allocateOrderCosts(twelve, { tax: 0, shipping: 0.06, fees: 0, discounts: 0 });
+  assert.ok(tiny.every(a => a.shipping >= 0), 'no negative shipping share');
+  assert.equal(Math.round(tiny.reduce((s, a) => s + a.shipping, 0) * 100), 6);
+  let seed = 7; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  for (let t = 0; t < 3000; t++) {
+    const n = 1 + Math.floor(rnd() * 14);
+    const lines = Array.from({ length: n }, () => ({ lineTotal: Math.round(rnd() * 5000) / 100 + 0.01 }));
+    const amt = Math.round(rnd() * 2000) / 100;
+    const out = RL.allocateOrderCosts(lines, { tax: amt, shipping: amt / 3, fees: 0, discounts: amt / 7 });
+    for (const k of ['tax', 'shipping', 'discounts']) {
+      assert.ok(out.every(a => a[k] >= 0), `${k} share must never be negative`);
+    }
+    assert.equal(Math.round(out.reduce((s, a) => s + a.tax, 0) * 100), Math.round(amt * 100));
+  }
+  ok('allocation: the remainder never pushes a line negative (largest-remainder fallback) and every column still sums exactly (3000 random orders)');
+
+  // cross-property blob path
+  const mk = (pathname) => ({ id: 'ri-x1', status: 'pending', receipt: { pathname, name: 'f.pdf', contentType: 'application/pdf', uploadedAt: 'x', hash: '' }, extraction: null, purchaseIds: [] });
+  assert.equal(RL.sanitizeInboxRecord(mk('receipts/pp/inbox/ri-x1/f.pdf'), {}, 'pp').ok, true);
+  assert.equal(RL.sanitizeInboxRecord(mk('receipts/other/inbox/ri-x1/f.pdf'), {}, 'pp').ok, false);
+  assert.equal(RL.sanitizeInboxRecord(mk('receipts/other/inbox/ri-x1/f.pdf'), {}).ok, true);   // no property given → shape check only (unit-level use)
+  const rin = fs.readFileSync(new URL('../api/receipt-inbox.js', import.meta.url), 'utf8');
+  assert.ok(/sanitizeInboxRecord\(req\.body,[\s\S]*?\},\s*property\)/.test(rin), 'the route must pass ?property= to the sanitizer');
+  ok('an inbox record whose blob path belongs to another property is rejected (and the route passes ?property= in)');
+
+  // re-link only fills lines that were never matched
+  const lines = [{ matchItemId: null, matchScore: 0.2 }, { matchItemId: null, matchScore: null }, { matchItemId: 'a', matchScore: 1 }];
+  const matched = RL.applyMatches(lines, [{ matchItemId: 'x', matchScore: 0.9 }, { matchItemId: 'y', matchScore: 0.8 }, { matchItemId: 'z', matchScore: 0.7 }]);
+  assert.deepEqual(matched.map(l => [l.matchItemId, l.matchScore]), [[null, 0.2], ['y', 0.8], ['a', 1]]);
+  ok('matching fills only never-matched lines — a line the reviewer unlinked stays unlinked, existing links stay');
+
+  // function duration
+  const vj = JSON.parse(fs.readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
+  assert.ok(vj.functions && vj.functions['api/receipt-extract.js'] && vj.functions['api/receipt-extract.js'].maxDuration >= 240);
+  ok('vercel.json gives receipt-extract a maxDuration that covers 2 SDK attempts of 120 s');
+
+  // an extraction too big to store lands as needs-manual instead of poisoning later PUTs
+  const bigLines = Array.from({ length: 700 }, (_, i) => ({ description: 'Item number ' + i + ' ' + 'x'.repeat(120), qty: 1, unitPrice: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }));
+  const bigReply = JSON.stringify({ docType: 'receipt', vendor: 'Big Co', lines: bigLines, total: 700 });
+  const hash = { 'ri-1': JSON.stringify({ id: 'ri-1', status: 'pending', receipt: { pathname: 'receipts/pp/inbox/ri-1/r.pdf', name: 'r.pdf', contentType: 'application/pdf', uploadedAt: 'x', hash: '' }, extraction: null, error: null, purchaseIds: [] }) };
+  const redisBig = { hget: async (_k, id) => hash[id] ?? null, hset: async (_k, o) => { Object.assign(hash, o); }, get: async () => null };
+  const bigRes = await processInboxRecord({ redis: redisBig, key: 'k', inboxId: 'ri-1', readBlob: async () => 'JVBERi0=', createClient: () => ({ messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: bigReply }], model: 'claude-sonnet-5-5' }) } }), apiKey: 'k', user: 'JM', now: '2026-11-07T00:00:00.000Z', propertyId: 'pp', defaultAddress: 'x' });
+  assert.equal(bigRes.status, 200); assert.equal(bigRes.body.record.status, 'needs-manual'); assert.match(bigRes.body.record.error, /too (long|large|many)/i);
+  assert.equal(JSON.parse(hash['ri-1']).extraction, null);
+  ok('an extraction too large to store is saved as needs-manual with a readable reason (never stored in a state later saves would reject)');
+
+  // JSON after a prose brace
+  const fixA2 = JSON.parse(fs.readFileSync(new URL('./fixtures/receipts/minoan-F3F3D4B0.json', import.meta.url), 'utf8'));
+  const clean = Object.fromEntries(Object.entries(fixA2).filter(([k]) => !k.startsWith('_')));
+  const proseClient = { messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Note: fields in {braces} are optional.\nHere you go:\n' + JSON.stringify(clean) }], model: 'claude-sonnet-5-5' }) } };
+  const pr = await extractReceipt({ client: proseClient, mediaType: 'application/pdf', base64: 'JVBERi0=', propertyAddress: 'x', now: '2026-11-07T00:00:00.000Z' });
+  assert.equal(pr.ok, true); assert.equal(pr.extraction.lines.length, 6);
+  ok('JSON is found even when the reply has an earlier balanced {…} in its prose');
+
+  // card redaction refinements
+  assert.equal(RL.redactCardNumbers('Total 12.50 4111111111111111'), 'Total 12.50 ••••');
+  assert.equal(RL.redactCardNumbers('Total $1,234.50 4111 1111 1111 1111 ok'), 'Total $1,234.50 •••• ok');
+  let ean = null; for (let n = 9780000000001; n < 9780000000200 && !ean; n++) { const d = String(n); let sum = 0, alt = false; for (let i = d.length - 1; i >= 0; i--) { let v = +d[i]; if (alt) { v *= 2; if (v > 9) v -= 9; } sum += v; alt = !alt; } if (sum % 10 === 0) ean = d; }
+  assert.ok(ean, 'found a Luhn-passing 13-digit number starting with 9');
+  assert.equal(RL.redactCardNumbers(`GTIN ${ean} end`), `GTIN ${ean} end`);
+  for (const card of ['5500005555555559', '378282246310005', '30569309025904', '6011111111111117', '3530111333300000', '4222222222222']) assert.equal(RL.redactCardNumbers(`c ${card} e`), 'c •••• e', card);
+  assert.equal(RL.redactCardNumbers('order 113-5550000-1112223'), 'order 113-5550000-1112223');
+  ok('card redaction: a card after a money amount is caught; 13-digit barcodes (not card-prefixed) and order numbers are left alone; all major card prefixes still redact');
+
+  // discount as a real field + a penny-tolerant "use total" suggestion
+  assert.equal(PL.emptyPurchase().discount, null);
+  assert.equal(PL.purchaseComputedTotal({ qty: 22, unitPrice: 442.3636, tax: 0, shipping: 0, fees: 0 }), 9732);
+  assert.equal(PL.purchaseComputedTotal({ qty: 2, unitPrice: 10, tax: 1, shipping: 2, fees: 0.5, discount: 3 }), 20.5);
+  assert.equal(PL.totalSuggestionNeeded({ qty: 22, unitPrice: 442.3636, totalPaid: 9731.99 }), false);
+  assert.equal(PL.totalSuggestionNeeded({ qty: 2, unitPrice: 10, totalPaid: 25 }), true);
+  assert.equal(PL.totalSuggestionNeeded({ qty: 0, unitPrice: 0, totalPaid: 25 }), false);
+  const dr = RL.buildPurchasesFromInbox({
+    record: { id: 'ri-9', receipt: { pathname: 'receipts/pp/inbox/ri-9/f.pdf', name: 'f.pdf', contentType: 'application/pdf', uploadedAt: 'x' }, extraction: { docType: 'receipt', vendor: 'V', orderNo: '1', lines: [{ lineNo: 1, description: 'a', qty: 1, unitPrice: 100, lineTotal: 100, suggestedTrade: 'Other', decision: 'accept', confidence: 0.9 }], tax: 0, shipping: 0, fees: 0, discounts: 10, total: 90 } },
+    order: { purchasedBy: 'JM', paymentMethod: 'Credit card' }, shoppingItems: [], settings: { reimbursableVendors: [] }, propertyInServiceDate: '',
+  })[0];
+  assert.equal(dr.discount, 10); assert.equal(dr.totalPaid, 90);
+  assert.equal(PL.totalSuggestionNeeded(dr), false);
+  ok('the order discount share is stored in a real `discount` field, the form total accounts for it, and a one-cent rounding gap no longer triggers "use $…"');
+}
+
 console.log(`\nAll ${passed} checks passed.`);

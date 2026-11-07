@@ -11,12 +11,13 @@ import {
   defaultAllowanceFor, reimbursementDefaultsFor, normalizePurchase, netCost, paymentBadge,
   summarizePurchases, fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
   groupByOrder, newOrderGroupId, returnsClosingSoon, localISODate, daysBetween, statusChangePatch, formDefaultsTouched,
+  purchaseComputedTotal, totalSuggestionNeeded,
 } from "./lib/purchases-logic.js";
 import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, furnitureField, roomField, tombstone, BUDGET_FIELD, partitionFinishFields } from "./lib/design-logic.js";
 import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, groupHouseInfoByCategory } from "./lib/house-info-logic.js";
 import {
   newInboxId, reconciles, matchLines, findDuplicates, addressMatches, mergeLines, canAcceptAll, fileProblems,
-  buildPurchasesFromInbox, suggestPaymentMethod, isLowConfidence, acceptUndecided, decideFilingOutcome,
+  buildPurchasesFromInbox, suggestPaymentMethod, isLowConfidence, applyMatches, acceptUndecided, decideFilingOutcome,
 } from "./lib/receipt-logic.js";
 import SHOPPING_SEED from "./shopping-seed.json";
 import {
@@ -3468,7 +3469,7 @@ function ReceiptUploader({ propertyId, purchaseId, receipts, onChange, viewableP
 const MEANINGFUL_PURCHASE_FIELDS = [
   "description", "vendor", "invoiceNo", "trade", "room", "notes",
   "purchaseDate", "receivedDate", "qty", "unitPrice", "tax", "shipping", "totalPaid",
-  "sourceVendor", "docType", "fees", "returnByDate", "returnPolicyNote", "refundAmount", "drawNo",
+  "sourceVendor", "docType", "fees", "discount", "returnByDate", "returnPolicyNote", "refundAmount", "drawNo",
 ];
 function draftHasContent(parsed) {
   if (!parsed || typeof parsed !== "object" || !parsed.id) return false;
@@ -3547,7 +3548,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
       {title}{note && <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0 }}> — {note}</span>}
     </div>
   );
-  const computedTotal = Math.round(((Number(d.qty) || 0) * (Number(d.unitPrice) || 0) + (Number(d.tax) || 0) + (Number(d.shipping) || 0) + (Number(d.fees) || 0)) * 100) / 100;
+  const computedTotal = purchaseComputedTotal(d);
 
   const field = (label, node) => (
     <div style={{ flex: 1, minWidth: isMobile ? "100%" : 140 }}><label style={ppLabel}>{label}</label>{node}</div>
@@ -3583,10 +3584,11 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
         {field("Tax ($)", <input type="number" step="0.01" style={ppInput} value={d.tax ?? ""} onChange={e => set({ tax: e.target.value === "" ? null : Number(e.target.value) })} />)}
         {field("Shipping ($)", <input type="number" step="0.01" style={ppInput} value={d.shipping ?? ""} onChange={e => set({ shipping: e.target.value === "" ? null : Number(e.target.value) })} />)}
         {field("Fees ($)", <input type="number" step="0.01" style={ppInput} value={d.fees ?? ""} onChange={num("fees")} placeholder="transaction / processing" />)}
+        {field("Discount ($)", <input type="number" step="0.01" style={ppInput} value={d.discount ?? ""} onChange={num("discount")} placeholder="order discount share" />)}
         {field("Total paid ($)", (
           <div>
             <input type="number" step="0.01" style={ppInput} value={d.totalPaid ?? ""} onChange={e => set({ totalPaid: e.target.value === "" ? null : Number(e.target.value) })} placeholder={computedTotal ? String(computedTotal) : ""} />
-            {computedTotal > 0 && (Number(d.totalPaid) || 0) !== computedTotal && (
+            {totalSuggestionNeeded(d) && (
               <button type="button" onClick={() => set({ totalPaid: computedTotal })} style={{ marginTop: 2, background: "none", border: "none", color: C.mint, fontSize: 13, fontWeight: 600, cursor: "pointer", padding: "6px 2px" }}>use {fmtUSD(computedTotal)}</button>
             )}
           </div>
@@ -3706,7 +3708,7 @@ function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAdd
   useEffect(() => {
     if (record.status === "extracted" && ex && ex.lines.some(l => l.matchScore == null)) {
       const m = matchLines(ex.lines, shoppingItems);
-      onChange({ ...record, extraction: { ...ex, lines: ex.lines.map((l, i) => ({ ...l, matchItemId: l.matchItemId || m[i].matchItemId, matchScore: m[i].matchScore })) } });
+      onChange({ ...record, extraction: { ...ex, lines: applyMatches(ex.lines, m) } });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record.id, record.status]);
@@ -4127,7 +4129,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
                   Allowance: {p.allowanceCategory} · Status: {p.status}<br />
                   Funding: {fundingSource(p)}<br />
                   {p.reimbursable && <>Sparrow reimbursement: {p.reimbursementStatus}{p.reimbursedAmount != null ? ` · ${fmtUSD(p.reimbursedAmount)}` : ""}{p.reimbursedDate ? ` · ${p.reimbursedDate}` : ""}{p.drawNo ? ` · draw ${p.drawNo}` : ""}<br /></>}
-                  {(p.sourceVendor || p.docType || Number(p.fees) > 0) && <>{[p.sourceVendor && `Source vendor: ${p.sourceVendor}`, p.docType && `Document: ${p.docType}`, Number(p.fees) > 0 && `Fees: ${fmtUSD(p.fees)}`].filter(Boolean).join(" · ")}<br /></>}
+                  {(p.sourceVendor || p.docType || Number(p.fees) > 0 || Number(p.discount) > 0) && <>{[p.sourceVendor && `Source vendor: ${p.sourceVendor}`, p.docType && `Document: ${p.docType}`, Number(p.fees) > 0 && `Fees: ${fmtUSD(p.fees)}`, Number(p.discount) > 0 && `Discount: ${fmtUSD(p.discount)}`].filter(Boolean).join(" · ")}<br /></>}
                   {(p.returnByDate || p.returnPolicyNote || p.refundAmount != null || Number(p.restockingFee) > 0 || Number(p.returnShippingCost) > 0) && <>{[p.returnByDate && `Return by ${p.returnByDate}${p.keepConfirmed ? " (keeping)" : ""}`, p.returnPolicyNote, p.refundAmount != null && `Refund ${fmtUSD(p.refundAmount)}${p.refundDate ? ` on ${p.refundDate}` : ""}`, Number(p.restockingFee) > 0 && `Restocking fee ${fmtUSD(p.restockingFee)}`, Number(p.returnShippingCost) > 0 && `Return shipping ${fmtUSD(p.returnShippingCost)}`].filter(Boolean).join(" · ")}<br /></>}
                   {(p.inspected || p.deliveredTo) && <>{[p.inspected && `Inspected${p.inspectedDate ? ` ${p.inspectedDate}` : ""}`, p.deliveredTo && `Delivered to ${p.deliveredTo}`].filter(Boolean).join(" · ")}<br /></>}
                   {(p.warranty || p.warrantyTerm) && <>Warranty: {p.warrantyTerm || "yes"}{p.registered ? " (registered)" : ""}{p.binderPocket ? ` · Binder ${p.binderPocket}` : ""}<br /></>}
@@ -5773,16 +5775,18 @@ export default function App() {
       .catch(() => setSyncError('Unable to reach server'));
   };
   // Ask the server to read one uploaded receipt; returns the updated record (extracted OR needs-manual) or null if unreachable.
-  const runExtraction = async (id) => {
+  const runExtraction = async (id, propertyId = activePropertyRef.current) => {
     try {
-      const r = await fetch('/api/receipt-extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ property: activePropertyRef.current, inboxId: id }) });
+      const r = await fetch('/api/receipt-extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ property: propertyId, inboxId: id }) });
       const body = await r.json().catch(() => null);
       return body && body.record ? body.record : null;
     } catch (e) { return null; }
   };
   const retryInboxRecord = async (record) => {
+    const propertyId = activePropertyRef.current;
     setInbox(prev => prev.map(r => (r.id === record.id ? { ...r, status: 'pending', error: null } : r)));
-    const rec = await runExtraction(record.id);
+    const rec = await runExtraction(record.id, propertyId);
+    if (activePropertyRef.current !== propertyId) return;   // the property changed while Claude was reading: don't touch the other property's list
     setInbox(prev => prev.map(r => (r.id === record.id
       ? (rec || { ...record, status: 'needs-manual', error: 'Could not reach the server to read this receipt. Check your connection and press Retry.' })
       : r)));
@@ -5807,12 +5811,17 @@ export default function App() {
         }
         const { pathname, name, contentType } = await up.json();
         const record = { id, status: 'pending', receipt: { pathname, name, contentType, uploadedAt: new Date().toISOString(), hash }, extraction: null, error: null, purchaseIds: [] };
-        const put = await fetch(apiUrl('/api/receipt-inbox', propertyId), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(record) });
-        if (!put.ok) throw new ReceiptUploadError('Could not save the receipt to the inbox.');
-        setInbox(prev => [...prev, record]);
+        const savePending = () => fetch(apiUrl('/api/receipt-inbox', propertyId), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(record) }).then(r => r.ok).catch(() => false);
+        if (!(await savePending()) && !(await savePending())) {
+          // The file is uploaded but no inbox card exists for it: remove the orphaned blob (best-effort) and tell the user.
+          fetch('/api/receipts-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pathname, inboxId: id }) }).catch(() => {});
+          throw new ReceiptUploadError('Could not save the receipt to the inbox (the upload was removed). Check your connection and try again.');
+        }
+        const stillHere = () => activePropertyRef.current === propertyId;   // a property switch mid-upload must not leak into the other property's list
+        if (stillHere()) setInbox(prev => [...prev, record]);
         stage('Reading the receipt…');
-        const rec = await runExtraction(id);
-        setInbox(prev => prev.map(r => (r.id === id ? (rec || { ...record, status: 'needs-manual', error: 'Could not reach the server to read this receipt. Press Retry.' }) : r)));
+        const rec = await runExtraction(id, propertyId);
+        if (stillHere()) setInbox(prev => prev.map(r => (r.id === id ? (rec || { ...record, status: 'needs-manual', error: 'Could not reach the server to read this receipt. Press Retry.' }) : r)));
         setInboxUploads(u => u.filter(x => x.key !== key));
       } catch (e) {
         stage('', e instanceof ReceiptUploadError ? e.message : 'Upload failed: ' + ((e && e.message) || 'unknown error'));
@@ -5854,6 +5863,7 @@ export default function App() {
       const live = (it.purchaseIds || []).filter(pid => purchases.some(p => p.id === pid));
       saveShoppingItem({ ...it, status: ['received', 'kept', 'returned'].includes(it.status) ? it.status : 'ordered', purchaseIds: [...live, ...pids] });
     }
+    openPurchase(drafts[0].id);   // show Josh the first new purchase (plan: focus after filing)
     return true;
   };
   const inboxReady = inboxLoaded && !!activeProperty && !inboxLoadError;

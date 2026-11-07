@@ -36,7 +36,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'PUT') {
-    const result = sanitizeInboxRecord(req.body, { updatedAt: new Date().toISOString(), updatedBy: currentUser(req) });
+    const result = sanitizeInboxRecord(req.body, { updatedAt: new Date().toISOString(), updatedBy: currentUser(req) }, property);
     if (!result.ok) return res.status(400).json({ error: result.error });
     // A filed/dismissed record is closed: a stale tab (or a late debounced PUT) must not reopen it and let it be filed twice.
     const existingRaw = await redis.hget(key, result.record.id);

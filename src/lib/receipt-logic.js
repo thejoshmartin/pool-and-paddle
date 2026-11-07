@@ -44,16 +44,34 @@ const CARD_LENGTHS = new Set([13, 14, 15, 16, 19]);
 // a card length is retried with ONE trailing 1–4 digit group removed ("4111 1111 1111 1111 12/27" — the card then its expiry
 // month). Arbitrary windows are deliberately NOT tried: the 7+7 tail of an Amazon 3-7-7 order number would be mangled.
 export function redactCardNumbers(text) {
-  const isCard = (digits) => CARD_LENGTHS.has(digits.length) && luhn(digits);
+  // A real card: a card LENGTH, a plausible issuer prefix for that length (cuts 13-digit barcodes/GTINs), and a Luhn pass.
+  const prefixOk = (d) => {
+    switch (d.length) {
+      case 13: return d[0] === "4";
+      case 14: return d[0] === "3";
+      case 15: return d[0] === "3" || d.startsWith("2131") || d.startsWith("1800");
+      case 16: return d[0] >= "2" && d[0] <= "6";
+      case 19: return d[0] === "4" || d[0] === "5" || d[0] === "6";
+      default: return false;
+    }
+  };
+  const isCard = (digits) => CARD_LENGTHS.has(digits.length) && prefixOk(digits) && luhn(digits);
   return String(text ?? "")
     .replace(/(?<!\d)\d{4}\.\d{4}\.\d{4}\.\d{4}(?:\.\d{3})?(?!\d)/g, (m) => (isCard(m.replace(/\D/g, "")) ? "••••" : m))
-    .replace(/(?<!\d)\d(?:[ -]{0,3}\d){12,22}(?!\d)/g, (m) => {
+    .replace(/(?<!\d)\d(?:[ -]{0,3}\d){12,22}(?!\d)/g, (m, offset, str) => {
       if (isCard(m.replace(/\D/g, ""))) return "••••";
       const groups = m.split(/[ -]+/);
+      if (groups.length < 2) return m;
       const last = groups[groups.length - 1];
-      if (groups.length >= 2 && last.length >= 1 && last.length <= 4 && isCard(groups.slice(0, -1).join(""))) {
+      if (last.length >= 1 && last.length <= 4 && isCard(groups.slice(0, -1).join(""))) {
         const sep = m.slice(0, m.length - last.length).match(/[ -]*$/)[0];
         return "••••" + sep + last;
+      }
+      // a card right after a money amount ("12.50 4111…"): the amount's cents are glued to the front of the run
+      const first = groups[0];
+      if (first.length === 2 && offset > 0 && str[offset - 1] === "." && isCard(groups.slice(1).join(""))) {
+        const sep = m.slice(first.length).match(/^[ -]*/)[0];
+        return first + sep + "••••";
       }
       return m;
     });
@@ -204,6 +222,17 @@ function allocateCents(amountC, weights, eligible) {
   let largest = idx[0];
   for (const i of idx) if (weights[i] > weights[largest]) largest = i;
   out[largest] += abs - allocated;
+  if (idx.some(i => out[i] < 0)) {
+    // Rounding every share half-up overshot (a tiny amount over many equal lines), so the "remainder on the largest line"
+    // would go negative. Fall back to largest-remainder: floor each share, then hand the leftover cents one apiece to the
+    // biggest fractional parts (ties → heavier line, then earlier). Never negative, still exact.
+    const floors = {}, frac = {};
+    let used = 0;
+    for (const i of idx) { const exact = (abs * weights[i]) / total; floors[i] = Math.floor(exact + 1e-9); frac[i] = exact - floors[i]; used += floors[i]; }
+    const order = [...idx].sort((a, b) => frac[b] - frac[a] || weights[b] - weights[a] || a - b);
+    for (const i of idx) out[i] = floors[i];
+    for (let k = 0; k < abs - used; k++) out[order[k % order.length]] += 1;
+  }
   return out.map(v => v * sign);
 }
 
@@ -336,6 +365,16 @@ export function mergeLines(lines, index) {
 }
 
 // "Accept all" is only offered when the model flagged nothing and every line has a price and a valid trade.
+// Apply shopping-item matches ONLY to lines that were never matched (matchScore null). A line the reviewer deliberately
+// unlinked (score set, no item) or linked by hand keeps its choice when the card remounts.
+export function applyMatches(lines, matches) {
+  return (lines || []).map((l, i) => {
+    if (!l || l.matchScore != null) return l;
+    const m = (matches && matches[i]) || {};
+    return { ...l, matchItemId: l.matchItemId || m.matchItemId || null, matchScore: m.matchScore ?? null };
+  });
+}
+
 // A line the reviewer should double-check: model confidence below 0.7 — or ANY line of a handwritten document, whose
 // confidence is capped AT 0.7 (so a plain `< 0.7` test would never flag it).
 export function isLowConfidence(line, extraction) {
@@ -430,7 +469,7 @@ export function buildPurchasesFromInbox({ record, order = {}, shoppingItems = []
       purchasedBy, ownerPurchased: purchasedBy !== CONTRACTOR_PURCHASER, paymentMethod,
       qty,
       unitPrice: line.unitPrice != null ? line.unitPrice : (line.lineTotal != null ? round4(line.lineTotal / qty) : null),
-      tax: a.tax, shipping: a.shipping, fees: a.fees, totalPaid: a.totalPaid,
+      tax: a.tax, shipping: a.shipping, fees: a.fees, discount: a.discounts || null, totalPaid: a.totalPaid,
       allowanceCategory: defaultAllowanceFor(trade, purchasedBy) || NOT_IN_ALLOWANCE,
       ...reimbursementDefaultsFor(ex.vendor, purchasedBy, settings.reimbursableVendors),
       assetClass: suggestAssetClass(trade), placedInServiceDate: propertyInServiceDate || "",
@@ -439,28 +478,29 @@ export function buildPurchasesFromInbox({ record, order = {}, shoppingItems = []
       orderGroupId, lineNo: orderGroupId ? n + 1 : null,
       receipts, shoppingItemId: item ? item.id : null,
       returnByDate: (cand && cand.returnByDate) || "",
-      notes: ["Filed from the Receipt Inbox", a.discounts ? `includes a ${a.discounts.toFixed(2)} share of the order discount` : ""].filter(Boolean).join(" · "),
+      notes: "Filed from the Receipt Inbox",
     };
   });
 }
 
 // ── Inbox record sanitizer (api/receipt-inbox.js) ───────────────────────────
 
-const INBOX_PATH_RE = /^receipts\/[a-z0-9-]+\/inbox\/(ri-[a-z0-9-]+)\/[^/]+$/;
+const INBOX_PATH_RE = /^receipts\/([a-z0-9-]+)\/inbox\/(ri-[a-z0-9-]+)\/[^/]+$/;
 const RECEIPT_TYPE_RE = /^(image\/(png|jpe?g|webp|gif)|application\/pdf)$/i;
 const MAX_RECORD_BYTES = 100000;
 
 // Strict whitelist for a stored inbox record. The blob path must belong to THIS record (a forged purchase path or another
 // record's path is rejected), the extraction is re-validated/normalized (review edits like decision, matchItemId and
 // edited numbers survive), updatedAt/updatedBy always come from the server stamp, and card numbers are redacted.
-export function sanitizeInboxRecord(raw, stamp) {
+export function sanitizeInboxRecord(raw, stamp, propertyId) {
   if (!isObj(raw)) return { ok: false, error: "Expected a record object" };
   if (typeof raw.id !== "string" || !/^ri-[a-z0-9-]+$/.test(raw.id)) return { ok: false, error: "Invalid id" };
   if (!RECEIPT_STATUSES.includes(raw.status)) return { ok: false, error: "Invalid status" };
   const r = raw.receipt;
   if (!isObj(r)) return { ok: false, error: "Missing receipt" };
   const m = typeof r.pathname === "string" ? INBOX_PATH_RE.exec(r.pathname) : null;
-  if (!m || m[1] !== raw.id) return { ok: false, error: "The receipt file path does not belong to this record" };
+  if (!m || m[2] !== raw.id) return { ok: false, error: "The receipt file path does not belong to this record" };
+  if (propertyId && m[1] !== propertyId) return { ok: false, error: "The receipt file belongs to a different property" };
   if (typeof r.contentType !== "string" || !RECEIPT_TYPE_RE.test(r.contentType)) return { ok: false, error: "Unsupported receipt file type" };
   let extraction = null;
   if (raw.extraction !== null && raw.extraction !== undefined) {

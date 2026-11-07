@@ -1,7 +1,7 @@
 // The testable core of POST /api/receipt-extract (not a route — `_`-prefixed). All side effects come in as arguments, so
 // `npm test` exercises the no-key / bad-blob / API-failure / retry paths with fakes and never touches the network.
 import { extractReceipt } from './_extract.js';
-import { redactCardNumbers } from '../src/lib/receipt-logic.js';
+import { redactCardNumbers, sanitizeInboxRecord } from '../src/lib/receipt-logic.js';
 
 // Returns { status, body }. Extraction problems are NOT HTTP errors: they are saved on the record as
 // `status: "needs-manual"` with a readable `error` and returned with status 200 ({ ok:false, record }), so the receipt
@@ -54,6 +54,9 @@ export async function processInboxRecord({ redis, key, inboxId, readBlob, create
     const client = createClient(apiKey);   // built only once we know there is a key and a file
     const result = await extractReceipt({ client, mediaType: String(receipt.contentType || '').toLowerCase(), base64, propertyAddress, now });
     if (!result.ok) return await manual(result.error);
+    // The client's PUTs are capped (sanitizeInboxRecord); never store an extraction later saves would reject.
+    const fits = sanitizeInboxRecord({ ...record, status: 'extracted', extraction: result.extraction, error: null }, null);
+    if (!fits.ok) return await manual('This receipt has too many lines to review here (it would be too large to store). Enter it by hand or upload a smaller section.');
     const r = await save({ status: 'extracted', extraction: result.extraction, error: null });
     return r.gone || { status: 200, body: { ok: true, record: r.next } };
   } catch (e) {

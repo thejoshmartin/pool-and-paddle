@@ -56,15 +56,16 @@ function parseJsonObject(text) {
   if (fenced) { const v = tryParse(fenced[1].trim()); if (v) return v; }
   const whole = tryParse(text.trim());
   if (whole) return whole;
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0, inStr = false, esc = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; continue; }
-    if (ch === '"') inStr = true;
-    else if (ch === '{') depth += 1;
-    else if (ch === '}') { depth -= 1; if (depth === 0) return tryParse(text.slice(start, i + 1)); }
+  // Prose before the JSON may itself contain a balanced {…}: try each "{" in turn until one parses to an object.
+  for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; continue; }
+      if (ch === '"') inStr = true;
+      else if (ch === '{') depth += 1;
+      else if (ch === '}') { depth -= 1; if (depth === 0) { const v = tryParse(text.slice(start, i + 1)); if (v) return v; break; } }
+    }
   }
   return null;
 }
