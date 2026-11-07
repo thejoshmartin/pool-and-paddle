@@ -7,7 +7,10 @@
  * creates Purchases. Nothing here talks to a network; everything the model returns is treated as
  * untrusted input and normalized/validated before it is stored or shown.
  */
-import { PURCHASE_TRADES, DOC_TYPES } from "./purchases-logic.js";
+import {
+  PURCHASE_TRADES, DOC_TYPES, NOT_IN_ALLOWANCE, CONTRACTOR_PURCHASER, emptyPurchase, defaultAllowanceFor,
+  reimbursementDefaultsFor, suggestAssetClass, newOrderGroupId,
+} from "./purchases-logic.js";
 import { SHOPPING_CATEGORIES } from "./shopping-logic.js";
 
 export const EXTRACTION_MODEL = "claude-sonnet-5-5";
@@ -201,4 +204,198 @@ export function allocateOrderCosts(lines, { tax, shipping, fees, discounts } = {
     tax: dollars(t[i]), shipping: dollars(s[i]), fees: dollars(f[i]), discounts: dollars(d[i]),
     totalPaid: eligible[i] ? dollars(weights[i] + t[i] + s[i] + f[i] - d[i]) : null,
   }));
+}
+
+// ── Address check (spec §3.3a) ──────────────────────────────────────────────
+
+const DIRECTIONS = new Set(["n", "s", "e", "w", "ne", "nw", "se", "sw", "north", "south", "east", "west"]);
+function streetKey(addr) {
+  const t = String(addr ?? "").toLowerCase().replace(/[.,#]/g, " ").replace(/\s+/g, " ").trim();
+  const m = /^(\d+)\s+(.+)$/.exec(t);
+  if (!m) return null;
+  const name = m[2].split(" ").find(w => w && !DIRECTIONS.has(w));
+  return name ? { num: m[1], name } : null;
+}
+
+// Does the receipt's ship-to match the property? Compares street number + street name only. `null` = unknown
+// (blank or unparseable address) — never a mismatch; only an explicit `false` should warn, and it never blocks filing.
+export function addressMatches(shipTo, propertyAddress) {
+  const a = streetKey(shipTo), b = streetKey(propertyAddress);
+  if (!a || !b) return null;
+  return a.num === b.num && a.name === b.name;
+}
+
+// ── Matching receipt lines to shopping items ────────────────────────────────
+
+export const MATCH_THRESHOLD = 0.6;
+const norm = (v) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const tokenSet = (v) => new Set(norm(v).split(" ").filter(Boolean));
+const skuKey = (v) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+function dice(a, b) {
+  if (!a.size || !b.size) return 0;
+  let n = 0;
+  for (const t of a) if (b.has(t)) n += 1;
+  return (2 * n) / (a.size + b.size);
+}
+
+// For each line: the best shopping item and a 0–1 score. An exact SKU/ASIN match against any candidate wins
+// (score 1); otherwise the best word-overlap (Dice) between the line text and the item name — also tried with each
+// candidate's brand + model — with a threshold of 0.6. Below the threshold `matchItemId` is null (the score is
+// still reported). Dismissed items never match. Ties go to the first item.
+export function matchLines(lines, shoppingItems) {
+  const items = (shoppingItems || []).filter(i => i && !i.dismissed);
+  return (lines || []).map(line => {
+    const sk = skuKey(line && line.sku);
+    if (sk) {
+      const hit = items.find(i => (i.candidates || []).some(c => c && skuKey(c.sku) === sk));
+      if (hit) return { matchItemId: hit.id, matchScore: 1 };
+    }
+    const lt = tokenSet(line && line.description);
+    let best = null, bestScore = 0;
+    for (const item of items) {
+      let score = dice(lt, tokenSet(item.name));
+      for (const c of item.candidates || []) {
+        if (c) score = Math.max(score, dice(lt, tokenSet(`${item.name} ${c.brand || ""} ${c.model || ""}`)));
+      }
+      if (score > bestScore) { best = item; bestScore = score; }
+    }
+    const rounded = Math.round(bestScore * 1000) / 1000;
+    return best && bestScore >= MATCH_THRESHOLD ? { matchItemId: best.id, matchScore: rounded } : { matchItemId: null, matchScore: rounded };
+  });
+}
+
+// ── Duplicate detection ─────────────────────────────────────────────────────
+
+// Warn (never block) when the same order may already be on file: same vendor + order # in a purchase or another
+// inbox record, or the same file bytes (receipt.hash) already in the inbox. Ignores this record, purchases it already
+// created, dismissed records, and blank order numbers.
+export function findDuplicates(extraction, receipt, purchases, inbox, selfId, ignorePurchaseIds = []) {
+  const out = [];
+  const seen = new Set();
+  const add = (kind, id, reason) => { const k = `${kind}:${id}`; if (!seen.has(k)) { seen.add(k); out.push({ kind, id, reason }); } };
+  const vendor = norm(extraction && extraction.vendor), order = norm(extraction && extraction.orderNo);
+  if (vendor && order) {
+    for (const p of purchases || []) {
+      if (p && !ignorePurchaseIds.includes(p.id) && norm(p.vendor) === vendor && norm(p.invoiceNo) === order) {
+        add("purchase", p.id, `A purchase${p.description ? ` ("${p.description}")` : ""} already has order # ${extraction.orderNo}`);
+      }
+    }
+  }
+  for (const r of inbox || []) {
+    if (!r || r.id === selfId || r.status === "dismissed") continue;
+    if (vendor && order && r.extraction && norm(r.extraction.vendor) === vendor && norm(r.extraction.orderNo) === order) {
+      add("inbox", r.id, `Another inbox receipt is already order # ${extraction.orderNo}`);
+    }
+    if (receipt && receipt.hash && r.receipt && r.receipt.hash === receipt.hash) add("inbox", r.id, "This exact file is already in the inbox");
+  }
+  return out;
+}
+
+// ── Review helpers ──────────────────────────────────────────────────────────
+
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+const round4 = (n) => Math.round(Number(n) * 10000) / 10000;
+
+// Merge lines[index] into lines[index - 1] (the review UI's "Merge into line above"): quantities add, non-null line
+// totals add (null + value = value, null + null = null), descriptions join. Returns a new array, renumbered; an index
+// that can't be merged returns the input unchanged.
+export function mergeLines(lines, index) {
+  if (!Array.isArray(lines) || !Number.isInteger(index) || index < 1 || index >= lines.length) return lines;
+  const a = lines[index - 1], b = lines[index];
+  const lineTotal = a.lineTotal == null && b.lineTotal == null ? null : round2((a.lineTotal || 0) + (b.lineTotal || 0));
+  const qty = (Number(a.qty) || 0) + (Number(b.qty) || 0);
+  const merged = {
+    ...a,
+    description: [a.description, b.description].filter(Boolean).join(" + "),
+    qty, lineTotal,
+    unitPrice: lineTotal != null && qty > 0 ? round4(lineTotal / qty) : null,
+    retailUnitPrice: null,
+    sku: a.sku || b.sku || null,
+    confidence: Math.min(Number(a.confidence ?? 1), Number(b.confidence ?? 1)),
+    matchItemId: null, matchScore: null, decision: null,
+  };
+  return [...lines.slice(0, index - 1), merged, ...lines.slice(index + 1)].map((l, i) => ({ ...l, lineNo: i + 1 }));
+}
+
+// "Accept all" is only offered when the model flagged nothing and every line has a price and a valid trade.
+export function canAcceptAll(extraction) {
+  if (!extraction || !Array.isArray(extraction.lines) || extraction.lines.length === 0) return false;
+  if ((extraction.issues || []).length > 0) return false;
+  return extraction.lines.every(l => l && l.lineTotal != null && PURCHASE_TRADES.includes(l.suggestedTrade));
+}
+
+// What still blocks filing (empty = ready). Only accepted lines are checked.
+export function fileProblems(extraction, { purchasedBy } = {}) {
+  const accepted = ((extraction && extraction.lines) || []).filter(l => l && l.decision === "accept");
+  if (accepted.length === 0) return ["Accept at least one line"];
+  const problems = [];
+  if (!purchasedBy) problems.push("Choose who paid");
+  for (const l of accepted) {
+    if (l.lineTotal == null) problems.push(`Line ${l.lineNo}: enter the line total`);
+    if (!PURCHASE_TRADES.includes(l.suggestedTrade)) problems.push(`Line ${l.lineNo}: choose a trade`);
+    if (!String(l.description || "").trim()) problems.push(`Line ${l.lineNo}: add a description`);
+  }
+  return problems;
+}
+
+// Best guess at the app's payment-method option from the receipt's free text ("" when unsure).
+export function suggestPaymentMethod(text) {
+  const t = norm(text);
+  if (!t) return "";
+  if (/\b(ach|bank|transfer|wire|zelle)\b/.test(t)) return "ACH / Bank Transfer";
+  if (/\b(check|cheque)\b/.test(t)) return "Check";
+  if (/\bcash\b/.test(t)) return "Cash";
+  if (/\b(credit|debit|card|visa|mastercard|master|amex|american express|discover)\b/.test(t)) return "Credit Card";
+  return "";
+}
+
+const isoDate = (v) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? v.trim() : "");
+
+// One normalized Purchase per ACCEPTED line. Order-level tax/shipping/fees/discounts are allocated across ALL of the
+// receipt's lines (so a skipped personal item keeps its own share and the accepted purchases are not inflated), each
+// purchase gets its allocation and totalPaid, and every purchase shares one order group and the same receipt
+// (referenced by pathname — the blob is never copied). Asset class comes from the trade, never the model; section stays
+// blank; the allowance default, reimbursement default (settings vendor list) and docType-driven payment proof follow
+// the same rules as the manual form.
+export function buildPurchasesFromInbox({ record, order = {}, shoppingItems = [], settings = {}, propertyInServiceDate = "" }) {
+  const ex = record && record.extraction;
+  if (!ex || !Array.isArray(ex.lines)) return [];
+  const alloc = allocateOrderCosts(ex.lines, { tax: ex.tax, shipping: ex.shipping, fees: ex.fees, discounts: ex.discounts });
+  const acceptedIdx = ex.lines.map((l, i) => (l && l.decision === "accept" ? i : -1)).filter(i => i >= 0);
+  const grouped = acceptedIdx.length > 1;
+  const orderGroupId = order.orderGroupId || (grouped ? newOrderGroupId() : null);
+  const purchasedBy = order.purchasedBy || "";
+  const paymentMethod = order.paymentMethod || suggestPaymentMethod(ex.paymentMethod);
+  const r = record.receipt || {};
+  const receipts = r.pathname ? [{ pathname: r.pathname, name: r.name || "", contentType: r.contentType || "", uploadedAt: r.uploadedAt || "" }] : [];
+  return acceptedIdx.map((i, n) => {
+    const line = ex.lines[i], a = alloc[i];
+    const trade = line.suggestedTrade;
+    const item = (shoppingItems || []).find(s => s && s.id === line.matchItemId) || null;
+    let cand = null;
+    if (item) {
+      const sk = skuKey(line.sku);
+      cand = (sk && (item.candidates || []).find(c => c && skuKey(c.sku) === sk)) || (item.candidates || []).find(c => c && c.id === item.selectedCandidateId) || null;
+    }
+    const qty = Number(line.qty) > 0 ? Number(line.qty) : 1;
+    return {
+      ...emptyPurchase(),
+      description: line.description || ex.vendor || "",
+      trade, room: line.roomHint || "",
+      vendor: ex.vendor || "", sourceVendor: line.sourceVendor || "", invoiceNo: ex.orderNo || "",
+      purchasedBy, ownerPurchased: purchasedBy !== CONTRACTOR_PURCHASER, paymentMethod,
+      qty,
+      unitPrice: line.unitPrice != null ? line.unitPrice : (line.lineTotal != null ? round4(line.lineTotal / qty) : null),
+      tax: a.tax, shipping: a.shipping, fees: a.fees, totalPaid: a.totalPaid,
+      allowanceCategory: defaultAllowanceFor(trade, purchasedBy) || NOT_IN_ALLOWANCE,
+      ...reimbursementDefaultsFor(ex.vendor, purchasedBy, settings.reimbursableVendors),
+      assetClass: suggestAssetClass(trade), placedInServiceDate: propertyInServiceDate || "",
+      docType: ex.docType, paymentConfirmed: ex.docType === "receipt", lienWaiverReceived: false,
+      purchaseDate: isoDate(ex.paidDate) || isoDate(ex.orderDate),
+      orderGroupId, lineNo: orderGroupId ? n + 1 : null,
+      receipts, shoppingItemId: item ? item.id : null,
+      returnByDate: (cand && cand.returnByDate) || "",
+      notes: ["Filed from the Receipt Inbox", a.discounts ? `includes a ${a.discounts.toFixed(2)} share of the order discount` : ""].filter(Boolean).join(" · "),
+    };
+  });
 }

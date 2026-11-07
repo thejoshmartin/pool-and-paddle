@@ -1578,4 +1578,139 @@ console.log('Phase 3 — extraction validation, reconcile, exact cost allocation
   ok('hostile model output: money strings parse, card numbers reduce to the last 4 and are redacted everywhere (order numbers are not), invalid trades/confidence/quantities are normalized with issues, structural garbage is rejected, issues are capped, and re-validating never duplicates issues');
 }
 
+console.log('Phase 3 — matching, duplicates, address check, merge, filing (fixtures through Phase 1 accounting):');
+{
+  const fx = (n) => JSON.parse(fs.readFileSync(new URL(`./fixtures/receipts/${n}.json`, import.meta.url), 'utf8'));
+  const accept = (ex) => ({ ...ex, lines: ex.lines.map(l => ({ ...l, decision: 'accept' })) });
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const receipt = (id) => ({ pathname: `receipts/pp/inbox/${id}/receipt-abc.pdf`, name: 'r.pdf', contentType: 'application/pdf', uploadedAt: '2026-11-07T00:00:00Z', hash: `hash-${id}` });
+  const rec = (id, ex) => ({ id, status: 'extracted', receipt: receipt(id), extraction: ex, error: null, purchaseIds: [] });
+  const PROP = '6401 Broward St, St. Augustine, FL 32080';
+
+  assert.equal(RL.addressMatches('6401 Broward Street, Anastasia Island FL 32080', PROP), true);
+  assert.equal(RL.addressMatches('6401 BROWARD ST.', PROP), true);
+  assert.equal(RL.addressMatches('3401 Broward', PROP), false);
+  assert.equal(RL.addressMatches('6401 Ocean Blvd', PROP), false);
+  assert.equal(RL.addressMatches('123 N Main St', '123 Main Street, Town'), true);
+  assert.equal(RL.addressMatches('', PROP), null);
+  assert.equal(RL.addressMatches(null, PROP), null);
+  assert.equal(RL.addressMatches('PO Box 12', PROP), null);
+  assert.equal(RL.addressMatches('6401 Broward St', ''), null);
+  ok('address check compares street number + street name (case/punctuation/suffix/direction tolerant); a blank or unparseable address is "unknown" (null), not a mismatch');
+
+  const items = [
+    { ...SH.emptyShoppingItem(), id: 'sh-toast', name: '4-slice toaster', candidates: [{ ...SH.emptyCandidate(), id: 'c1', sku: 'B0CPT142', brand: 'Cuisinart', model: 'CPT-142' }] },
+    { ...SH.emptyShoppingItem(), id: 'sh-kettle', name: 'Electric kettle', candidates: [] },
+    { ...SH.emptyShoppingItem(), id: 'sh-gone', name: 'Dismissed thing', dismissed: true, candidates: [] },
+  ];
+  const ml = RL.matchLines([{ sku: 'b0cpt142', description: 'whatever' }, { sku: null, description: 'Cuisinart 4-Slice Toaster CPT-142 Chrome' }, { sku: null, description: 'Bamboo cutting board' }, { sku: 'ZZZ', description: 'Dismissed thing' }], items);
+  assert.deepEqual([ml[0].matchItemId, ml[0].matchScore], ['sh-toast', 1]);
+  assert.equal(ml[1].matchItemId, 'sh-toast'); assert.ok(ml[1].matchScore >= 0.6 && ml[1].matchScore < 1);
+  assert.equal(ml[2].matchItemId, null); assert.ok(ml[2].matchScore < 0.6);
+  assert.equal(ml[3].matchItemId, null);
+  assert.deepEqual(RL.matchLines([], items), []);
+  assert.deepEqual(RL.matchLines([{ description: 'x' }], []), [{ matchItemId: null, matchScore: 0 }]);
+  ok('line matching: exact SKU first (score 1), then name similarity at ≥ 0.6, nothing for unrelated lines, dismissed items never match, empty inputs are safe');
+
+  const exA = RL.validateExtraction(fx('minoan-F3F3D4B0')).extraction;
+  const pur = [{ id: 'p-old', vendor: 'minoan', invoiceNo: 'f3f3d4b0', description: 'earlier' }, { id: 'p-self', vendor: 'Minoan', invoiceNo: 'F3F3D4B0' }, { id: 'p-other', vendor: 'Amazon', invoiceNo: 'F3F3D4B0' }];
+  const inbox = [{ id: 'ri-1', status: 'extracted', extraction: exA, receipt: { hash: 'h1' } }, { id: 'ri-2', status: 'dismissed', extraction: exA, receipt: { hash: 'h1' } }, { id: 'ri-3', status: 'extracted', extraction: { vendor: 'X', orderNo: '1' }, receipt: { hash: 'h-same' } }];
+  const dups = RL.findDuplicates(exA, { hash: 'h-same' }, pur, inbox, 'ri-self', ['p-self']);
+  assert.deepEqual(dups.map(d => `${d.kind}:${d.id}`).sort(), ['inbox:ri-1', 'inbox:ri-3', 'purchase:p-old']);
+  assert.deepEqual(RL.findDuplicates({ vendor: 'Minoan', orderNo: '' }, null, pur, inbox, 'x'), []);
+  assert.deepEqual(RL.findDuplicates(exA, { hash: 'h-same' }, [], [{ id: 'ri-3', status: 'extracted', extraction: null, receipt: { hash: 'h-same' } }], 'ri-3'), []);
+  ok('duplicates: same vendor + order # (any case) in purchases or another inbox record, or the same file hash; self, linked purchases and dismissed records are ignored; a blank order # never matches');
+
+  const exC = RL.validateExtraction(fx('firstcoast-687')).extraction;
+  const merged = RL.mergeLines(exC.lines, 11);
+  assert.equal(merged.length, 11);
+  assert.deepEqual([merged[10].qty, merged[10].lineTotal, merged[10].lineNo], [22, 9732, 11]);
+  assert.ok(merged[10].description.includes('light-filtering') && merged[10].description.includes('Room-darkening'));
+  assert.equal(exC.lines.length, 12);
+  assert.equal(RL.mergeLines(exC.lines, 0), exC.lines); assert.equal(RL.mergeLines(exC.lines, 99), exC.lines);
+  assert.equal(RL.mergeLines([{ qty: 1, lineTotal: null, description: 'a' }, { qty: 1, lineTotal: null, description: 'b' }], 1)[0].lineTotal, null);
+  ok('merging fixture C\'s two shade lines gives one 22-unit $9,732 line, renumbers the rest, and never mutates the input');
+
+  assert.equal(RL.canAcceptAll(exC), false);
+  assert.equal(RL.canAcceptAll(exA), true);
+  assert.equal(RL.canAcceptAll({ ...exA, issues: ['x'] }), false);
+  assert.equal(RL.canAcceptAll(null), false);
+  assert.deepEqual(RL.fileProblems(exA, { purchasedBy: 'Josh' }), ['Accept at least one line']);
+  const accA = accept(exA);
+  assert.deepEqual(RL.fileProblems(accA, { purchasedBy: '' }), ['Choose who paid']);
+  assert.deepEqual(RL.fileProblems(accA, { purchasedBy: 'Josh' }), []);
+  const accC = accept(exC);
+  const pc = RL.fileProblems(accC, { purchasedBy: 'Sparrow (Contractor)' });
+  assert.ok(pc.length === 1 && /Line 12/.test(pc[0]) && /line total/i.test(pc[0]));
+  ok('Accept-all is blocked by issues or null prices; filing reports each missing piece (nothing accepted, who paid, a null line total)');
+
+  const orderJ = { purchasedBy: 'Josh', paymentMethod: 'Credit Card' };
+  const buildFor = (ex, id, order, extra = {}) => RL.buildPurchasesFromInbox({ record: rec(id, ex), order, shoppingItems: [], settings: D, propertyInServiceDate: '2026-11-01', ...extra });
+  const pA = buildFor(accA, 'ri-a', orderJ), pB = buildFor(accept(RL.validateExtraction(fx('minoan-F088F252')).extraction), 'ri-b', orderJ);
+  assert.deepEqual(pA.map(p => p.totalPaid), fx('minoan-F3F3D4B0')._expected.totalPaid);
+  assert.deepEqual(pB.map(p => p.totalPaid), [216.46, 200.27, 171.94]);
+  assert.ok([...pA, ...pB].every(p => p.reimbursable && p.reimbursementStatus === 'pending' && p.vendor === 'Minoan' && p.section === '' && p.paymentConfirmed === true && p.docType === 'receipt'));
+  assert.deepEqual(pA.map(p => p.allowanceCategory), ['Plumbing Fixtures', 'Electrical Fixtures', 'Electrical Fixtures', 'Electrical Fixtures', 'Electrical Fixtures', 'Electrical Fixtures']);
+  assert.ok(pB.every(p => p.allowanceCategory === NOT_IN_ALLOWANCE));
+  assert.equal(new Set(pA.map(p => p.orderGroupId)).size, 1); assert.ok(pA[0].orderGroupId);
+  assert.deepEqual(pA.map(p => p.lineNo), [1, 2, 3, 4, 5, 6]);
+  assert.ok(pA.every(p => p.receipts.length === 1 && p.receipts[0].pathname === 'receipts/pp/inbox/ri-a/receipt-abc.pdf'));
+  assert.equal(pA[1].invoiceNo, 'F3F3D4B0'); assert.equal(pA[1].sourceVendor, 'Ferguson Home'); assert.equal(pA[1].purchaseDate, '2026-10-23'); assert.equal(pA[1].qty, 11);
+  assert.equal(pA[1].assetClass, '27.5-yr'); assert.equal(pA[1].placedInServiceDate, '2026-11-01');
+  assert.equal(RL.suggestPaymentMethod('credit card'), 'Credit Card'); assert.equal(RL.suggestPaymentMethod('Visa ending 4242'), 'Credit Card');
+  assert.equal(RL.suggestPaymentMethod('ACH transfer'), 'ACH / Bank Transfer'); assert.equal(RL.suggestPaymentMethod(null), '');
+  const both = [...pA, ...pB];
+  assert.equal(reimbursementsDue(both).total, 7685.47);
+  assert.equal(allowanceCredits(both).total, 0);
+  assert.equal(allowancePool(both).reimbursedNoCategory.total, 588.67);
+  ok('fixtures A + B filed as Josh match the spec tables line by line, are reimbursable/pending, share one order group and one receipt each, and feed Phase 1\'s accounting exactly: Due from Sparrow $7,685.47, owner credits $0, beds $588.67 in "no Exhibit B category"');
+
+  // fixture C after Josh's resolution
+  const resolved = { ...exC, lines: RL.mergeLines(exC.lines, 11), total: 18987 };
+  assert.equal(RL.reconciles(resolved), true);
+  const cPurchases = buildFor(accept(resolved), 'ri-c', { purchasedBy: 'Sparrow (Contractor)', paymentMethod: '' });
+  assert.equal(cPurchases.length, 11);
+  const closets = cPurchases.filter(p => p.trade === 'Closets & Shelving'), shades = cPurchases.filter(p => p.trade === 'Window Treatments');
+  assert.equal(closets.length, 10); assert.equal(shades.length, 1);
+  assert.equal(Math.round(closets.reduce((s, p) => s + p.totalPaid, 0) * 100) / 100, 9255);
+  assert.ok(closets.every(p => p.allowanceCategory === 'Shelving' && p.assetClass === '27.5-yr' && p.room));
+  assert.deepEqual([shades[0].qty, shades[0].totalPaid, shades[0].allowanceCategory, shades[0].assetClass], [22, 9732, CONTRACTOR_SCOPE, '5-yr']);
+  assert.ok(cPurchases.every(p => p.docType === 'statement' && p.paymentConfirmed === false && p.lienWaiverReceived === false && p.ownerPurchased === false && p.reimbursable === false && p.tax === 0 && p.shipping === 0 && p.fees === 0));
+  assert.equal(new Set(cPurchases.map(p => p.orderGroupId)).size, 1);
+  assert.ok(cPurchases.every(p => p.receipts[0].pathname === 'receipts/pp/inbox/ri-c/receipt-abc.pdf'));
+  assert.ok(cPurchases.every(p => paymentBadge(p) === 'Contractor-paid: confirm in draw'));
+  const poolC = allowancePool(cPurchases);
+  const shelving = poolC.rows.find(r => r.name === 'Shelving');
+  assert.deepEqual([shelving.paidBySparrow, shelving.remaining], [9255, 1245]);
+  assert.equal(poolC.contractorScope.total, 9732);
+  assert.equal(allowanceCredits(cPurchases).total, 0);
+  ok('fixture C after Josh\'s resolution (merge shades, enter $18,987): reconciles; 10 closets in Shelving as Paid by Sparrow ($1,245 left) + one 22-unit $9,732 shades purchase in Contractor scope; statements are unpaid-until-draw; no owner credit; one order group; one shared receipt');
+
+  // personal items on a shared Amazon order, and nothing silently filed
+  const amazonLines = Array.from({ length: 12 }, (_, i) => ({ lineNo: i + 1, description: `Item ${i + 1}`, sourceVendor: null, sku: null, qty: 1, retailUnitPrice: null, unitPrice: 10 + i, lineTotal: 10 + i, roomHint: null, suggestedTrade: 'Kitchen & Dining', suggestedCategory: 'Other', confidence: 0.9, matchItemId: null, matchScore: null, decision: i < 10 ? 'accept' : 'skip' }));
+  const exAm = { docType: 'receipt', vendor: 'Amazon', orderNo: '113-0000000-1111111', orderDate: '2026-11-03', paidDate: null, paymentMethod: 'Visa', cardLast4: '4242', customerName: null, shipTo: null, handwritten: false, lines: amazonLines, tax: 9.99, shipping: 5.01, fees: 0, discounts: 0, total: 0, issues: [], reconciles: false };
+  const total = amazonLines.reduce((s, l) => s + l.lineTotal, 0) + 9.99 + 5.01;
+  exAm.total = Math.round(total * 100) / 100;
+  const pAm = buildFor(exAm, 'ri-am', { purchasedBy: 'Kerry', paymentMethod: 'Credit Card' });
+  assert.equal(pAm.length, 10);
+  const allocAm = RL.allocateOrderCosts(amazonLines, { tax: 9.99, shipping: 5.01, fees: 0, discounts: 0 });
+  const taxAll = Math.round((pAm.reduce((s, p) => s + p.tax, 0) + allocAm.slice(10).reduce((s, a) => s + a.tax, 0)) * 100) / 100;
+  const shipAll = Math.round((pAm.reduce((s, p) => s + p.shipping, 0) + allocAm.slice(10).reduce((s, a) => s + a.shipping, 0)) * 100) / 100;
+  assert.equal(taxAll, 9.99); assert.equal(shipAll, 5.01);
+  assert.ok(pAm.every(p => p.purchasedBy === 'Kerry' && p.ownerPurchased === true && p.reimbursable === false));
+  assert.deepEqual(buildFor({ ...exAm, lines: amazonLines.map(l => ({ ...l, decision: null })) }, 'ri-am', { purchasedBy: 'Kerry' }), []);
+  assert.deepEqual(buildFor({ ...exAm, lines: amazonLines.map(l => ({ ...l, decision: 'skip' })) }, 'ri-am', { purchasedBy: 'Kerry' }), []);
+  assert.equal(buildFor({ ...exAm, lines: [amazonLines[0]] }, 'ri-am', { purchasedBy: 'Kerry' })[0].orderGroupId, null);
+  ok('a 12-line Amazon order with 2 personal items skipped files exactly 10 purchases whose tax and shipping, plus the skipped lines\' shares, equal the receipt exactly; undecided or skipped lines file nothing; a single accepted line has no order group');
+
+  // matched shopping item supplies the link and the return-by date
+  const withItem = { ...SH.emptyShoppingItem(), id: 'sh-toast', name: 'toaster', selectedCandidateId: 'c9', candidates: [{ ...SH.emptyCandidate(), id: 'c1', sku: 'B0CPT142', returnByDate: '2027-01-31' }, { ...SH.emptyCandidate(), id: 'c9', sku: 'OTHER', returnByDate: '2026-12-15' }] };
+  const line = { ...amazonLines[0], sku: 'b0cpt142', matchItemId: 'sh-toast', decision: 'accept' };
+  const linked = RL.buildPurchasesFromInbox({ record: rec('ri-l', { ...exAm, lines: [line] }), order: { purchasedBy: 'Kerry' }, shoppingItems: [withItem], settings: D, propertyInServiceDate: '' })[0];
+  assert.equal(linked.shoppingItemId, 'sh-toast'); assert.equal(linked.returnByDate, '2027-01-31');
+  const fallback = RL.buildPurchasesFromInbox({ record: rec('ri-l', { ...exAm, lines: [{ ...line, sku: 'nomatch' }] }), order: { purchasedBy: 'Kerry' }, shoppingItems: [withItem], settings: D, propertyInServiceDate: '' })[0];
+  assert.equal(fallback.returnByDate, '2026-12-15');
+  ok('a line linked to a shopping item carries shoppingItemId and the matching candidate\'s return-by date (the selected candidate\'s when no SKU matches)');
+}
+
 console.log(`\nAll ${passed} checks passed.`);
