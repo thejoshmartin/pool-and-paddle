@@ -2086,4 +2086,58 @@ console.log('Phase 3 deferred items (all fixed):');
   ok('the order discount share is stored in a real `discount` field, the form total accounts for it, and a one-cent rounding gap no longer triggers "use $…"');
 }
 
+console.log('Phase 3 second Opus review (all fixed):');
+{
+  // negative order discount: normalized to a positive amount, flagged, and Accept all stays off
+  const neg = RL.validateExtraction({ docType: 'receipt', vendor: 'V', lines: [{ description: 'a', qty: 1, lineTotal: 100, suggestedTrade: 'Other', confidence: 0.9 }, { description: 'b', qty: 1, lineTotal: 50, suggestedTrade: 'Other', confidence: 0.9 }], tax: 9, discounts: -10, total: 149 }).extraction;
+  assert.equal(neg.discounts, 10);
+  assert.ok(neg.issues.some(i => /discount/i.test(i)));
+  assert.equal(RL.canAcceptAll(neg), false);
+  assert.equal(neg.reconciles, true);
+  const pos = RL.validateExtraction({ docType: 'receipt', vendor: 'V', lines: [{ description: 'a', qty: 1, lineTotal: 100, suggestedTrade: 'Other', confidence: 0.9 }], discounts: 10, total: 90 }).extraction;
+  assert.equal(pos.discounts, 10); assert.ok(!pos.issues.some(i => /discount/i.test(i)));
+  assert.ok(buildExtractionPrompt({ propertyAddress: 'x' }).toLowerCase().includes('positive number'));
+  ok('a discount printed as a negative number is stored positive and flagged (Accept all off); the prompt asks for positive amounts');
+
+  // blank payment method chosen on purpose is respected; untouched (null/undefined) falls back to the suggestion
+  const base = (pm) => RL.buildPurchasesFromInbox({
+    record: { id: 'ri-9', receipt: { pathname: 'receipts/pp/inbox/ri-9/f.pdf', name: 'f.pdf', contentType: 'application/pdf', uploadedAt: 'x' }, extraction: { docType: 'receipt', vendor: 'V', paymentMethod: 'Visa ending 1234', orderNo: '1', lines: [{ lineNo: 1, description: 'a', qty: 1, unitPrice: 10, lineTotal: 10, suggestedTrade: 'Other', decision: 'accept', confidence: 0.9 }], tax: 0, shipping: 0, fees: 0, discounts: 0, total: 10 } },
+    order: { purchasedBy: 'JM', paymentMethod: pm }, shoppingItems: [], settings: { reimbursableVendors: [] }, propertyInServiceDate: '',
+  })[0].paymentMethod;
+  assert.equal(base(''), '');
+  assert.equal(base(undefined), RL.suggestPaymentMethod('Visa ending 1234'));
+  assert.equal(base(null), RL.suggestPaymentMethod('Visa ending 1234'));
+  ok('a payment method deliberately left blank files blank; only an untouched one uses the suggestion');
+
+  // card redaction: grouping-aware
+  for (const [inp, want] of [
+    ['Line 3 4111 1111 1111 1111', 'Line 3 ••••'],
+    ['x2 4111111111111111', 'x2 ••••'],
+    ['$12 4111 1111 1111 1111', '$12 ••••'],
+    ['Paid 2026-11-07 4111 1111 1111 1111', 'Paid 2026-11-07 ••••'],
+    ['Visa 4111 1111 1111 1111 end', 'Visa •••• end'],
+    ['Visa 4111\t1111\t1111\t1111 end', 'Visa •••• end'],
+    ['Amex 3782 822463 10005 end', 'Amex •••• end'],
+    ['Visa 4111 1111 1111 1111 12/27', 'Visa •••• 12/27'],
+    ['Total 12.50 4111111111111111', 'Total 12.50 ••••'],
+  ]) assert.equal(RL.redactCardNumbers(inp), want, inp);
+  // ordinary text must never be redacted, whatever its Luhn luck: phone/zip strings, date ranges, order numbers
+  const lcg = (() => { let x = 11; return () => (x = (x * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff; })();
+  for (let i = 0; i < 4000; i++) {
+    const zip = String(30000 + Math.floor(lcg() * 60000));
+    const ph = `${900 + Math.floor(lcg() * 99)}-${700 + Math.floor(lcg() * 99)}-${String(1000 + Math.floor(lcg() * 8999))}`;
+    const t1 = `FL ${zip} ${ph}`, t2 = `2026-0${1 + Math.floor(lcg() * 9)}-20 - 2026-12-${10 + Math.floor(lcg() * 19)}`;
+    assert.equal(RL.redactCardNumbers(t1), t1, t1); assert.equal(RL.redactCardNumbers(t2), t2, t2);
+  }
+  ok('card redaction finds a card after any leading numbers, with NBSP/tab separators, and Amex 4-6-5 grouping — and never redacts zip+phone strings or date ranges (4000 fuzz cases)');
+
+  // order numbers / SKUs are identifiers, not free text: a contiguous Luhn-valid 16-digit one survives; a spaced card in them does not
+  const idEx = RL.validateExtraction({ docType: 'receipt', vendor: 'V', orderNo: '5500005555555559', lines: [{ description: 'card 5500005555555559', sku: '5500005555555559', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction;
+  assert.equal(idEx.orderNo, '5500005555555559'); assert.equal(idEx.lines[0].sku, '5500005555555559');
+  assert.equal(idEx.lines[0].description, 'card ••••');
+  const spaced = RL.validateExtraction({ docType: 'receipt', vendor: 'V', orderNo: '5500 0055 5555 5559', lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction;
+  assert.ok(!spaced.orderNo.includes('5500 0055'));
+  ok('order numbers and SKUs keep contiguous digit strings (even if they look like a card); a card number written with spaces is still removed from them; free text is redacted either way');
+}
+
 console.log(`\nAll ${passed} checks passed.`);

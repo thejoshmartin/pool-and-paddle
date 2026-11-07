@@ -38,13 +38,15 @@ function luhn(digits) {
 // notably the 17-digit Amazon-style order numbers (3-7-7), which pass the Luhn check about 10% of the time — is NOT a card.
 const CARD_LENGTHS = new Set([13, 14, 15, 16, 19]);
 
-// Replace anything that looks like a real card number (a card length of digits, optional space/dash separators, passes the
-// Luhn check) with "••••". Matching the length AND Luhn keeps order numbers and SKUs (also long digit strings) intact.
-// No `\b`: "VISA4111…" and "4111…-2" must still match (the run is bounded by "not a digit" instead). A run that is not itself
-// a card length is retried with ONE trailing 1–4 digit group removed ("4111 1111 1111 1111 12/27" — the card then its expiry
-// month). Arbitrary windows are deliberately NOT tried: the 7+7 tail of an Amazon 3-7-7 order number would be mangled.
-export function redactCardNumbers(text) {
-  // A real card: a card LENGTH, a plausible issuer prefix for that length (cuts 13-digit barcodes/GTINs), and a Luhn pass.
+// Replace anything that looks like a real card number with "••••". A card is: a card LENGTH of digits, a plausible issuer
+// prefix for that length (so 13-digit barcodes/GTINs aren't swept up), a Luhn pass, AND card-like grouping — one contiguous
+// run, 4-4-4-4 (4-4-4-1 / 4-4-4-4-3 for 13/19 digits), or Amex 4-6-5 / Diners 4-6-4. The grouping rule is what keeps zip+phone
+// strings ("FL 32080 904-727-2890") and date ranges from ever being mistaken for one, while a card with anything numeric
+// in front of it ("Line 3 4111 …", "$12 4111 …", a date) is still found: every window of consecutive digit groups inside a run
+// is tried, optionally with trailing short groups dropped (the card's expiry "12/27"). No `\b`: "VISA4111…" matches too.
+// `{ contiguous: false }` (used for order numbers / SKUs, which are identifiers) ignores a bare contiguous run, since a
+// 16-digit order number that passes the Luhn check is indistinguishable from a card.
+export function redactCardNumbers(text, { contiguous = true } = {}) {
   const prefixOk = (d) => {
     switch (d.length) {
       case 13: return d[0] === "4";
@@ -55,23 +57,31 @@ export function redactCardNumbers(text) {
       default: return false;
     }
   };
-  const isCard = (digits) => CARD_LENGTHS.has(digits.length) && prefixOk(digits) && luhn(digits);
+  const groupingOk = (lens) => {
+    if (lens.length === 1) return contiguous;
+    const head = lens.slice(0, -1), last = lens[lens.length - 1];
+    if (head.every(l => l === 4) && last >= 1 && last <= 4) return true;
+    const key = lens.join("-");
+    return key === "4-6-5" || key === "4-6-4";
+  };
+  const isCard = (digits, lens) => CARD_LENGTHS.has(digits.length) && groupingOk(lens) && prefixOk(digits) && luhn(digits);
   return String(text ?? "")
-    .replace(/(?<!\d)\d{4}\.\d{4}\.\d{4}\.\d{4}(?:\.\d{3})?(?!\d)/g, (m) => (isCard(m.replace(/\D/g, "")) ? "••••" : m))
-    .replace(/(?<!\d)\d(?:[ -]{0,3}\d){12,22}(?!\d)/g, (m, offset, str) => {
-      if (isCard(m.replace(/\D/g, ""))) return "••••";
-      const groups = m.split(/[ -]+/);
-      if (groups.length < 2) return m;
-      const last = groups[groups.length - 1];
-      if (last.length >= 1 && last.length <= 4 && isCard(groups.slice(0, -1).join(""))) {
-        const sep = m.slice(0, m.length - last.length).match(/[ -]*$/)[0];
-        return "••••" + sep + last;
-      }
-      // a card right after a money amount ("12.50 4111…"): the amount's cents are glued to the front of the run
-      const first = groups[0];
-      if (first.length === 2 && offset > 0 && str[offset - 1] === "." && isCard(groups.slice(1).join(""))) {
-        const sep = m.slice(first.length).match(/^[ -]*/)[0];
-        return first + sep + "••••";
+    .replace(/(?<!\d)\d{4}\.\d{4}\.\d{4}\.\d{4}(?:\.\d{3})?(?!\d)/g, (m) => {
+      const d = m.replace(/\D/g, "");
+      return CARD_LENGTHS.has(d.length) && prefixOk(d) && luhn(d) ? "••••" : m;
+    })
+    .replace(/(?<!\d)\d(?:[ \u00a0\t-]{0,3}\d){12,40}(?!\d)/g, (m) => {
+      const toks = [...m.matchAll(/\d+/g)].map(t => ({ at: t.index, len: t[0].length, v: t[0] }));
+      const n = toks.length;
+      for (let k = 0; k < n; k++) {
+        for (let end = n; end > k; end--) {
+          if (toks.slice(end).some(t => t.len > 4)) continue;   // only short trailing groups (an expiry) may be left over
+          const win = toks.slice(k, end);
+          if (isCard(win.map(t => t.v).join(""), win.map(t => t.len))) {
+            const last = win[win.length - 1];
+            return m.slice(0, win[0].at) + "••••" + m.slice(last.at + last.len);
+          }
+        }
       }
       return m;
     });
@@ -95,9 +105,9 @@ function parseMoney(v) {
   if (!t || !Number.isFinite(n) || Math.abs(n) >= MAX_MONEY) return null;
   return neg ? -n : n;
 }
-const strOrNull = (v, max = 300) => {
+const strOrNull = (v, max = 300, identifier = false) => {
   if (v === null || v === undefined) return null;
-  const t = redactCardNumbers(String(v)).trim().slice(0, max);
+  const t = redactCardNumbers(String(v), { contiguous: !identifier }).trim().slice(0, max);
   return t || null;
 };
 const cleanStr = (v, max = 300) => strOrNull(v, max) ?? "";
@@ -144,7 +154,7 @@ export function validateExtraction(json, now = new Date().toISOString()) {
       lineNo: n,
       description: cleanStr(raw.description, 300),
       sourceVendor: strOrNull(raw.sourceVendor),
-      sku: strOrNull(raw.sku, 80),
+      sku: strOrNull(raw.sku, 80, true),
       qty,
       retailUnitPrice: parseMoney(raw.retailUnitPrice),
       unitPrice: parseMoney(raw.unitPrice),
@@ -159,10 +169,18 @@ export function validateExtraction(json, now = new Date().toISOString()) {
     };
   });
 
+  // Receipts print discounts as "-$10.00"; the app's discount is always a positive amount that is SUBTRACTED. A negative one
+  // would be added to every total, so normalize it and make the reviewer look (issues disable Accept all).
+  let discounts = parseMoney(json.discounts);
+  if (discounts !== null && discounts < 0) {
+    discounts = -discounts;
+    issues.add("The order discount was printed as a negative number — it is treated as a discount of that amount; check it");
+  }
+
   const extraction = {
     docType: json.docType,
     vendor: cleanStr(json.vendor, 120),
-    orderNo: strOrNull(json.orderNo, 80),
+    orderNo: strOrNull(json.orderNo, 80, true),
     orderDate: strOrNull(json.orderDate, 40),
     paidDate: strOrNull(json.paidDate, 40),
     paymentMethod: strOrNull(json.paymentMethod, 80),
@@ -176,7 +194,7 @@ export function validateExtraction(json, now = new Date().toISOString()) {
     tax: parseMoney(json.tax),
     shipping: parseMoney(json.shipping),
     fees: parseMoney(json.fees),
-    discounts: parseMoney(json.discounts),
+    discounts,
     total: parseMoney(json.total),
     amountPaid: parseMoney(json.amountPaid),
     reconciles: false,
@@ -448,7 +466,7 @@ export function buildPurchasesFromInbox({ record, order = {}, shoppingItems = []
   const grouped = acceptedIdx.length > 1;
   const orderGroupId = order.orderGroupId || (grouped ? newOrderGroupId() : null);
   const purchasedBy = order.purchasedBy || "";
-  const paymentMethod = order.paymentMethod || suggestPaymentMethod(ex.paymentMethod);
+  const paymentMethod = order.paymentMethod ?? suggestPaymentMethod(ex.paymentMethod);   // "" = chosen blank; null/undefined = untouched
   const r = record.receipt || {};
   const receipts = r.pathname ? [{ pathname: r.pathname, name: r.name || "", contentType: r.contentType || "", uploadedAt: r.uploadedAt || "" }] : [];
   return acceptedIdx.map((i, n) => {

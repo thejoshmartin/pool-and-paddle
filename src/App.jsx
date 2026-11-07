@@ -3835,7 +3835,7 @@ function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAdd
   );
 }
 
-function ReceiptInboxPanel({ inbox, loaded, loadError, canUse, uploads, onUpload, onChange, onChangeNow, onRemove, onRetry, onFile, shoppingItems, purchases, propertyAddress, onOpenPurchase, isMobile }) {
+function ReceiptInboxPanel({ inbox, loaded, loadError, canUse, uploads, onUpload, onChange, onChangeNow, onRemove, onRetry, onFile, shoppingItems, purchases, propertyAddress, onOpenPurchase, notice, onDismissNotice, isMobile }) {
   const open = inbox.filter(r => ["pending", "extracted", "needs-manual"].includes(r.status)).sort((a, b) => String(a.receipt?.uploadedAt).localeCompare(String(b.receipt?.uploadedAt)));
   const done = inbox.filter(r => r.status === "filed" || r.status === "dismissed");
   const [expanded, setExpanded] = useState(null);       // null = follow "open if anything needs attention"
@@ -3870,6 +3870,13 @@ function ReceiptInboxPanel({ inbox, loaded, loadError, canUse, uploads, onUpload
           {uploads.map(u => (
             <div key={u.key} style={{ fontSize: 13, color: u.error ? C.ocean : C.textSecondary, margin: "0 0 6px" }}>{u.error ? "⚠ " : "⏳ "}{u.name}: {u.error || u.stage}</div>
           ))}
+          {notice && (
+            <div role="status" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, background: C.seafoamFaint, border: `1px solid ${C.mint}`, borderRadius: 8, padding: "8px 12px", margin: "0 0 10px", fontSize: 13, color: C.charcoal }}>
+              <span>✓ {notice.text}</span>
+              <button onClick={() => onOpenPurchase(notice.purchaseId)} style={inboxBtn}>Open the first purchase</button>
+              <button onClick={onDismissNotice} aria-label="Dismiss" style={{ ...inboxBtn, border: "none", background: "none" }}>✕</button>
+            </div>
+          )}
           {!loaded && <p style={{ fontSize: 13, color: C.textMuted }}>Loading the inbox…</p>}
           {loaded && open.length === 0 && uploads.length === 0 && canUse && <p style={{ fontSize: 13, color: C.textMuted }}>Nothing waiting. Upload a receipt to have it read for you.</p>}
           {open.map(r => (
@@ -5100,7 +5107,10 @@ export default function App() {
   const [inboxUploads, setInboxUploads] = useState([]);   // in-flight uploads: [{ key, name, stage, error }]
   const inboxServerLoaded = useRef(false);
   const inboxTimers = useRef({});                         // id -> debounce timer
-  const inboxPending = useRef({});                        // id -> latest unsent record
+  const inboxPending = useRef({});                        // id -> { rec, prop }: latest unsent record + the property it belongs to
+  const inboxSeq = useRef({});                            // id -> local edit counter (a server reply is only adopted if no newer local edit happened)
+  const [inboxNotice, setInboxNotice] = useState(null);  // { text, purchaseId } after a successful filing
+  const inboxNoticeTimer = useRef(null);
   const inboxFiling = useRef(new Set());                  // double-click guard for File
 
   // Load the property registry once. Decides migrated vs. needs-migration.
@@ -5727,14 +5737,31 @@ export default function App() {
     return () => { cancelled = true; };
   }, [activeProperty]);
 
-  const putInboxRecord = (rec, useKeepalive = false) => {
-    if (!inboxServerLoaded.current) return Promise.resolve(false);
-    return fetch(apiUrl('/api/receipt-inbox', activePropertyRef.current), {
+  // Resolves true (saved), 'closed' (409: already filed/dismissed elsewhere — the server's record is adopted) or false.
+  // `propertyId` is the property the record BELONGS to (a pending write can outlive a property switch).
+  const putInboxRecord = (rec, useKeepalive = false, propertyId = activePropertyRef.current) => {
+    if (propertyId === activePropertyRef.current && !inboxServerLoaded.current) return Promise.resolve(false);
+    const seq = inboxSeq.current[rec.id] || 0;
+    const sameProperty = () => activePropertyRef.current === propertyId;
+    return fetch(apiUrl('/api/receipt-inbox', propertyId), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rec), keepalive: useKeepalive,
-    }).then(r => {
-      if (r.status === 409) { setSyncError('This receipt was already filed or dismissed on another device — refresh to see it'); return false; }
+    }).then(async r => {
+      const body = await r.json().catch(() => null);
+      if (r.status === 409) {
+        if (body && body.record && sameProperty()) setInbox(prev => prev.map(x => (x.id === body.record.id ? body.record : x)));
+        setSyncError('This receipt was already filed or dismissed on another device — it has been refreshed');
+        return 'closed';
+      }
       if (!r.ok) { setSyncError('Failed to save receipt'); return false; }
-      setSyncError(null); return true;
+      setSyncError(null);
+      // The server re-validates every save (e.g. a cleared quantity becomes "assumed 1" with a new issue). Adopt its issues
+      // and reconcile flag so the screen matches what is stored — but never overwrite the reviewer's own fields, and only if
+      // nothing newer was typed since this request left.
+      const sx = body && body.record && body.record.extraction;
+      if (sx && sameProperty() && (inboxSeq.current[rec.id] || 0) === seq && !inboxPending.current[rec.id]) {
+        setInbox(prev => prev.map(x => (x.id === rec.id && x.extraction ? { ...x, updatedAt: body.record.updatedAt, updatedBy: body.record.updatedBy, extraction: { ...x.extraction, issues: sx.issues, reconciles: sx.reconciles } } : x)));
+      }
+      return true;
     }).catch(() => { setSyncError('Unable to reach server'); return false; });
   };
   const cancelInboxWrite = (id) => {
@@ -5743,12 +5770,15 @@ export default function App() {
   };
   const saveInboxRecord = (rec) => {   // debounced (review typing)
     setInbox(prev => prev.map(r => (r.id === rec.id ? rec : r)));
-    inboxPending.current[rec.id] = rec;
+    inboxSeq.current[rec.id] = (inboxSeq.current[rec.id] || 0) + 1;
+    const prop = activePropertyRef.current;   // the write belongs to the property it was typed in, even if the user switches before it fires
+    inboxPending.current[rec.id] = { rec, prop };
     if (inboxTimers.current[rec.id]) clearTimeout(inboxTimers.current[rec.id]);
-    inboxTimers.current[rec.id] = setTimeout(() => { delete inboxTimers.current[rec.id]; delete inboxPending.current[rec.id]; putInboxRecord(rec); }, 500);
+    inboxTimers.current[rec.id] = setTimeout(() => { delete inboxTimers.current[rec.id]; delete inboxPending.current[rec.id]; putInboxRecord(rec, false, prop); }, 500);
   };
   const saveInboxRecordNow = (rec) => {   // immediate (File / Dismiss)
     setInbox(prev => prev.map(r => (r.id === rec.id ? rec : r)));
+    inboxSeq.current[rec.id] = (inboxSeq.current[rec.id] || 0) + 1;
     cancelInboxWrite(rec.id);
     return putInboxRecord(rec);
   };
@@ -5756,7 +5786,7 @@ export default function App() {
     for (const t of Object.values(inboxTimers.current)) clearTimeout(t);
     const pending = inboxPending.current;
     inboxTimers.current = {}; inboxPending.current = {};
-    for (const rec of Object.values(pending)) putInboxRecord(rec, true);
+    for (const { rec, prop } of Object.values(pending)) putInboxRecord(rec, true, prop);
   };
   useEffect(() => {
     const onHide = () => { if (document.visibilityState === 'hidden') flushInbox(); };
@@ -5840,7 +5870,8 @@ export default function App() {
     // (quietly — the error message below must not be cleared by a rollback "success") so a retry can't double-file.
     const results = await Promise.all(drafts.map(savePurchase));
     const outcome = decideFilingOutcome(results);
-    const filedOk = outcome.markFiled && (await saveInboxRecordNow({ ...record, status: 'filed', purchaseIds: drafts.map(d => d.id) })) === true;
+    const filedRes = outcome.markFiled ? await saveInboxRecordNow({ ...record, status: 'filed', purchaseIds: drafts.map(d => d.id) }) : false;
+    const filedOk = filedRes === true;
     if (!filedOk) {
       const ids = new Set(drafts.map(d => d.id));
       setPurchases(prev => prev.filter(p => !ids.has(p.id)));
@@ -5848,7 +5879,7 @@ export default function App() {
         const base = apiUrl('/api/purchases', activeProperty);
         fetch(base + (activeProperty ? '&' : '?') + 'id=' + encodeURIComponent(d.id), { method: 'DELETE' }).catch(() => {});
       }
-      setInbox(prev => prev.map(r => (r.id === record.id ? record : r)));
+      if (filedRes !== 'closed') setInbox(prev => prev.map(r => (r.id === record.id ? record : r)));   // 'closed' already adopted the server's record
       inboxFiling.current.delete(record.id);
       setSyncError(outcome.failed
         ? `Filing failed: ${outcome.failed} of ${drafts.length} purchases did not save. Nothing was filed — please try again.`
@@ -5863,7 +5894,11 @@ export default function App() {
       const live = (it.purchaseIds || []).filter(pid => purchases.some(p => p.id === pid));
       saveShoppingItem({ ...it, status: ['received', 'kept', 'returned'].includes(it.status) ? it.status : 'ordered', purchaseIds: [...live, ...pids] });
     }
-    openPurchase(drafts[0].id);   // show Josh the first new purchase (plan: focus after filing)
+    // Tell the user, with a link — never auto-navigate: that would close an open edit form (losing unsaved edits) and reset
+    // the search/filters every time several receipts are filed in a row.
+    setInboxNotice({ text: `Filed ${drafts.length} purchase${drafts.length === 1 ? '' : 's'} from ${(record.extraction && record.extraction.vendor) || 'the receipt'}.`, purchaseId: drafts[0].id });
+    if (inboxNoticeTimer.current) clearTimeout(inboxNoticeTimer.current);
+    inboxNoticeTimer.current = setTimeout(() => setInboxNotice(null), 20000);
     return true;
   };
   const inboxReady = inboxLoaded && !!activeProperty && !inboxLoadError;
@@ -5948,7 +5983,7 @@ export default function App() {
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
       {activeView === "shopping" && <ShoppingView shopping={shopping} loaded={shoppingLoaded} loadError={shoppingLoadError} canEdit={shoppingReady} purchases={purchases} onSaveItem={saveShoppingItem} onRemoveItem={removeShoppingItem} onSaveSettings={saveShoppingSettings} onMarkPurchased={promoteShoppingItem} propertyId={activeProperty} />}
-      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} reimbursableVendors={shopping.settings.reimbursableVendors} inboxPanel={{ inbox, loaded: inboxLoaded, loadError: inboxLoadError, canUse: inboxReady, uploads: inboxUploads, onUpload: uploadToInbox, onChange: saveInboxRecord, onChangeNow: saveInboxRecordNow, onRemove: removeInboxRecord, onRetry: retryInboxRecord, onFile: fileInboxRecord, shoppingItems: shopping.items, propertyAddress: activePropertyAddress, onOpenPurchase: openPurchase }} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
+      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} reimbursableVendors={shopping.settings.reimbursableVendors} inboxPanel={{ inbox, loaded: inboxLoaded, loadError: inboxLoadError, canUse: inboxReady, uploads: inboxUploads, onUpload: uploadToInbox, onChange: saveInboxRecord, onChangeNow: saveInboxRecordNow, onRemove: removeInboxRecord, onRetry: retryInboxRecord, onFile: fileInboxRecord, shoppingItems: shopping.items, propertyAddress: activePropertyAddress, onOpenPurchase: openPurchase, notice: inboxNotice, onDismissNotice: () => setInboxNotice(null) }} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
       {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} loadError={houseInfoLoadError} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 
       {showMigrationModal && migrationNeeded && (
