@@ -569,3 +569,208 @@ export function buildPurchaseFromShopping(item, candidate, settings) {
     notes,
   };
 }
+
+// ── Agent interface (spec §2.9) ──────────────────────────────────────────────
+// The research agent never talks to the app. It reads an export bundle and returns a results file
+// that Josh imports. These formats are a contract with that agent: do NOT rename fields or change the
+// schema strings (additive optional fields are fine; unknown fields are preserved on import).
+
+export const EXPORT_SCHEMA = "pp-shopping-export/v1";
+export const RESULTS_SCHEMA_PREFIX = "pp-shopping-results/";
+export const RESEARCH_EPISODE_CATEGORIES = ["Furnishing & Design", "Guest Experience", "Operations"];
+// Spec says "procurement-relevant entries from tools-data.json" without a list; these tool categories
+// are the ones that bear on what to buy for the house.
+export const RESEARCH_TOOL_CATEGORIES = ["Smart Home & Security", "Guest Experience", "Operations & Cleaning"];
+
+export function buildExportBundle({ items, settings, propertyId, podcast, tools, now }) {
+  const toolList = Array.isArray(tools) ? tools : (tools && Array.isArray(tools.tools) ? tools.tools : []);
+  return {
+    schema: EXPORT_SCHEMA,
+    exportedAt: now,
+    propertyId,
+    settings,
+    items: (items || []).filter(Boolean).map(it => ({ ...it, qtyNeeded: computeQty(it, settings) })),
+    research: {
+      episodes: (podcast || [])
+        .filter(e => e && !e.isGimmick && ["critical", "high"].includes(e.priority) && RESEARCH_EPISODE_CATEGORIES.includes(e.category))
+        .map(e => ({ ep: e.ep, title: e.title, keyInsight: e.keyInsight, tags: e.tags || [] })),
+      tools: toolList.filter(t => t && RESEARCH_TOOL_CATEGORIES.includes(t.category)),
+    },
+  };
+}
+
+// Reject anything that isn't a v1 results file for THIS property. Additive minor versions (v1.x) pass.
+export function validateResults(json, propertyId) {
+  if (!isObj(json)) return { ok: false, error: "That file isn't a results file (expected a JSON object)." };
+  const m = /^pp-shopping-results\/v(\d+)(?:\.[\w.-]+)?$/.exec(typeof json.schema === "string" ? json.schema : "");
+  if (!m) return { ok: false, error: `Unrecognized schema "${json.schema}" — expected pp-shopping-results/v1.` };
+  if (Number(m[1]) !== 1) return { ok: false, error: `Unsupported schema version ${json.schema} — this app reads pp-shopping-results/v1.` };
+  if (json.propertyId !== propertyId) return { ok: false, error: `This results file is for property "${json.propertyId}", not "${propertyId}".` };
+  if (typeof json.generatedAt !== "string" || !json.generatedAt) return { ok: false, error: "The results file has no generatedAt." };
+  if (json.updates !== undefined && !Array.isArray(json.updates)) return { ok: false, error: "updates must be an array." };
+  if (json.newItems !== undefined && !Array.isArray(json.newItems)) return { ok: false, error: "newItems must be an array." };
+  return { ok: true };
+}
+
+const ITEM_KNOWN_KEYS = new Set(Object.keys(emptyShoppingItem()));
+const CANDIDATE_KNOWN_KEYS = new Set(Object.keys(emptyCandidate()));
+// Fields an agent re-check may refresh on an existing candidate (identity, pack plan and human notes are never overwritten).
+const PRICE_STOCK_FIELDS = ["unitPrice", "retailUnitPrice", "shipping", "transactionFeePct", "estTax", "discount", "promoNote", "inStock", "openStock", "deliveryEta",
+  "rating", "ratingCount", "returnWindowDays", "returnByDate", "returnShippingCost", "restockingPct", "freeReturns", "tier", "standardsCheck", "checkedAt"];
+const UPDATE_KEYS = new Set(["itemId", "addCandidates", "agentFlag", "suggestedQty", "notes"]);
+const NEW_ITEM_KEYS = new Set(["name", "category", "room", "qtyRule", "priority", "candidates", "agentFlag", "notes", "suggestedQty", "zone", "dishType", "usesPerGuestPerDay"]);
+const FORBIDDEN_AGENT_KEYS = new Set(["delete", "deleted", "__deleted", "remove", "removed", "tombstone"]);
+const blank = (v) => v === null || v === undefined || v === "";
+const clone = (v) => JSON.parse(JSON.stringify(v));
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const norm = (v) => String(v || "").trim().toLowerCase();
+
+// Identity of a candidate for de-duplication: vendor + (sku || url), falling back to brand + model.
+function candidateKey(c) {
+  return `${norm(c.vendor)}|${norm(c.sku) || norm(c.url) || `${norm(c.brand)} ${norm(c.model)}`.trim()}`;
+}
+
+function mergeCandidates(item, rawList, gen, stats) {
+  for (const raw of rawList) {
+    if (!isObj(raw)) continue;
+    const inc = sanitizeCandidate({ ...raw, source: raw.source || "agent" });
+    if (!inc) continue;
+    const existing = item.candidates.find(c => candidateKey(c) === candidateKey(inc));
+    if (existing) {
+      let changed = false;
+      for (const f of PRICE_STOCK_FIELDS) {
+        // Only fields the agent actually sent, and never a null/blank over a known value.
+        if (f in raw && !blank(raw[f]) && !same(inc[f], existing[f])) { existing[f] = inc[f]; changed = true; }
+      }
+      for (const k of Object.keys(inc)) {
+        if (!CANDIDATE_KNOWN_KEYS.has(k) && !same(inc[k], existing[k])) { existing[k] = inc[k]; changed = true; }
+      }
+      if (changed) stats.updated += 1;
+    } else {
+      const id = typeof raw.id === "string" && raw.id && !item.candidates.some(c => c.id === raw.id) ? raw.id : gen.candidate();
+      item.candidates.push({ ...inc, id });
+      stats.added += 1;
+    }
+  }
+}
+
+// The agent-writable parts shared by updates and new items. Everything else — status, approval, claim,
+// selection, quantities, purchase links, deletions — is ignored. `handled` lists the keys the caller
+// already consumes so only genuinely additive unknown fields are copied through.
+function applyAgentFields(item, src, results, gen, stats, handled, candidatesKey) {
+  if (Array.isArray(src[candidatesKey])) mergeCandidates(item, src[candidatesKey], gen, stats);
+  if (isObj(src.agentFlag)) {
+    const flag = { action: AGENT_ACTIONS.includes(src.agentFlag.action) ? src.agentFlag.action : null, reason: str(src.agentFlag.reason), flaggedAt: results.generatedAt };
+    if (!same(flag, item.agentFlag)) { item.agentFlag = flag; stats.flag = flag.action || "cleared"; }
+  }
+  if ("suggestedQty" in src) {
+    const q = numOrNull(src.suggestedQty);
+    if (q !== item.suggestedQty) { item.suggestedQty = q; stats.suggestedQty = q; }
+  }
+  if (typeof src.notes === "string" && src.notes.trim()) {
+    const line = `[agent ${String(results.generatedAt).slice(0, 10)}] ${src.notes.trim()}`;
+    if (!String(item.notes || "").includes(line)) { item.notes = item.notes ? `${item.notes}\n${line}` : line; stats.noteAdded = true; }
+  }
+  for (const k of Object.keys(src)) {
+    if (handled.has(k) || ITEM_KNOWN_KEYS.has(k) || UNSAFE_KEYS.has(k) || FORBIDDEN_AGENT_KEYS.has(k)) continue;
+    if (!same(src[k], item[k])) item[k] = clone(src[k]);
+  }
+}
+
+// Merge a validated results file into the item list WITHOUT mutating the inputs. Returns the items that
+// actually changed (`touched`), a human-readable change list for the preview, and skipped rows.
+// Idempotent: importing the same file again touches nothing.
+export function mergeResults(items, results, settings, ids = {}) {
+  const gen = { candidate: ids.candidate || newCandidateId, item: ids.item || newShoppingItemId };
+  const out = { touched: [], changes: [], skipped: [] };
+  if (!isObj(results)) return out;
+  const working = (items || []).filter(isObj).map(i => normalizeShoppingItem(clone(i)));
+  const before = new Map(working.map(i => [i.id, JSON.stringify(i)]));
+  const fresh = new Set();
+  const touchedOrder = [];
+  const mark = (item) => { if (!touchedOrder.includes(item.id)) touchedOrder.push(item.id); };
+  const newStats = () => ({ added: 0, updated: 0, flag: null, suggestedQty: null, noteAdded: false });
+  const record = (kind, item, stats) => {
+    const prior = before.get(item.id);
+    if (fresh.has(item.id) || (prior !== undefined && prior !== JSON.stringify(item))) {
+      mark(item);
+      const existing = out.changes.find(c => c.itemId === item.id);
+      const entry = { kind: fresh.has(item.id) ? "new" : kind, itemId: item.id, name: item.name, addedCandidates: stats.added, updatedCandidates: stats.updated, flag: stats.flag, suggestedQty: stats.suggestedQty, noteAdded: stats.noteAdded };
+      if (existing) {
+        existing.addedCandidates += stats.added; existing.updatedCandidates += stats.updated;
+        existing.flag = existing.flag || stats.flag; if (stats.suggestedQty !== null) existing.suggestedQty = stats.suggestedQty;
+        existing.noteAdded = existing.noteAdded || stats.noteAdded;
+      } else out.changes.push(entry);
+    }
+  };
+
+  for (const up of results.updates || []) {
+    if (!isObj(up) || typeof up.itemId !== "string") { out.skipped.push("An update had no itemId"); continue; }
+    const item = working.find(i => i.id === up.itemId);
+    if (!item) { out.skipped.push(`Unknown item ${up.itemId}`); continue; }
+    const stats = newStats();
+    applyAgentFields(item, up, results, gen, stats, UPDATE_KEYS, "addCandidates");
+    record("update", item, stats);
+  }
+
+  for (const raw of results.newItems || []) {
+    if (!isObj(raw) || typeof raw.name !== "string" || !raw.name.trim()) { out.skipped.push("A new item had no name"); continue; }
+    const category = SHOPPING_CATEGORIES.includes(raw.category) ? raw.category : "Other";
+    const key = `${norm(raw.name)}|${category}`;
+    let item = working.find(i => `${norm(i.name)}|${i.category}` === key);
+    if (!item) {
+      const rule = isObj(raw.qtyRule) && QTY_BASES.includes(raw.qtyRule.basis)
+        ? { basis: raw.qtyRule.basis, multiplier: num(raw.qtyRule.multiplier, 1), fixedQty: num(raw.qtyRule.fixedQty, 0) }
+        : emptyShoppingItem().qtyRule;
+      item = normalizeShoppingItem({
+        ...emptyShoppingItem(), id: gen.item(), name: raw.name.trim(), category, room: str(raw.room),
+        zone: ZONES.includes(raw.zone) ? raw.zone : "both", dishType: str(raw.dishType), usesPerGuestPerDay: numOrNull(raw.usesPerGuestPerDay),
+        qtyRule: rule, priority: ITEM_PRIORITIES.includes(raw.priority) ? raw.priority : "launch",
+        proposed: true, status: "researching", userCreated: true,
+      });
+      working.push(item);
+      fresh.add(item.id);
+    }
+    const stats = newStats();
+    applyAgentFields(item, raw, results, gen, stats, NEW_ITEM_KEYS, "candidates");
+    record("update", item, stats);
+  }
+
+  out.touched = touchedOrder.map(id => working.find(i => i.id === id));
+  return out;
+}
+
+// ── Print for Kerry ──────────────────────────────────────────────────────────
+
+const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+const usd = (n) => Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" });
+
+// One printable page of approved + shortlisted items by category. Pure string, inline styles only, every
+// dynamic value escaped, no scripts / stylesheets / external references (the caller opens it in a new
+// window and calls print()).
+export function buildPrintHtml(items, settings, now) {
+  const list = (items || []).filter(i => i && (i.status === "approved" || i.status === "shortlisted"));
+  const groups = groupShoppingItems(list, "category");
+  const cell = "padding:6px 8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top;font-size:12px;";
+  let grand = 0;
+  const body = groups.map(g => {
+    const rows = [...g.items].sort((a, b) => String(a.name).localeCompare(String(b.name))).map(item => {
+      const sel = (item.candidates || []).find(c => c && c.id === item.selectedCandidateId) || null;
+      const landed = sel ? landedTotal(sel, settings) : null;
+      if (landed !== null) grand += landed;
+      const status = item.status === "approved" ? `Approved${item.approvedBy ? ` by ${item.approvedBy}` : ""}` : "Shortlisted";
+      return `<tr style="page-break-inside:avoid;"><td style="${cell}">${esc(item.name)}</td><td style="${cell}text-align:right;">${esc(computeQty(item, settings))}</td>`
+        + `<td style="${cell}">${esc(sel ? sel.vendor : "—")}</td><td style="${cell}text-align:right;">${landed === null ? "—" : esc(usd(landed))}</td>`
+        + `<td style="${cell}">${esc((sel && sel.returnByDate) || "—")}</td><td style="${cell}">${esc(status)}</td><td style="${cell}">${esc(item.notes || "")}</td></tr>`;
+    }).join("");
+    return `<h2 style="font-size:14px;margin:18px 0 6px;color:#238C62;">${esc(g.key)}</h2>`
+      + `<table style="width:100%;border-collapse:collapse;"><thead><tr>${["Item", "Qty", "Vendor", "Landed total", "Return by", "Status", "Notes"].map((h, i) => `<th style="${cell}font-weight:700;${i === 1 || i === 3 ? "text-align:right;" : ""}">${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+  }).join("");
+  const date = String(now || "").slice(0, 10);
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Pool &amp; Paddle — Shopping list</title></head>`
+    + `<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#333;margin:24px;">`
+    + `<h1 style="font-size:20px;margin:0 0 4px;">Pool &amp; Paddle — Shopping list for Kerry</h1>`
+    + `<p style="margin:0 0 4px;font-size:12px;color:#666;">Printed ${esc(date)} · ${list.length} item${list.length === 1 ? "" : "s"} (approved and shortlisted) · selected total ${esc(usd(grand))} · sized for ${esc(settings && settings.guestCount)} guests</p>`
+    + (body || `<p style="font-size:13px;color:#666;">Nothing approved or shortlisted yet.</p>`)
+    + `</body></html>`;
+}

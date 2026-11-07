@@ -1201,4 +1201,153 @@ console.log('Phase 2 — Mark purchased (buildPurchaseFromShopping):');
   ok('purchases carry shoppingItemId (default null) for the two-way link');
 }
 
+console.log('Phase 2 — agent export/import (§2.9) and Print for Kerry:');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const deepFreeze = (o) => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); Object.values(o).forEach(deepFreeze); } return o; };
+
+  // ── export bundle ──
+  const podcast = [
+    { ep: 1, title: 'A', keyInsight: 'ka', tags: ['x'], category: 'Operations', priority: 'critical', isGimmick: false, summary: 'long text' },
+    { ep: 2, title: 'B', keyInsight: 'kb', tags: [], category: 'Marketing', priority: 'critical', isGimmick: false },
+    { ep: 3, title: 'C', keyInsight: 'kc', tags: [], category: 'Guest Experience', priority: 'medium', isGimmick: false },
+    { ep: 4, title: 'D', keyInsight: 'kd', tags: [], category: 'Guest Experience', priority: 'high', isGimmick: true },
+    { ep: 5, title: 'E', keyInsight: 'ke', tags: ['bed'], category: 'Furnishing & Design', priority: 'high', isGimmick: false },
+  ];
+  const tools = { tools: [{ name: 'Minut', category: 'Smart Home & Security' }, { name: 'PriceLabs', category: 'Dynamic Pricing' }, { name: 'Breezeway', category: 'Operations & Cleaning' }, { name: 'StayFi', category: 'Guest Experience' }] };
+  const plates = { ...SH.emptyShoppingItem(), id: 'sh-seed-plates', name: 'Plates', category: 'Dinnerware', qtyRule: { basis: 'guests', multiplier: 1.5, fixedQty: 0 }, qtyNeeded: 36, mystery: { keep: true } };
+  const frozenItems = deepFreeze([plates]);
+  const bundle = SH.buildExportBundle({ items: frozenItems, settings: { ...D, guestCount: 20 }, propertyId: 'pp', podcast, tools, now: '2026-11-21T10:00:00Z' });
+  assert.deepEqual(Object.keys(bundle).sort(), ['exportedAt', 'items', 'propertyId', 'research', 'schema', 'settings']);
+  assert.equal(bundle.schema, 'pp-shopping-export/v1');
+  assert.equal(bundle.exportedAt, '2026-11-21T10:00:00Z'); assert.equal(bundle.propertyId, 'pp');
+  assert.deepEqual(Object.keys(bundle.research).sort(), ['episodes', 'tools']);
+  assert.deepEqual(bundle.research.episodes.map(e => e.ep), [1, 5]);
+  assert.deepEqual(Object.keys(bundle.research.episodes[0]).sort(), ['ep', 'keyInsight', 'tags', 'title']);
+  assert.deepEqual(bundle.research.tools.map(t => t.name), ['Minut', 'Breezeway', 'StayFi']);
+  assert.equal(bundle.items[0].qtyNeeded, 30);
+  assert.deepEqual(bundle.items[0].mystery, { keep: true });
+  assert.equal(plates.qtyNeeded, 36);
+  assert.equal(bundle.settings.guestCount, 20);
+  assert.deepEqual(SH.buildExportBundle({ items: [], settings: D, propertyId: 'pp', podcast: [], tools: [], now: 'x' }).research, { episodes: [], tools: [] });
+  ok('export bundle matches §2.9 exactly (schema, keys, filtered episodes/tools), refreshes qtyNeeded for the current guest count, keeps unknown item fields, never mutates the items');
+
+  // ── validateResults ──
+  const mkRes = (extra) => ({ schema: 'pp-shopping-results/v1', generatedAt: '2026-11-20T09:00:00Z', propertyId: 'pp', updates: [], newItems: [], ...extra });
+  assert.deepEqual(SH.validateResults(mkRes(), 'pp'), { ok: true });
+  assert.equal(SH.validateResults(mkRes({ schema: 'pp-shopping-results/v1.2' }), 'pp').ok, true);
+  assert.equal(SH.validateResults(mkRes({ schema: 'pp-shopping-results/v2' }), 'pp').ok, false);
+  assert.equal(SH.validateResults(mkRes({ schema: 'pp-shopping-export/v1' }), 'pp').ok, false);
+  assert.equal(SH.validateResults(mkRes({ propertyId: 'other' }), 'pp').ok, false);
+  assert.equal(SH.validateResults(mkRes({ updates: 'nope' }), 'pp').ok, false);
+  assert.equal(SH.validateResults(mkRes({ newItems: {} }), 'pp').ok, false);
+  assert.equal(SH.validateResults(mkRes({ generatedAt: undefined }), 'pp').ok, false);
+  assert.equal(SH.validateResults(null, 'pp').ok, false);
+  assert.equal(SH.validateResults('text', 'pp').ok, false);
+  const noArrays = { schema: 'pp-shopping-results/v1', generatedAt: 'x', propertyId: 'pp' };
+  assert.equal(SH.validateResults(noArrays, 'pp').ok, true);
+  assert.match(SH.validateResults(mkRes({ propertyId: 'other' }), 'pp').error, /property/i);
+  ok('results validation: v1 (and additive v1.x) accepted; /v2, the export schema, another property, malformed arrays or a missing generatedAt rejected');
+
+  // ── mergeResults ──
+  let cn = 0, sn = 0;
+  const ids = { candidate: () => `c-gen-${++cn}`, item: () => `sh-gen-${++sn}` };
+  const keep = { ...SH.emptyCandidate(), id: 'c-keep', vendor: 'Amazon', sku: 'OLD', unitPrice: 30, inStock: true };
+  const toaster = { ...SH.emptyShoppingItem(), id: 'sh-1', name: 'Toaster', category: 'Small Appliances', candidates: [keep], selectedCandidateId: 'c-keep', approvedBy: 'JM', approvedAt: '2026-11-19T00:00:00Z', claimedBy: 'KM', qtyOverride: 3, status: 'approved', notes: 'Kerry likes chrome' };
+  const cA = { vendor: 'Amazon', vendorType: 'amazon', sku: 'B0TEST', url: 'https://a.example/x', unitPrice: 25, qtyToBuy: 2, shipping: 0, inStock: true, checkedAt: '2026-11-20T08:00:00Z', tier: 'best-value', futureField: { z: 1 } };
+  const cB = { vendor: 'Minoan', vendorType: 'minoan', sku: 'M-1', unitPrice: 20, qtyToBuy: 2, checkedAt: '2026-11-20T08:00:00Z' };
+  const sneaky = { itemId: 'sh-1', addCandidates: [cA, cB], agentFlag: { action: 'buy-now', reason: '90-day low' }, suggestedQty: 4, notes: 'Good price',
+    status: 'ordered', approvedBy: 'KM', approvedAt: 'x', claimedBy: 'JM', selectedCandidateId: 'zzz', qtyOverride: 99, qtyNeeded: 5, name: 'HACKED', purchaseIds: ['p9'], qualityTier: 'Premium', delete: true };
+  const results1 = deepFreeze(mkRes({ updates: [sneaky] }));
+  const r1 = SH.mergeResults(deepFreeze([toaster]), results1, D, ids);
+  assert.equal(r1.touched.length, 1);
+  const t1 = r1.touched[0];
+  assert.equal(t1.candidates.length, 3);
+  assert.deepEqual(t1.candidates.map(c => c.vendor), ['Amazon', 'Amazon', 'Minoan']);
+  assert.ok(t1.candidates.slice(1).every(c => /^c-gen-/.test(c.id) && c.source === 'agent'));
+  assert.deepEqual(t1.candidates[1].futureField, { z: 1 });
+  assert.equal(t1.status, 'approved'); assert.equal(t1.approvedBy, 'JM'); assert.equal(t1.approvedAt, '2026-11-19T00:00:00Z');
+  assert.equal(t1.claimedBy, 'KM'); assert.equal(t1.selectedCandidateId, 'c-keep'); assert.equal(t1.qtyOverride, 3);
+  assert.equal(t1.name, 'Toaster'); assert.deepEqual(t1.purchaseIds, []);
+  assert.deepEqual(t1.agentFlag, { action: 'buy-now', reason: '90-day low', flaggedAt: '2026-11-20T09:00:00Z' });
+  assert.equal(t1.suggestedQty, 4); assert.equal(t1.qtyNeeded, toaster.qtyNeeded);
+  assert.equal(t1.qualityTier, 'Premium');
+  assert.equal(t1.delete, undefined);
+  assert.ok(t1.notes.startsWith('Kerry likes chrome') && t1.notes.endsWith('[agent 2026-11-20] Good price'));
+  assert.equal(r1.changes.length, 1);
+  assert.deepEqual([r1.changes[0].kind, r1.changes[0].itemId, r1.changes[0].addedCandidates, r1.changes[0].updatedCandidates, r1.changes[0].noteAdded], ['update', 'sh-1', 2, 0, true]);
+  ok('import adds candidates, flag, suggested qty and an agent note — and ignores status, approval, claim, selection, quantities, name, purchase links and "delete" even when the file includes them; additive unknown fields survive');
+
+  const after1 = [t1];
+  const again = SH.mergeResults(after1, results1, D, ids);
+  assert.deepEqual(again.touched, []); assert.deepEqual(again.changes, []);
+  ok('importing the same file twice changes nothing');
+
+  const repriced = mkRes({ generatedAt: '2026-11-21T09:00:00Z', updates: [{ itemId: 'sh-1', addCandidates: [{ ...cA, url: 'https://a.example/other', unitPrice: 22, checkedAt: '2026-11-21T08:00:00Z', rating: null, inStock: null, brand: 'NewBrand' }] }] });
+  const r2 = SH.mergeResults(after1, repriced, D, ids);
+  assert.equal(r2.touched.length, 1);
+  const c2 = r2.touched[0].candidates.find(c => c.sku === 'B0TEST');
+  assert.equal(c2.unitPrice, 22); assert.equal(c2.checkedAt, '2026-11-21T08:00:00Z');
+  assert.equal(c2.inStock, true); assert.equal(c2.url, 'https://a.example/x'); assert.equal(c2.brand, '');
+  assert.equal(r2.touched[0].candidates.length, 3);
+  assert.equal(r2.changes[0].updatedCandidates, 1); assert.equal(r2.changes[0].addedCandidates, 0);
+  ok('a duplicate candidate (vendor + sku) updates price/stock fields and checkedAt, keeps its id/url/plan fields, and a null from the agent never wipes a known value');
+
+  const noSku = { vendor: 'Wayfair', url: 'https://w.example/1', unitPrice: 50 };
+  const s1 = SH.mergeResults([toaster], mkRes({ updates: [{ itemId: 'sh-1', addCandidates: [noSku] }] }), D, ids).touched[0];
+  assert.equal(s1.candidates.length, 2);
+  assert.equal(SH.mergeResults([s1], mkRes({ updates: [{ itemId: 'sh-1', addCandidates: [noSku] }] }), D, ids).touched.length, 0);
+  const s2 = SH.mergeResults([s1], mkRes({ updates: [{ itemId: 'sh-1', addCandidates: [{ ...noSku, unitPrice: 45 }] }] }), D, ids).touched[0];
+  assert.equal(s2.candidates.length, 2); assert.equal(s2.candidates[1].unitPrice, 45);
+  ok('candidates without a SKU dedupe on vendor + URL');
+
+  const newItem = { name: 'Cheese board', category: 'Serveware & Entertaining', room: 'Kitchen', qtyRule: { basis: 'fixed', fixedQty: 2 }, priority: 'nice-to-have', candidates: [cB],
+    agentFlag: { action: 'needs-review', reason: 'idea' }, notes: 'hosting idea', status: 'approved', approvedBy: 'JM', claimedBy: 'KM', selectedCandidateId: 'zz', qtyOverride: 5, purchaseIds: ['p1'], mystery: 'kept' };
+  const resNew = deepFreeze(mkRes({ newItems: [newItem, { name: 'Odd gadget', category: 'Not A Category' }, { category: 'Other' }] }));
+  const rn = SH.mergeResults([toaster], resNew, D, ids);
+  assert.equal(rn.touched.length, 2);
+  const n1 = rn.touched[0];
+  assert.match(n1.id, /^sh-gen-/); assert.equal(n1.proposed, true); assert.equal(n1.status, 'researching'); assert.equal(n1.userCreated, true);
+  assert.equal(n1.approvedBy, null); assert.equal(n1.claimedBy, null); assert.equal(n1.selectedCandidateId, null); assert.equal(n1.qtyOverride, null); assert.deepEqual(n1.purchaseIds, []);
+  assert.equal(n1.name, 'Cheese board'); assert.equal(n1.priority, 'nice-to-have'); assert.equal(n1.mystery, 'kept');
+  assert.equal(n1.candidates.length, 1); assert.equal(n1.candidates[0].source, 'agent');
+  assert.equal(n1.agentFlag.action, 'needs-review');
+  assert.equal(rn.touched[1].category, 'Other');
+  assert.equal(rn.skipped.length, 1);
+  assert.equal(rn.changes.filter(c => c.kind === 'new').length, 2);
+  const rnAgain = SH.mergeResults([toaster, ...rn.touched], resNew, D, ids);
+  assert.deepEqual(rnAgain.touched, []);
+  ok('new items land proposed/researching with no approval, claim, selection or override; invalid category → Other; nameless rows are skipped; re-importing adds no duplicates');
+
+  const unknown = SH.mergeResults([toaster], mkRes({ updates: [{ itemId: 'sh-nope', addCandidates: [cA] }] }), D, ids);
+  assert.deepEqual(unknown.touched, []); assert.equal(unknown.skipped.length, 1);
+  assert.doesNotThrow(() => SH.mergeResults([toaster, null, {}], mkRes({ updates: [null, {}, { itemId: 'sh-1' }], newItems: [null] }), D, ids));
+  ok('an update for an unknown item is reported as skipped; junk rows never throw');
+
+  // ── Print for Kerry ──
+  const mkSel = (id, name, category, status, vendor, price, extra = {}) => ({ ...SH.emptyShoppingItem(), id, name, category, status, selectedCandidateId: `c-${id}`, approvedBy: status === 'approved' ? 'JM' : null,
+    candidates: [{ ...SH.emptyCandidate(), id: `c-${id}`, vendor, vendorType: 'other', unitPrice: price, qtyToBuy: 1, estTax: 0, shipping: 0, returnByDate: '2027-01-31' }], ...extra });
+  const printItems = [
+    mkSel('a', '<script>alert(1)</script> & Co', 'Small Appliances', 'approved', 'Ama&zon', 100, { notes: 'say "hi" <b>bold</b>' }),
+    mkSel('b', 'Toaster', 'Small Appliances', 'shortlisted', 'Costco', 50),   // (a vendor named Minoan would pick up its 3.2% default fee)
+    mkSel('c', 'Researching thing', 'Dinnerware', 'researching', 'X', 1),
+    mkSel('d', 'Ordered thing', 'Dinnerware', 'ordered', 'X', 1),
+    { ...SH.emptyShoppingItem(), id: 'e', name: 'No pick', category: 'Flatware', status: 'shortlisted', qtyRule: { basis: 'guests', multiplier: 3, fixedQty: 0 } },
+  ];
+  const html = SH.buildPrintHtml(printItems, D, '2026-11-25T12:00:00Z');
+  assert.ok(html.startsWith('<!doctype html>'));
+  assert.ok(!html.includes('<script') && !html.includes('<b>bold</b>'));
+  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt; &amp; Co'));
+  assert.ok(html.includes('Ama&amp;zon') && html.includes('say &quot;hi&quot; &lt;b&gt;bold&lt;/b&gt;'));
+  assert.ok(html.includes('Toaster') && html.includes('No pick'));
+  assert.ok(!html.includes('Researching thing') && !html.includes('Ordered thing'));
+  assert.ok(html.indexOf('Small Appliances') < html.indexOf('Flatware'));
+  assert.ok(html.includes('$100.00') && html.includes('$50.00') && html.includes('2027-01-31'));
+  assert.ok(html.includes('72'));
+  assert.ok(html.includes('2026-11-25'));
+  for (const bad of ['<link', '<style', '@import', 'src=', 'href=', 'http://', 'https://']) assert.ok(!html.includes(bad), `print html must not contain ${bad}`);
+  assert.ok(html.includes('—'));
+  ok('Print for Kerry lists only approved + shortlisted items grouped by category with qty, chosen vendor, landed total and return-by; every value is escaped; no scripts, styles or external references');
+}
+
 console.log(`\nAll ${passed} checks passed.`);

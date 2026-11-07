@@ -21,6 +21,7 @@ import {
   NON_GLASS_CATEGORIES, emptyShoppingItem, emptyCandidate, computeQty, mealsCovered, landedTotal, perUnit,
   returnExposure, bestValue, candidateWarnings, forecastSpend, feesFor, taxFor, filterShoppingItems,
   groupShoppingItems, sanitizeShoppingSettings, buildPurchaseFromShopping,
+  buildExportBundle, validateResults, mergeResults, buildPrintHtml,
 } from "./lib/shopping-logic.js";
 
 // ─── DATA ───────────────────────────────────────────────────────────────────
@@ -4304,13 +4305,43 @@ function ShoppingItemForm({ onSave, onCancel, isMobile }) {
   );
 }
 
-function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveItem, onRemoveItem, onSaveSettings, onMarkPurchased }) {
+function ShoppingImportPreview({ preview, onApply, onCancel }) {
+  const { fileName, changes, skipped, touched } = preview;
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Import agent results" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div style={{ background: C.white, borderRadius: 14, maxWidth: 640, width: "100%", maxHeight: "85vh", overflowY: "auto", padding: 22, fontFamily: font }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 800, color: C.charcoal }}>Import agent results</h3>
+        <p style={{ margin: "0 0 12px", fontSize: 12, color: C.textMuted }}>{fileName} · nothing is saved until you press Apply. Approvals, claims, selections, quantities and statuses are never changed by an import.</p>
+        {changes.length === 0 && <p style={{ fontSize: 14, color: C.textSecondary }}>No changes — everything in this file is already in the list.</p>}
+        {changes.map(c => (
+          <div key={c.itemId} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.charcoal }}>{c.kind === "new" ? "New (proposed): " : ""}{c.name}</div>
+            <div style={{ fontSize: 12, color: C.textSecondary, marginTop: 2 }}>
+              {[c.addedCandidates ? `+${c.addedCandidates} candidate${c.addedCandidates > 1 ? "s" : ""}` : "", c.updatedCandidates ? `${c.updatedCandidates} price/stock update${c.updatedCandidates > 1 ? "s" : ""}` : "",
+                c.flag ? `flag: ${c.flag}` : "", c.suggestedQty != null ? `suggested qty ${c.suggestedQty}` : "", c.noteAdded ? "note added" : ""].filter(Boolean).join(" · ") || "details updated"}
+            </div>
+          </div>
+        ))}
+        {skipped.length > 0 && <p style={{ fontSize: 12, color: C.warnText, background: C.warnBg, borderRadius: 8, padding: "8px 10px" }}>Skipped: {skipped.join("; ")}</p>}
+        <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+          <button onClick={onApply} style={shBtnPrimary}>{touched.length === 0 ? "Close" : `Apply ${touched.length} change${touched.length === 1 ? "" : "s"}`}</button>
+          {touched.length > 0 && <button onClick={onCancel} style={shBtn}>Cancel</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveItem, onRemoveItem, onSaveSettings, onMarkPurchased, propertyId }) {
   const { items, settings } = shopping;
   const [groupBy, setGroupBy] = useState("category");
   const [filters, setFilters] = useState({ status: "all", category: "all", priority: "all", agentFlag: "all", claimedBy: "all", vendor: "all", search: "" });
   const [expandedId, setExpandedId] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+  const [importPreview, setImportPreview] = useState(null);   // { fileName, touched, changes, skipped } | null
+  const [importMsg, setImportMsg] = useState(null);           // { error } | { ok } | null
+  const fileRef = useRef(null);
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -4336,6 +4367,47 @@ function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveI
       onClick: budget == null ? () => setShowSettings(true) : null },
   ];
   const sel = { ...ppInput, maxWidth: 200, width: "auto" };
+
+  // ── Research-agent round trip (formats are a contract — see shopping-logic.js §2.9 notes) ──
+  const exportForAgent = () => {
+    const bundle = buildExportBundle({ items, settings, propertyId, podcast: PODCAST_DATABASE, tools: TOOLS_DATA, now: new Date().toISOString() });
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `pp-shopping-export-${localISODate()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+  const onPickResults = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";   // allow re-picking the same file
+    if (!file) return;
+    let json;
+    try { json = JSON.parse(await file.text()); } catch (err) { setImportMsg({ error: "That file isn't valid JSON." }); return; }
+    const v = validateResults(json, propertyId);
+    if (!v.ok) { setImportMsg({ error: v.error }); return; }
+    setImportMsg(null);
+    setImportPreview({ fileName: file.name, ...mergeResults(items, json, settings) });
+  };
+  const applyImport = () => {
+    const n = importPreview.touched.length;
+    importPreview.touched.forEach(onSaveItem);   // one targeted write per touched item (never a whole-hash write)
+    setImportMsg({ ok: n === 0 ? "Nothing to change — this file is already imported." : `Imported: ${n} item${n === 1 ? "" : "s"} updated.` });
+    setImportPreview(null);
+  };
+  const printForKerry = () => {
+    const html = buildPrintHtml(items, settings, new Date().toISOString());
+    const w = window.open("", "_blank");
+    if (!w) { window.alert("Your browser blocked the print window. Allow pop-ups for this site and try again."); return; }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    w.print();
+  };
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px", fontFamily: font }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
@@ -4344,6 +4416,10 @@ function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveI
           <p style={{ fontSize: 13, color: C.textMuted, margin: "4px 0 0" }}>Stocking the house for {settings.guestCount} guests · {items.length} items</p>
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button disabled={!propertyId} onClick={exportForAgent} style={shBtn}>Export for agent</button>
+          <button disabled={!canEdit || !propertyId} onClick={() => fileRef.current && fileRef.current.click()} style={shBtn}>Import agent results</button>
+          <input ref={fileRef} type="file" accept="application/json,.json" onChange={onPickResults} style={{ display: "none" }} />
+          <button onClick={printForKerry} style={shBtn}>Print for Kerry</button>
           <button onClick={() => setShowSettings(s => !s)} style={shBtn}>Settings</button>
           <button disabled={!canEdit} onClick={() => setShowAdd(true)} style={{ ...shBtnPrimary, background: canEdit ? C.mint : C.border }}>+ Add item</button>
         </div>
@@ -4352,6 +4428,9 @@ function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveI
       {loaded && loadError && <p style={{ color: C.ocean, fontSize: 14, fontWeight: 600 }}>Couldn’t load saved shopping changes — showing the starter list, and editing is off. Reload to try again.</p>}
       {loaded && !loadError && !canEdit && <p style={{ color: C.textMuted, fontSize: 13 }}>Editing is off until this property’s data is set up (open the app from the main address once to finish setup).</p>}
 
+      {importMsg && importMsg.error && <p role="alert" style={{ color: C.ocean, fontSize: 14, fontWeight: 600 }}>{importMsg.error}</p>}
+      {importMsg && importMsg.ok && <p style={{ color: C.mintDark, fontSize: 14, fontWeight: 600 }}>{importMsg.ok}</p>}
+      {importPreview && <ShoppingImportPreview preview={importPreview} onApply={applyImport} onCancel={() => setImportPreview(null)} />}
       {showSettings && <ShoppingSettingsPanel key={JSON.stringify(settings)} settings={settings} canEdit={canEdit} onSave={onSaveSettings} onClose={() => setShowSettings(false)} />}
       {showAdd && <ShoppingItemForm isMobile={isMobile} onCancel={() => setShowAdd(false)} onSave={(item) => { onSaveItem(item); setShowAdd(false); setExpandedId(item.id); }} />}
 
@@ -5439,7 +5518,7 @@ export default function App() {
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
-      {activeView === "shopping" && <ShoppingView shopping={shopping} loaded={shoppingLoaded} loadError={shoppingLoadError} canEdit={shoppingReady} purchases={purchases} onSaveItem={saveShoppingItem} onRemoveItem={removeShoppingItem} onSaveSettings={saveShoppingSettings} onMarkPurchased={promoteShoppingItem} />}
+      {activeView === "shopping" && <ShoppingView shopping={shopping} loaded={shoppingLoaded} loadError={shoppingLoadError} canEdit={shoppingReady} purchases={purchases} onSaveItem={saveShoppingItem} onRemoveItem={removeShoppingItem} onSaveSettings={saveShoppingSettings} onMarkPurchased={promoteShoppingItem} propertyId={activeProperty} />}
       {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} reimbursableVendors={shopping.settings.reimbursableVendors} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
       {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} loadError={houseInfoLoadError} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 
