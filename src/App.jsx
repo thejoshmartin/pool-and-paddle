@@ -21,7 +21,7 @@ import {
   NON_GLASS_CATEGORIES, emptyShoppingItem, emptyCandidate, computeQty, mealsCovered, landedTotal, perUnit,
   returnExposure, bestValue, candidateWarnings, forecastSpend, feesFor, taxFor, filterShoppingItems,
   groupShoppingItems, sanitizeShoppingSettings, buildPurchaseFromShopping,
-  buildExportBundle, validateResults, mergeResults, buildPrintHtml,
+  buildExportBundle, validateResults, mergeResults, buildPrintHtml, priceChangedSinceApproval,
 } from "./lib/shopping-logic.js";
 
 // ─── DATA ───────────────────────────────────────────────────────────────────
@@ -4097,6 +4097,7 @@ function ShoppingItemCard({ item, settings, expanded, onToggle, canEdit, onSave,
   const best = bestValue(item, settings);
   const selected = (item.candidates || []).find(c => c.id === item.selectedCandidateId) || null;
   const selectedLanded = selected ? landedTotal(selected, settings) : null;
+  const priceChange = priceChangedSinceApproval(item, settings);
   const patch = (p) => onSave({ ...item, ...p });
   const rule = item.qtyRule || {};
   const ruleText = item.qtyOverride != null ? `override (rule would give ${computeQty({ ...item, qtyOverride: null }, settings)})`
@@ -4119,6 +4120,7 @@ function ShoppingItemCard({ item, settings, expanded, onToggle, canEdit, onSave,
           {item.agentFlag && item.agentFlag.action && <span style={shChip(item.agentFlag.action === "buy-now" ? C.mintDark : C.warnText, item.agentFlag.action === "buy-now" ? C.seafoamLight : C.warnBg)}>{item.agentFlag.action}</span>}
           {item.claimedBy && <span style={shChip(C.white, item.claimedBy === "JM" ? C.ocean : C.mint)}>{item.claimedBy} buying</span>}
           {item.approvedBy && <span style={shChip(C.white, C.mint)}>approved {item.approvedBy}</span>}
+          {priceChange && <span style={shChip(C.warnText, C.warnBg)}>price changed since approval</span>}
           {purchased && <span style={shChip(C.mintDark, C.seafoamLight)}>✓ purchased</span>}
           {selectedLanded !== null && <span style={{ fontSize: 15, fontWeight: 800, color: C.charcoal }}>{fmtUSD(selectedLanded)}</span>}
         </div>
@@ -4129,7 +4131,12 @@ function ShoppingItemCard({ item, settings, expanded, onToggle, canEdit, onSave,
             <div style={{ background: C.seafoamFaint, border: `1px solid ${C.seafoam}`, borderRadius: 10, padding: 12, marginBottom: 12, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
               <span style={{ fontSize: 13, color: C.mintDark, fontWeight: 600, flex: 1 }}>The research agent proposed this item.</span>
               <button disabled={!canEdit} onClick={() => patch({ proposed: false })} style={shBtnPrimary}>Keep</button>
-              <button disabled={!canEdit} onClick={() => { if (window.confirm("Dismiss this proposed item?")) onRemove(item.id); }} style={shBtnDanger}>Dismiss</button>
+              <button disabled={!canEdit} onClick={() => { if (window.confirm("Dismiss this proposed item? It stays hidden even if the agent proposes it again.")) patch({ dismissed: true, proposed: false }); }} style={shBtnDanger}>Dismiss</button>
+            </div>
+          )}
+          {priceChange && (
+            <div role="alert" style={{ fontSize: 13, fontWeight: 600, color: C.warnText, background: C.warnBg, borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
+              ⚠ The selected candidate's landed price changed since {item.approvedBy} approved it: {fmtUSD(priceChange.from)} → {fmtUSD(priceChange.to)}. Un-approve and re-approve to accept the new price.
             </div>
           )}
           {item.agentFlag && item.agentFlag.action && (
@@ -4192,17 +4199,17 @@ function ShoppingItemCard({ item, settings, expanded, onToggle, canEdit, onSave,
                 selected={item.selectedCandidateId === c.id} best={!!best && best.id === c.id} canEdit={canEdit}
                 onSelect={() => {
                   const reapprove = !!item.approvedBy && item.selectedCandidateId !== c.id;   // a different pick was never approved
-                  patch({ selectedCandidateId: c.id, ...(reapprove ? { status: "shortlisted", approvedBy: null, approvedAt: null } : { status: item.status === "researching" ? "shortlisted" : item.status }) });
+                  patch({ selectedCandidateId: c.id, ...(reapprove ? { status: "shortlisted", approvedBy: null, approvedAt: null, approvedLanded: null } : { status: item.status === "researching" ? "shortlisted" : item.status }) });
                 }}
                 onEdit={() => setEditingCand(c.id)}
-                onDelete={() => { if (window.confirm("Delete this candidate?")) { const wasPick = item.selectedCandidateId === c.id; patch({ candidates: item.candidates.filter(x => x.id !== c.id), selectedCandidateId: wasPick ? null : item.selectedCandidateId, ...(wasPick && item.approvedBy ? { status: "shortlisted", approvedBy: null, approvedAt: null } : {}) }); } }} />
+                onDelete={() => { if (window.confirm("Delete this candidate?")) { const wasPick = item.selectedCandidateId === c.id; patch({ candidates: item.candidates.filter(x => x.id !== c.id), selectedCandidateId: wasPick ? null : item.selectedCandidateId, ...(wasPick && item.approvedBy ? { status: "shortlisted", approvedBy: null, approvedAt: null, approvedLanded: null } : {}) }); } }} />
             ))}
           </div>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             {item.approvedBy
-              ? <button disabled={!canEdit} onClick={() => patch({ status: "shortlisted", approvedBy: null, approvedAt: null })} style={shBtn}>Un-approve ({item.approvedBy})</button>
-              : <button disabled={!canEdit || !selected || !user.code} title={!user.code ? "Log in to approve" : selected ? "" : "Select a candidate first"} onClick={() => patch({ status: "approved", approvedBy: user.code, approvedAt: new Date().toISOString() })} style={{ ...shBtnPrimary, background: canEdit && selected && user.code ? C.mint : C.border, border: "none" }}>Approve as {user.code || "me"}</button>}
+              ? <button disabled={!canEdit} onClick={() => patch({ status: "shortlisted", approvedBy: null, approvedAt: null, approvedLanded: null })} style={shBtn}>Un-approve ({item.approvedBy})</button>
+              : <button disabled={!canEdit || !selected || !user.code} title={!user.code ? "Log in to approve" : selected ? "" : "Select a candidate first"} onClick={() => patch({ status: "approved", approvedBy: user.code, approvedAt: new Date().toISOString(), approvedLanded: selected ? landedTotal(selected, settings) : null })} style={{ ...shBtnPrimary, background: canEdit && selected && user.code ? C.mint : C.border, border: "none" }}>Approve as {user.code || "me"}</button>}
             {item.claimedBy
               ? <button disabled={!canEdit} onClick={() => patch({ claimedBy: null })} style={shBtn}>Release claim ({item.claimedBy} is buying)</button>
               : <button disabled={!canEdit || !user.code} onClick={() => patch({ claimedBy: user.code })} style={shBtn}>I'm buying this</button>}
@@ -4337,7 +4344,8 @@ function ShoppingImportPreview({ preview, onApply, onCancel }) {
 }
 
 function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveItem, onRemoveItem, onSaveSettings, onMarkPurchased, propertyId }) {
-  const { items, settings } = shopping;
+  const { settings } = shopping;
+  const items = useMemo(() => shopping.items.filter(i => !i.dismissed), [shopping.items]);   // dismissed proposals stay saved (so a re-import can't bring them back) but hidden
   const [groupBy, setGroupBy] = useState("category");
   const [filters, setFilters] = useState({ status: "all", category: "all", priority: "all", agentFlag: "all", claimedBy: "all", vendor: "all", search: "" });
   const [expandedId, setExpandedId] = useState(null);
@@ -5079,6 +5087,7 @@ export default function App() {
   // Cache the merged shopping list locally (read-cache only). activeProperty omitted from deps for the
   // same reason as the other cache/save effects.
   useEffect(() => {
+    if (!shoppingServerLoaded.current) return;   // gated like the server writes: never cache seed defaults before the saved list loads
     try {
       localStorage.setItem(lsKey(LS_SHOPPING, activeProperty), JSON.stringify(shopping));
     } catch (e) { console.warn('localStorage save failed:', e.name); }

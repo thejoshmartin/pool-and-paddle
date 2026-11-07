@@ -1438,4 +1438,49 @@ console.log('Phase 2 review fixes — agent value robustness, Best Value, packs,
   ok('buying 6 packs of 12 records 72 pieces at $3 each (quantity × price still equals the goods total), so the meals-covered badge counts forks, not packs');
 }
 
+console.log('Phase 2 — remaining limits resolved (dismissed proposals, price-since-approval):');
+{
+  const D = SH.DEFAULT_SHOPPING_SETTINGS;
+  const mkRes = (extra) => ({ schema: 'pp-shopping-results/v1', generatedAt: '2026-11-21T09:00:00Z', propertyId: 'pp', updates: [], newItems: [], ...extra });
+  let n = 0;
+  const ids = { candidate: () => `c-d-${++n}`, item: () => `sh-d-${++n}` };
+  const proposal = { name: 'Cheese board', category: 'Serveware & Entertaining', candidates: [{ vendor: 'Minoan', sku: 'M1', unitPrice: 20 }], notes: 'idea' };
+  const first = SH.mergeResults([], mkRes({ newItems: [proposal] }), D, ids).touched[0];
+  assert.equal(first.proposed, true);
+  // Dismiss = keep the record hidden (not deleted), so a re-import can't resurrect it.
+  const dismissed = { ...first, dismissed: true, proposed: false };
+  const again = SH.mergeResults([dismissed], mkRes({ newItems: [proposal] }), D, ids);
+  assert.deepEqual(again.touched, []);
+  assert.equal(again.touched.length + [dismissed].length, 1);
+  const withNewOption = SH.mergeResults([dismissed], mkRes({ newItems: [{ ...proposal, candidates: [...proposal.candidates, { vendor: 'Amazon', sku: 'A1', unitPrice: 18 }] }] }), D, ids);
+  assert.equal(withNewOption.touched.length, 1); assert.equal(withNewOption.touched[0].id, dismissed.id); assert.equal(withNewOption.touched[0].dismissed, true);
+  assert.equal(withNewOption.changes.filter(c => c.kind === 'new').length, 0);
+  // an agent can never un-dismiss (or dismiss) anything
+  const flip = SH.mergeResults([dismissed], mkRes({ updates: [{ itemId: dismissed.id, dismissed: false, proposed: true }] }), D, ids);
+  assert.deepEqual(flip.touched, []);
+  const flipNew = SH.mergeResults([], mkRes({ newItems: [{ ...proposal, dismissed: true }] }), D, ids).touched[0];
+  assert.equal(flipNew.dismissed, undefined);
+  ok('a dismissed proposal stays hidden when the same file is imported again (no duplicate, nothing resurrected), and an import can never dismiss or restore items');
+
+  // price changed since approval
+  const cand = { ...SH.emptyCandidate(), id: 'c1', vendor: 'Amazon', vendorType: 'amazon', unitPrice: 100, qtyToBuy: 1, estTax: 0, shipping: 0 };
+  const approved = { ...SH.emptyShoppingItem(), id: 'sh-a', name: 'x', candidates: [cand], selectedCandidateId: 'c1', approvedBy: 'JM', approvedLanded: 100 };
+  assert.equal(SH.priceChangedSinceApproval(approved, D), null);
+  const repriced = { ...approved, candidates: [{ ...cand, unitPrice: 112.5 }] };
+  assert.deepEqual(SH.priceChangedSinceApproval(repriced, D), { from: 100, to: 112.5 });
+  assert.equal(SH.priceChangedSinceApproval({ ...repriced, approvedBy: null }, D), null);
+  assert.equal(SH.priceChangedSinceApproval({ ...repriced, approvedLanded: null }, D), null);
+  assert.equal(SH.priceChangedSinceApproval({ ...repriced, selectedCandidateId: null }, D), null);
+  assert.equal(SH.priceChangedSinceApproval({ ...approved, candidates: [{ ...cand, unitPrice: 100.004 }] }, D), null);
+  assert.equal(SH.priceChangedSinceApproval({}, D), null);
+  assert.equal(SH.priceChangedSinceApproval(null, D), null);
+  const saved = SH.sanitizeShoppingItem({ ...approved, approvedLanded: '104.5', name: 'x', category: 'Other' }, { updatedAt: null, updatedBy: null });
+  assert.equal(saved.item.approvedLanded, 104.5);
+  assert.equal(SH.emptyShoppingItem().approvedLanded, null);
+  // an agent import cannot set the recorded approval price
+  const forged = SH.mergeResults([approved], mkRes({ updates: [{ itemId: 'sh-a', approvedLanded: 1 }] }), D, ids);
+  assert.deepEqual(forged.touched, []);
+  ok('an approved item flags when its selected candidate\'s landed price later changes (e.g. an agent re-check); no flag for sub-cent noise, unapproved items or missing data; the approval price can\'t be forged by an import');
+}
+
 console.log(`\nAll ${passed} checks passed.`);

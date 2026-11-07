@@ -122,7 +122,7 @@ export function emptyShoppingItem() {
     qtyNeeded: 0, qtyOverride: null,
     priority: "launch", status: "researching",
     candidates: [], selectedCandidateId: null,
-    approvedBy: null, approvedAt: null, claimedBy: null,
+    approvedBy: null, approvedAt: null, approvedLanded: null, claimedBy: null,
     needBy: null, targetPrice: null,
     episodes: [], finishItemId: null,
     agentFlag: { action: null, reason: "", flaggedAt: null },
@@ -259,6 +259,7 @@ export function sanitizeShoppingItem(raw, stamp) {
     candidates,
     selectedCandidateId: raw.selectedCandidateId ? String(raw.selectedCandidateId) : null,
     approvedBy: person(raw.approvedBy), approvedAt: raw.approvedAt ? String(raw.approvedAt) : null,
+    approvedLanded: numOrNull(raw.approvedLanded),
     claimedBy: person(raw.claimedBy),
     needBy: raw.needBy ? String(raw.needBy) : null, targetPrice: numOrNull(raw.targetPrice),
     episodes: Array.isArray(raw.episodes) ? raw.episodes.map(Number).filter(Number.isFinite) : [],
@@ -641,7 +642,8 @@ const PRICE_STOCK_FIELDS = ["unitPrice", "retailUnitPrice", "shipping", "transac
   "rating", "ratingCount", "returnWindowDays", "returnByDate", "returnShippingCost", "restockingPct", "freeReturns", "tier", "standardsCheck", "checkedAt"];
 const UPDATE_KEYS = new Set(["itemId", "addCandidates", "agentFlag", "suggestedQty", "notes"]);
 const NEW_ITEM_KEYS = new Set(["name", "category", "room", "qtyRule", "priority", "candidates", "agentFlag", "notes", "suggestedQty", "zone", "dishType", "usesPerGuestPerDay"]);
-const FORBIDDEN_AGENT_KEYS = new Set(["delete", "deleted", "__deleted", "remove", "removed", "tombstone"]);
+// ("dismissed" is how the app hides a rejected agent proposal — an import must never set or clear it.)
+const FORBIDDEN_AGENT_KEYS = new Set(["delete", "deleted", "__deleted", "remove", "removed", "tombstone", "dismissed"]);
 // Human master-list fields: an import may fill one in when it is empty but never overwrite it.
 const FILL_ONLY_KEYS = new Set(["qualityTier", "requirements", "kerryDecides"]);
 function isForbiddenAgentKey(k) {
@@ -822,4 +824,15 @@ export function buildPrintHtml(items, settings, now) {
     + `<p style="margin:0 0 4px;font-size:12px;color:#666;">Printed ${esc(date)} · ${list.length} item${list.length === 1 ? "" : "s"} (approved and shortlisted) · selected total ${esc(usd(grand))} · sized for ${esc(settings && settings.guestCount)} guests</p>`
     + (body || `<p style="font-size:13px;color:#666;">Nothing approved or shortlisted yet.</p>`)
     + `</body></html>`;
+}
+
+// When an approved item's selected candidate no longer costs what it did at approval (e.g. an agent
+// re-check refreshed its price), return { from, to } so the UI can ask for a fresh look. Otherwise null.
+export function priceChangedSinceApproval(item, settings) {
+  if (!item || !item.approvedBy) return null;
+  const from = numOrNull(item.approvedLanded);
+  const sel = (Array.isArray(item.candidates) ? item.candidates : []).find(c => c && c.id === item.selectedCandidateId);
+  if (from === null || !sel) return null;
+  const to = landedTotal(sel, settings);
+  return Math.abs(to - from) >= 0.01 ? { from, to } : null;
 }
