@@ -16,7 +16,7 @@ import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, f
 import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, groupHouseInfoByCategory } from "./lib/house-info-logic.js";
 import {
   newInboxId, reconciles, matchLines, findDuplicates, addressMatches, mergeLines, canAcceptAll, fileProblems,
-  buildPurchasesFromInbox, suggestPaymentMethod, LOW_CONFIDENCE,
+  buildPurchasesFromInbox, suggestPaymentMethod, isLowConfidence, acceptUndecided, decideFilingOutcome,
 } from "./lib/receipt-logic.js";
 import SHOPPING_SEED from "./shopping-seed.json";
 import {
@@ -3697,7 +3697,8 @@ const inboxChip = (color, bg) => ({ fontSize: 11, fontWeight: 700, color, backgr
 
 function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAddress, onChange, onChangeNow, onFile, onRetry, onRemove, onOpenPurchase, isMobile }) {
   const ex = record.extraction;
-  const [order, setOrder] = useState(() => ({ purchasedBy: "", paymentMethod: ex ? suggestPaymentMethod(ex.paymentMethod) : "" }));
+  const [order, setOrder] = useState(() => ({ purchasedBy: "", paymentMethod: null }));   // paymentMethod null = not touched → the extraction's suggestion
+  const shownOrder = { ...order, paymentMethod: order.paymentMethod ?? (ex ? suggestPaymentMethod(ex.paymentMethod) : "") };   // what the form shows is exactly what gets filed
   const [filing, setFiling] = useState(false);
   const activeItems = useMemo(() => (shoppingItems || []).filter(i => i && !i.dismissed), [shoppingItems]);
 
@@ -3715,7 +3716,7 @@ function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAdd
   const numField = (v) => (v === "" ? null : Number(v));
   const fld = (label, node, w = 130) => (<div style={{ flex: 1, minWidth: isMobile ? "45%" : w }}><label style={ppLabel}>{label}</label>{node}</div>);
   const acc = ex ? ex.lines.filter(l => l.decision === "accept").length : 0;
-  const problems = ex ? fileProblems(ex, order) : [];
+  const problems = ex ? fileProblems(ex, shownOrder) : [];
   const dups = ex ? findDuplicates(ex, record.receipt, purchases, inbox, record.id, record.purchaseIds) : [];
   const addrOk = ex ? addressMatches(ex.shipTo, propertyAddress) : null;
   const fileName = (record.receipt && record.receipt.name) || "receipt";
@@ -3728,7 +3729,7 @@ function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAdd
     if (filing || problems.length) return;
     if (dups.length > 0 && !window.confirm(`This may already be on file:\n\n• ${dups.map(d => d.reason).join("\n• ")}\n\nFile it anyway?`)) return;
     setFiling(true);
-    onFile(record, order);
+    Promise.resolve(onFile(record, shownOrder)).then(ok => { if (ok === false) setFiling(false); });
   };
 
   const card = { background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 12 };
@@ -3786,7 +3787,7 @@ function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAdd
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
         {fld("Who paid?", <select style={ppInput} value={order.purchasedBy} onChange={e => setOrder(o => ({ ...o, purchasedBy: e.target.value }))}><option value="">— choose —</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>, 170)}
-        {fld("Payment method", <select style={ppInput} value={order.paymentMethod} onChange={e => setOrder(o => ({ ...o, paymentMethod: e.target.value }))}><option value="">—</option>{PAYMENT_METHODS.map(p => <option key={p} value={p}>{p}</option>)}</select>, 170)}
+        {fld("Payment method", <select style={ppInput} value={shownOrder.paymentMethod} onChange={e => setOrder(o => ({ ...o, paymentMethod: e.target.value }))}><option value="">—</option>{PAYMENT_METHODS.map(p => <option key={p} value={p}>{p}</option>)}</select>, 170)}
         {fld("Tax ($)", <input type="number" step="0.01" style={ppInput} value={ex.tax ?? ""} onChange={e => setEx({ tax: numField(e.target.value) })} />)}
         {fld("Shipping ($)", <input type="number" step="0.01" style={ppInput} value={ex.shipping ?? ""} onChange={e => setEx({ shipping: numField(e.target.value) })} />)}
         {fld("Fees ($)", <input type="number" step="0.01" style={ppInput} value={ex.fees ?? ""} onChange={e => setEx({ fees: numField(e.target.value) })} />)}
@@ -3795,7 +3796,7 @@ function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAdd
       </div>
 
       {ex.lines.map((l, i) => {
-        const low = (l.confidence ?? 1) < LOW_CONFIDENCE;
+        const low = isLowConfidence(l, ex);
         const accepted = l.decision === "accept", skipped = l.decision === "skip";
         return (
           <div key={i} style={{ border: `1px solid ${accepted ? C.mint : low ? C.warnText : C.border}`, background: skipped ? C.pageBg : low ? C.warnBg : C.white, borderRadius: 10, padding: 10, marginBottom: 8, opacity: skipped ? 0.7 : 1 }}>
@@ -3823,7 +3824,7 @@ function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAdd
       })}
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
-        <button disabled={!canAcceptAll(ex)} title={canAcceptAll(ex) ? "" : "Disabled while there are issues or blank prices — accept lines one at a time"} onClick={() => onChange({ ...record, extraction: { ...ex, lines: ex.lines.map(l => ({ ...l, decision: "accept" })) } })} style={{ ...inboxBtn, opacity: canAcceptAll(ex) ? 1 : 0.5 }}>Accept all</button>
+        <button disabled={!canAcceptAll(ex)} title={canAcceptAll(ex) ? "" : "Disabled while there are issues or blank prices — accept lines one at a time"} onClick={() => onChange({ ...record, extraction: { ...ex, lines: acceptUndecided(ex.lines) } })} style={{ ...inboxBtn, opacity: canAcceptAll(ex) ? 1 : 0.5 }}>Accept all</button>
         <button disabled={problems.length > 0 || filing} onClick={doFile} style={{ ...inboxBtnPrimary, background: problems.length || filing ? C.border : C.mint, borderColor: problems.length || filing ? C.border : C.mint }}>{filing ? "Filing…" : `File ${acc} purchase${acc === 1 ? "" : "s"}`}</button>
         <button onClick={() => { if (window.confirm("Dismiss this receipt without filing anything?")) onChangeNow({ ...record, status: "dismissed" }); }} style={inboxBtn}>Dismiss</button>
       </div>
@@ -5392,12 +5393,12 @@ export default function App() {
     setPurchases(prev => (prev.some(p => p.id === purchase.id)
       ? prev.map(p => (p.id === purchase.id ? purchase : p))
       : [...prev, purchase]));
-    fetch(apiUrl('/api/purchases', activeProperty), {
+    return fetch(apiUrl('/api/purchases', activeProperty), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(purchase),
-    }).then(r => { if (!r.ok) setSyncError('Failed to save purchase'); else setSyncError(null); })
-      .catch(() => setSyncError('Unable to reach server'));
+    }).then(r => { if (!r.ok) { setSyncError('Failed to save purchase'); return false; } setSyncError(null); return true; })
+      .catch(() => { setSyncError('Unable to reach server'); return false; });   // resolves true/false so callers (Receipt Inbox filing) can wait for the outcome
   };
   const deletePurchase = (id) => {
     setPurchases(prev => prev.filter(p => p.id !== id));
@@ -5725,11 +5726,14 @@ export default function App() {
   }, [activeProperty]);
 
   const putInboxRecord = (rec, useKeepalive = false) => {
-    if (!inboxServerLoaded.current) return Promise.resolve();
+    if (!inboxServerLoaded.current) return Promise.resolve(false);
     return fetch(apiUrl('/api/receipt-inbox', activePropertyRef.current), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rec), keepalive: useKeepalive,
-    }).then(r => { if (!r.ok) setSyncError('Failed to save receipt'); else setSyncError(null); })
-      .catch(() => setSyncError('Unable to reach server'));
+    }).then(r => {
+      if (r.status === 409) { setSyncError('This receipt was already filed or dismissed on another device — refresh to see it'); return false; }
+      if (!r.ok) { setSyncError('Failed to save receipt'); return false; }
+      setSyncError(null); return true;
+    }).catch(() => { setSyncError('Unable to reach server'); return false; });
   };
   const cancelInboxWrite = (id) => {
     if (inboxTimers.current[id]) { clearTimeout(inboxTimers.current[id]); delete inboxTimers.current[id]; }
@@ -5818,13 +5822,30 @@ export default function App() {
   };
   // File: ONE explicit action. Creates one purchase per accepted line (shared order group + shared receipt), marks the
   // record filed, and moves linked shopping items to ordered. The ref guards against a double click.
-  const fileInboxRecord = (record, order) => {
-    if (inboxFiling.current.has(record.id)) return;
+  const fileInboxRecord = async (record, order) => {
+    if (inboxFiling.current.has(record.id)) return false;
     const drafts = buildPurchasesFromInbox({ record, order, shoppingItems: shopping.items, settings: shopping.settings, propertyInServiceDate: activeInServiceDate });
-    if (drafts.length === 0) return;
+    if (drafts.length === 0) return false;
     inboxFiling.current.add(record.id);
-    drafts.forEach(savePurchase);
-    saveInboxRecordNow({ ...record, status: 'filed', purchaseIds: drafts.map(d => d.id) });
+    // All-or-nothing: wait for every purchase save, and only then mark the record filed. Any failure rolls the lot back
+    // (quietly — the error message below must not be cleared by a rollback "success") so a retry can't double-file.
+    const results = await Promise.all(drafts.map(savePurchase));
+    const outcome = decideFilingOutcome(results);
+    const filedOk = outcome.markFiled && (await saveInboxRecordNow({ ...record, status: 'filed', purchaseIds: drafts.map(d => d.id) })) === true;
+    if (!filedOk) {
+      const ids = new Set(drafts.map(d => d.id));
+      setPurchases(prev => prev.filter(p => !ids.has(p.id)));
+      for (const d of drafts) {
+        const base = apiUrl('/api/purchases', activeProperty);
+        fetch(base + (activeProperty ? '&' : '?') + 'id=' + encodeURIComponent(d.id), { method: 'DELETE' }).catch(() => {});
+      }
+      setInbox(prev => prev.map(r => (r.id === record.id ? record : r)));
+      inboxFiling.current.delete(record.id);
+      setSyncError(outcome.failed
+        ? `Filing failed: ${outcome.failed} of ${drafts.length} purchases did not save. Nothing was filed — please try again.`
+        : 'Could not mark the receipt as filed. Nothing was filed — please try again.');
+      return false;
+    }
     const byItem = {};
     drafts.forEach(d => { if (d.shoppingItemId) (byItem[d.shoppingItemId] = byItem[d.shoppingItemId] || []).push(d.id); });
     for (const [itemId, pids] of Object.entries(byItem)) {
@@ -5833,6 +5854,7 @@ export default function App() {
       const live = (it.purchaseIds || []).filter(pid => purchases.some(p => p.id === pid));
       saveShoppingItem({ ...it, status: ['received', 'kept', 'returned'].includes(it.status) ? it.status : 'ordered', purchaseIds: [...live, ...pids] });
     }
+    return true;
   };
   const inboxReady = inboxLoaded && !!activeProperty && !inboxLoadError;
   const activePropertyAddress = (properties.find(p => p.id === activeProperty) || {}).address || '';

@@ -1906,4 +1906,99 @@ console.log('Phase 3 fix — card redaction must not mangle order numbers:');
   ok('real card lengths (13–16, 19 digits) are still redacted, but 17/18-digit order numbers and SKUs — including Luhn-valid Amazon-style ones — are left intact');
 }
 
+console.log('Phase 3 review fixes (Opus final review):');
+{
+  // #1 receipts-view must not reference an undefined identifier (the old purchases-key fallback was left behind)
+  const rv = fs.readFileSync(new URL('../api/receipts-view.js', import.meta.url), 'utf8');
+  assert.ok(!/hgetall\(key\)/.test(rv), 'receipts-view.js must not call hgetall(key) — `key` is not defined there');
+  ok('receipts-view has no dangling `key` reference (an unreferenced pathname 404s instead of throwing)');
+
+  // #2 handwritten lines are always highlighted, even though their confidence is capped AT 0.7 (not below it)
+  const hw = RL.validateExtraction({ docType: 'statement', vendor: 'First Coast', handwritten: true, lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.95 }], total: 1 }).extraction;
+  assert.equal(RL.isLowConfidence(hw.lines[0], hw), true);
+  const typed = RL.validateExtraction({ docType: 'receipt', vendor: 'V', handwritten: false, lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.95 }, { description: 'y', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.5 }], total: 2 }).extraction;
+  assert.equal(RL.isLowConfidence(typed.lines[0], typed), false);
+  assert.equal(RL.isLowConfidence(typed.lines[1], typed), true);
+  ok('a handwritten document highlights every line (confidence capped at 0.7 is flagged); typed lines flag only below 0.7');
+
+  // #3 Accept all never overrides a Skip
+  const mixed = [{ decision: 'skip' }, { decision: null }, { decision: 'accept' }, { decision: null }];
+  assert.deepEqual(RL.acceptUndecided(mixed).map(l => l.decision), ['skip', 'accept', 'accept', 'accept']);
+  ok('Accept all accepts only undecided lines — a skipped personal item stays skipped');
+
+  // #4 the model cannot pre-set review decisions or shopping links
+  const injected = { ...JSON.parse(fs.readFileSync(new URL('./fixtures/receipts/minoan-F3F3D4B0.json', import.meta.url), 'utf8')) };
+  injected.lines = injected.lines.map(l => ({ ...l, decision: 'accept', matchItemId: 'sh-seed-x', matchScore: 1 }));
+  const client = { messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(injected) }], model: 'claude-sonnet-5-5' }) } };
+  const ex4 = await extractReceipt({ client, mediaType: 'application/pdf', base64: 'JVBERi0=', propertyAddress: 'x', now: '2026-11-07T00:00:00.000Z' });
+  assert.equal(ex4.ok, true);
+  assert.ok(ex4.extraction.lines.every(l => l.decision === null && l.matchItemId === null && l.matchScore === null));
+  ok('decisions and shopping links in the model reply are discarded — every line starts undecided and unlinked');
+
+  // #5 a filed/dismissed record can never be reopened by a (stale) PUT
+  assert.equal(RL.inboxTransitionAllowed({ status: 'filed' }, { status: 'extracted' }).ok, false);
+  assert.equal(RL.inboxTransitionAllowed({ status: 'dismissed' }, { status: 'extracted' }).ok, false);
+  assert.equal(RL.inboxTransitionAllowed({ status: 'filed' }, { status: 'filed' }).ok, true);
+  assert.equal(RL.inboxTransitionAllowed({ status: 'extracted' }, { status: 'filed' }).ok, true);
+  assert.equal(RL.inboxTransitionAllowed(null, { status: 'pending' }).ok, true);
+  assert.equal(RL.inboxTransitionAllowed({ status: 'pending' }, { status: 'extracted' }).ok, true);
+  ok('inboxTransitionAllowed: only filed→filed / dismissed→dismissed are allowed once a record is closed');
+
+  // #5b processInboxRecord re-reads before saving: a record filed / dismissed / deleted during the Claude call is not overwritten
+  const fixA = JSON.parse(fs.readFileSync(new URL('./fixtures/receipts/minoan-F3F3D4B0.json', import.meta.url), 'utf8'));
+  const reply = JSON.stringify(Object.fromEntries(Object.entries(fixA).filter(([k]) => !k.startsWith('_'))));
+  const rec = { id: 'ri-1', status: 'pending', receipt: { pathname: 'receipts/pp/inbox/ri-1/r.pdf', name: 'r.pdf', contentType: 'application/pdf', uploadedAt: 'x', hash: 'h' }, extraction: null, error: null, purchaseIds: [] };
+  const racing = (mutate) => {
+    const hash = { 'ri-1': JSON.stringify(rec) };
+    const redis = { hash, hget: async (_k, id) => hash[id] ?? null, hset: async (_k, o) => { Object.assign(hash, o); }, get: async () => null };
+    const createClient = () => ({ messages: { create: async () => { mutate(hash); return { stop_reason: 'end_turn', content: [{ type: 'text', text: reply }], model: 'claude-sonnet-5-5' }; } } });
+    return { hash, run: () => processInboxRecord({ redis, key: 'receipt-inbox:pp', inboxId: 'ri-1', readBlob: async () => 'JVBERi0=', createClient, apiKey: 'k', user: 'JM', now: '2026-11-07T00:00:00.000Z', propertyId: 'pp', defaultAddress: 'x' }) };
+  };
+  const f = racing(h => { h['ri-1'] = JSON.stringify({ ...rec, status: 'filed', purchaseIds: ['p1'] }); });
+  const fr = await f.run();
+  assert.equal(fr.status, 409); assert.equal(JSON.parse(f.hash['ri-1']).status, 'filed'); assert.deepEqual(JSON.parse(f.hash['ri-1']).purchaseIds, ['p1']);
+  const d = racing(h => { delete h['ri-1']; });
+  const dr = await d.run();
+  assert.equal(dr.status, 404); assert.equal(d.hash['ri-1'], undefined);
+  const x = racing(h => { h['ri-1'] = JSON.stringify({ ...rec, status: 'dismissed' }); });
+  assert.equal((await x.run()).status, 409); assert.equal(JSON.parse(x.hash['ri-1']).status, 'dismissed');
+  ok('a record filed, dismissed or deleted while Claude was reading is not overwritten or resurrected by the extraction result');
+
+  // #6 card-number redaction covers real-world layouts but still leaves order numbers alone
+  for (const [inp, want] of [
+    ['Visa 4111 1111 1111 1111 12/27', 'Visa •••• 12/27'],
+    ['4111111111111111-2', '••••-2'],
+    ['VISA4111111111111111', 'VISA••••'],
+    ['4111.1111.1111.1111', '••••'],
+    ['4111 - 1111 - 1111 - 1111', '••••'],
+    ['order 113-5550000-1112223', 'order 113-5550000-1112223'],
+    ['order 11355500001112223', 'order 11355500001112223'],
+  ]) assert.equal(RL.redactCardNumbers(inp), want, inp);
+  const money = RL.validateExtraction({ docType: 'receipt', vendor: 'V', lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: '4111111111111111', tax: '4111 1111 1111 1111' }).extraction;
+  assert.ok(!JSON.stringify(money).includes('4111111111111111'));
+  ok('card numbers are redacted with expiry/suffix attached, no word boundary, or odd separators — and a card number in a money field is never stored');
+
+  // a SHA-256 file digest must survive sanitizing untouched (hex digits next to letters can look like a card number)
+  const digest = 'a' + '4111111111111111' + 'b'.repeat(47);
+  const sres = RL.sanitizeInboxRecord({ id: 'ri-h1', status: 'pending', receipt: { pathname: 'receipts/pp/inbox/ri-h1/f.pdf', name: 'f.pdf', contentType: 'application/pdf', uploadedAt: 'x', hash: digest }, extraction: null, purchaseIds: [] }, { updatedAt: 'x', updatedBy: 'JM' });
+  assert.equal(sres.ok, true); assert.equal(sres.record.receipt.hash, digest);
+  ok('the receipt file hash (hex digest) is stored exactly as sent, even if its digits look like a card number');
+
+  // #7 partial filing failure must not mark the record filed
+  assert.equal(typeof RL.decideFilingOutcome, 'function');
+  assert.deepEqual(RL.decideFilingOutcome([true, true, true]), { markFiled: true, failed: 0 });
+  assert.deepEqual(RL.decideFilingOutcome([true, false, true]), { markFiled: false, failed: 1 });
+  assert.deepEqual(RL.decideFilingOutcome([]), { markFiled: false, failed: 0 });
+  ok('decideFilingOutcome: the record is marked filed only when every purchase save succeeded');
+
+  // invoice (e.g. the Amazon case) is paid; only statements/quotes file unconfirmed (spec §3.3 / Phase 1 rule)
+  const mkDraft = (docType) => RL.buildPurchasesFromInbox({
+    record: { id: 'ri-9', receipt: { pathname: 'receipts/pp/inbox/ri-9/f.pdf', name: 'f.pdf', contentType: 'application/pdf', uploadedAt: 'x' }, extraction: { docType, vendor: 'Amazon', orderNo: '1', lines: [{ lineNo: 1, description: 'a', qty: 1, unitPrice: 10, lineTotal: 10, suggestedTrade: 'Other', decision: 'accept', confidence: 0.9 }], tax: 0, shipping: 0, fees: 0, discounts: 0, total: 10 } },
+    order: { purchasedBy: 'JM', paymentMethod: 'Credit card' }, shoppingItems: [], settings: { reimbursableVendors: [] }, propertyInServiceDate: '',
+  })[0].paymentConfirmed;
+  assert.equal(mkDraft('receipt'), true); assert.equal(mkDraft('invoice'), true);
+  assert.equal(mkDraft('statement'), false); assert.equal(mkDraft('quote'), false);
+  ok('only statements and quotes file with paymentConfirmed:false — receipts and invoices are treated as paid');
+}
+
 console.log(`\nAll ${passed} checks passed.`);

@@ -1,7 +1,7 @@
 import { Redis } from '@upstash/redis';
 import { del } from '@vercel/blob';
 import { scopedKey, purchasesFromHash, blobIsReferenced } from './_scope.js';
-import { sanitizeInboxRecord } from '../src/lib/receipt-logic.js';
+import { sanitizeInboxRecord, inboxTransitionAllowed } from '../src/lib/receipt-logic.js';
 
 const redis = new Redis({
   url: process.env.PP_REDIS_URL,
@@ -38,6 +38,13 @@ export default async function handler(req, res) {
   if (req.method === 'PUT') {
     const result = sanitizeInboxRecord(req.body, { updatedAt: new Date().toISOString(), updatedBy: currentUser(req) });
     if (!result.ok) return res.status(400).json({ error: result.error });
+    // A filed/dismissed record is closed: a stale tab (or a late debounced PUT) must not reopen it and let it be filed twice.
+    const existingRaw = await redis.hget(key, result.record.id);
+    if (existingRaw) {
+      const existing = typeof existingRaw === 'string' ? JSON.parse(existingRaw) : existingRaw;
+      const t = inboxTransitionAllowed(existing, result.record);
+      if (!t.ok) return res.status(409).json({ error: t.error, record: existing });
+    }
     await redis.hset(key, { [result.record.id]: JSON.stringify(result.record) });
     res.setHeader('Cache-Control', 'no-store');
     return res.status(200).json({ ok: true, record: result.record });

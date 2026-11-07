@@ -44,9 +44,6 @@ export default async function handler(req, res) {
     const inbox = purchasesFromHash(await redis.hgetall(scopedKey('receipt-inbox', parsed.propertyId)));
     referenced = blobIsReferenced({ purchases, inbox, pathname });
   }
-  if (!referenced) {
-    referenced = isReceiptReferenced(purchasesFromHash(await redis.hgetall(key)), pathname);
-  }
   if (!referenced) return res.status(404).json({ error: 'Not found' });
 
   const result = await get(pathname, { access: 'private' });

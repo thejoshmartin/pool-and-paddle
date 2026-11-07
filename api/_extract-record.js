@@ -15,14 +15,23 @@ export async function processInboxRecord({ redis, key, inboxId, readBlob, create
     return { status: 409, body: { error: `This receipt is already ${record.status}` } };
   }
 
+  // The Claude call can take minutes, so the record may have been filed, dismissed or deleted in the meantime (another tab,
+  // another person). Re-read right before writing and never overwrite or resurrect a closed/missing record; apply the patch
+  // to the CURRENT record, not the snapshot taken before the call.
   const save = async (patch) => {
-    const next = { ...record, ...patch, updatedAt: now, updatedBy: user || null };
+    const cur = await redis.hget(key, inboxId);
+    if (!cur) return { gone: { status: 404, body: { error: 'Inbox record not found' } } };
+    const c = typeof cur === 'string' ? JSON.parse(cur) : cur;
+    if (c.status === 'filed' || c.status === 'dismissed') {
+      return { gone: { status: 409, body: { error: `This receipt is already ${c.status}` } } };
+    }
+    const next = { ...c, ...patch, updatedAt: now, updatedBy: user || null };
     await redis.hset(key, { [inboxId]: JSON.stringify(next) });
-    return next;
+    return { next };
   };
   const manual = async (error) => {
-    const next = await save({ status: 'needs-manual', extraction: null, error: redactCardNumbers(error).slice(0, 400) });
-    return { status: 200, body: { ok: false, record: next } };
+    const r = await save({ status: 'needs-manual', extraction: null, error: redactCardNumbers(error).slice(0, 400) });
+    return r.gone || { status: 200, body: { ok: false, record: r.next } };
   };
 
   try {
@@ -45,8 +54,8 @@ export async function processInboxRecord({ redis, key, inboxId, readBlob, create
     const client = createClient(apiKey);   // built only once we know there is a key and a file
     const result = await extractReceipt({ client, mediaType: String(receipt.contentType || '').toLowerCase(), base64, propertyAddress, now });
     if (!result.ok) return await manual(result.error);
-    const next = await save({ status: 'extracted', extraction: result.extraction, error: null });
-    return { status: 200, body: { ok: true, record: next } };
+    const r = await save({ status: 'extracted', extraction: result.extraction, error: null });
+    return r.gone || { status: 200, body: { ok: true, record: r.next } };
   } catch (e) {
     return await manual(`Extraction failed: ${String((e && e.message) || e)}`);
   }

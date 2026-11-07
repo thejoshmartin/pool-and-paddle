@@ -156,3 +156,13 @@ Consciously chosen behavior — don't re-litigate without Josh:
 - Order-level amounts are allocated across all receipt lines (not just accepted ones), so skipping a personal item on a shared order does not inflate the others; the accepted purchases plus the skipped lines' shares equal the receipt exactly.
 - A receipt that is not a clean paid receipt (statement/quote, handwritten, null total or price) can only be filed after the reviewer fills the blanks; the app never infers a missing price or total.
 
+**Deferred after the Phase 3 whole-branch review (minor, not fixed):**
+- Allocation remainder goes on the largest line, so a tiny amount over many lines can leave one line a cent negative (~0.17% of random orders; sums stay exact).
+- `sanitizeInboxRecord` doesn't check that the blob path's property matches `?property=` (only one property exists today; fix before adding a second).
+- Switching property in the middle of an upload loop can send the extraction/record to the newly active property (`runExtraction`/`putInboxRecord` read `activePropertyRef`).
+- The match effect re-links a line the reviewer deliberately unlinked when the card remounts after a Merge (it should fill only lines whose `matchScore` is null).
+- `vercel.json` sets no `maxDuration` for `receipt-extract` (platform default is 300 s; the SDK allows 120 s × 2 attempts). If the function is killed the record stays `pending` and Retry appears after 3 minutes.
+- The extraction route skips the 100 KB sanitizer cap (a >~260-line receipt would store fine but later client PUTs would 400).
+- If an upload succeeds but the record's first PUT fails, the blob is orphaned and no card appears.
+- Plan item "focus the first new purchase after filing" is not implemented; `parseJsonObject` gives up if prose before the JSON contains a balanced `{…}`; a merged line's unit price (9732/22) makes the Purchase form offer a one-cent "use $9,731.99"; the order-discount share is folded into each purchase's total and noted only in its notes.
+- Card-number redaction is a backstop behind the prompt rule: it handles spaces/dashes/dots, a trailing expiry, and text stuck to the number, but not a card number preceded by other digits (e.g. "12.50 4111…"). A genuine 13-digit EAN/GTIN in a description is redacted ~10% of the time (it can pass the Luhn check).

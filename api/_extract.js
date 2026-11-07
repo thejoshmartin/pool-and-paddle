@@ -103,7 +103,10 @@ export async function extractReceipt({ client, model = EXTRACTION_MODEL, mediaTy
     if (!json) return { ok: false, error: 'The model did not return valid JSON.' };
     const v = validateExtraction({ ...json, model: resp.model || model }, now);
     if (!v.ok) return { ok: false, error: `The extraction was not usable: ${v.error}` };
-    return { ok: true, extraction: v.extraction };
+    // Review state belongs to the human: whatever the model (or text printed on the receipt) put in decision / matchItemId /
+    // matchScore is discarded, so every line starts undecided and unlinked ("Accept all" stays off while issues exist).
+    const lines = v.extraction.lines.map(l => ({ ...l, decision: null, matchItemId: null, matchScore: null }));
+    return { ok: true, extraction: { ...v.extraction, lines } };
   } catch (e) {
     return { ok: false, error: describeError(e) };
   }

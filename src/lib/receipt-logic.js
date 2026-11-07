@@ -40,27 +40,41 @@ const CARD_LENGTHS = new Set([13, 14, 15, 16, 19]);
 
 // Replace anything that looks like a real card number (a card length of digits, optional space/dash separators, passes the
 // Luhn check) with "••••". Matching the length AND Luhn keeps order numbers and SKUs (also long digit strings) intact.
+// No `\b`: "VISA4111…" and "4111…-2" must still match (the run is bounded by "not a digit" instead). A run that is not itself
+// a card length is retried with ONE trailing 1–4 digit group removed ("4111 1111 1111 1111 12/27" — the card then its expiry
+// month). Arbitrary windows are deliberately NOT tried: the 7+7 tail of an Amazon 3-7-7 order number would be mangled.
 export function redactCardNumbers(text) {
-  return String(text ?? "").replace(/\b\d(?:[ -]?\d){12,18}\b/g, (m) => {
-    const digits = m.replace(/\D/g, "");
-    return CARD_LENGTHS.has(digits.length) && luhn(digits) ? "••••" : m;
-  });
+  const isCard = (digits) => CARD_LENGTHS.has(digits.length) && luhn(digits);
+  return String(text ?? "")
+    .replace(/(?<!\d)\d{4}\.\d{4}\.\d{4}\.\d{4}(?:\.\d{3})?(?!\d)/g, (m) => (isCard(m.replace(/\D/g, "")) ? "••••" : m))
+    .replace(/(?<!\d)\d(?:[ -]{0,3}\d){12,22}(?!\d)/g, (m) => {
+      if (isCard(m.replace(/\D/g, ""))) return "••••";
+      const groups = m.split(/[ -]+/);
+      const last = groups[groups.length - 1];
+      if (groups.length >= 2 && last.length >= 1 && last.length <= 4 && isCard(groups.slice(0, -1).join(""))) {
+        const sep = m.slice(0, m.length - last.length).match(/[ -]*$/)[0];
+        return "••••" + sep + last;
+      }
+      return m;
+    });
 }
 
 // ── Parsing helpers (model output is untrusted) ─────────────────────────────
 
+const MAX_MONEY = 1e9;   // no receipt is a billion dollars; a longer number is a card/order number in the wrong field
 function parseMoney(v) {
   if (v === null || v === undefined || v === "") return null;
-  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "number") return Number.isFinite(v) && Math.abs(v) < MAX_MONEY ? v : null;
   if (typeof v !== "string") return null;
   let t = v.trim();
   if (!t) return null;
+  if (redactCardNumbers(t) !== t) return null;   // a card number in a money field is never stored
   let neg = false;
   if (/^\(.*\)$/.test(t)) { neg = true; t = t.slice(1, -1); }
   t = t.replace(/[$,\s]/g, "");
   if (t.startsWith("-")) { neg = true; t = t.slice(1); }
   const n = Number(t);
-  if (!t || !Number.isFinite(n)) return null;
+  if (!t || !Number.isFinite(n) || Math.abs(n) >= MAX_MONEY) return null;
   return neg ? -n : n;
 }
 const strOrNull = (v, max = 300) => {
@@ -322,6 +336,32 @@ export function mergeLines(lines, index) {
 }
 
 // "Accept all" is only offered when the model flagged nothing and every line has a price and a valid trade.
+// A line the reviewer should double-check: model confidence below 0.7 — or ANY line of a handwritten document, whose
+// confidence is capped AT 0.7 (so a plain `< 0.7` test would never flag it).
+export function isLowConfidence(line, extraction) {
+  return ((line && line.confidence) ?? 1) < LOW_CONFIDENCE || !!(extraction && extraction.handwritten === true);
+}
+
+// "Accept all" accepts only lines nobody has decided yet — a line the reviewer skipped stays skipped.
+export function acceptUndecided(lines) {
+  return (lines || []).map(l => (l && l.decision == null ? { ...l, decision: "accept" } : l));
+}
+
+// A filed or dismissed record is closed: a stale tab's PUT must not reopen it (which would let a receipt be filed twice).
+export function inboxTransitionAllowed(existing, incoming) {
+  if (existing && (existing.status === "filed" || existing.status === "dismissed") && incoming && incoming.status !== existing.status) {
+    return { ok: false, error: `This receipt is already ${existing.status}` };
+  }
+  return { ok: true };
+}
+
+// After saving every purchase draft: mark the record filed only if ALL saves succeeded (results = array of booleans).
+export function decideFilingOutcome(results) {
+  const list = Array.isArray(results) ? results : [];
+  const failed = list.filter(r => r !== true).length;
+  return { markFiled: list.length > 0 && failed === 0, failed };
+}
+
 export function canAcceptAll(extraction) {
   if (!extraction || !Array.isArray(extraction.lines) || extraction.lines.length === 0) return false;
   if ((extraction.issues || []).length > 0) return false;
@@ -394,7 +434,7 @@ export function buildPurchasesFromInbox({ record, order = {}, shoppingItems = []
       allowanceCategory: defaultAllowanceFor(trade, purchasedBy) || NOT_IN_ALLOWANCE,
       ...reimbursementDefaultsFor(ex.vendor, purchasedBy, settings.reimbursableVendors),
       assetClass: suggestAssetClass(trade), placedInServiceDate: propertyInServiceDate || "",
-      docType: ex.docType, paymentConfirmed: ex.docType === "receipt", lienWaiverReceived: false,
+      docType: ex.docType, paymentConfirmed: ex.docType !== "statement" && ex.docType !== "quote", lienWaiverReceived: false,
       purchaseDate: isoDate(ex.paidDate) || isoDate(ex.orderDate),
       orderGroupId, lineNo: orderGroupId ? n + 1 : null,
       receipts, shoppingItemId: item ? item.id : null,
@@ -432,7 +472,7 @@ export function sanitizeInboxRecord(raw, stamp) {
   const record = {
     id: raw.id,
     status: raw.status,
-    receipt: { pathname: r.pathname, name: cleanStr(r.name, 200), contentType: r.contentType, uploadedAt: cleanStr(r.uploadedAt, 40), hash: cleanStr(r.hash, 128) },
+    receipt: { pathname: r.pathname, name: cleanStr(r.name, 200), contentType: r.contentType, uploadedAt: cleanStr(r.uploadedAt, 40), hash: /^[a-f0-9]{32,128}$/i.test(String(r.hash || "")) ? String(r.hash).toLowerCase() : "" },   // a file digest is hex, never a card number (redaction would corrupt ~0.4% of them)
     extraction,
     error: raw.error ? redactCardNumbers(String(raw.error)).slice(0, 400) : null,
     purchaseIds: (raw.purchaseIds || []).map(String).slice(0, 200),
