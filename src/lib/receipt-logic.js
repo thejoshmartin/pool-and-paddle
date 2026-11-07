@@ -399,3 +399,42 @@ export function buildPurchasesFromInbox({ record, order = {}, shoppingItems = []
     };
   });
 }
+
+// ── Inbox record sanitizer (api/receipt-inbox.js) ───────────────────────────
+
+const INBOX_PATH_RE = /^receipts\/[a-z0-9-]+\/inbox\/(ri-[a-z0-9-]+)\/[^/]+$/;
+const RECEIPT_TYPE_RE = /^(image\/(png|jpe?g|webp|gif)|application\/pdf)$/i;
+const MAX_RECORD_BYTES = 100000;
+
+// Strict whitelist for a stored inbox record. The blob path must belong to THIS record (a forged purchase path or another
+// record's path is rejected), the extraction is re-validated/normalized (review edits like decision, matchItemId and
+// edited numbers survive), updatedAt/updatedBy always come from the server stamp, and card numbers are redacted.
+export function sanitizeInboxRecord(raw, stamp) {
+  if (!isObj(raw)) return { ok: false, error: "Expected a record object" };
+  if (typeof raw.id !== "string" || !/^ri-[a-z0-9-]+$/.test(raw.id)) return { ok: false, error: "Invalid id" };
+  if (!RECEIPT_STATUSES.includes(raw.status)) return { ok: false, error: "Invalid status" };
+  const r = raw.receipt;
+  if (!isObj(r)) return { ok: false, error: "Missing receipt" };
+  const m = typeof r.pathname === "string" ? INBOX_PATH_RE.exec(r.pathname) : null;
+  if (!m || m[1] !== raw.id) return { ok: false, error: "The receipt file path does not belong to this record" };
+  if (typeof r.contentType !== "string" || !RECEIPT_TYPE_RE.test(r.contentType)) return { ok: false, error: "Unsupported receipt file type" };
+  let extraction = null;
+  if (raw.extraction !== null && raw.extraction !== undefined) {
+    const v = validateExtraction(raw.extraction);
+    if (!v.ok) return { ok: false, error: `Invalid extraction: ${v.error}` };
+    extraction = v.extraction;
+  }
+  if (raw.purchaseIds !== undefined && !Array.isArray(raw.purchaseIds)) return { ok: false, error: "purchaseIds must be an array" };
+  const record = {
+    id: raw.id,
+    status: raw.status,
+    receipt: { pathname: r.pathname, name: cleanStr(r.name, 200), contentType: r.contentType, uploadedAt: cleanStr(r.uploadedAt, 40), hash: cleanStr(r.hash, 128) },
+    extraction,
+    error: raw.error ? redactCardNumbers(String(raw.error)).slice(0, 400) : null,
+    purchaseIds: (raw.purchaseIds || []).map(String).slice(0, 200),
+    updatedAt: (stamp && stamp.updatedAt) || null,
+    updatedBy: (stamp && stamp.updatedBy) || null,
+  };
+  if (JSON.stringify(record).length > MAX_RECORD_BYTES) return { ok: false, error: "Record too large" };
+  return { ok: true, record };
+}

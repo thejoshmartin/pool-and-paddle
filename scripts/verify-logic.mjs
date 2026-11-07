@@ -19,7 +19,7 @@ import * as SH from '../src/lib/shopping-logic.js';
 import * as RL from '../src/lib/receipt-logic.js';
 import { extractReceipt, buildExtractionPrompt } from '../api/_extract.js';
 import { processInboxRecord } from '../api/_extract-record.js';
-import { scopedKey, parseReceiptPathname, migrateFinishesToHash, purchasesFromHash, isReceiptReferenced } from '../api/_scope.js';
+import { scopedKey, parseReceiptPathname, migrateFinishesToHash, purchasesFromHash, isReceiptReferenced, isInboxReceiptReferenced, blobIsReferenced } from '../api/_scope.js';
 import {
   matchesFinishSearch, buildRoomCopies, mergeFinishes, migrateRoom,
   finishItemField, furnitureField, roomField, tombstone,
@@ -1839,6 +1839,56 @@ console.log('Phase 3 — extraction route logic (fake redis / blob / client):');
   await processInboxRecord(base({ redis: mkRedis({ 'ri-1': pending() }, { properties: [{ id: 'pp', address: '99 Test Ln' }] }), createClient: () => ({ messages: { create: async (req) => { fromRegistry.push(req.system); return { stop_reason: 'end_turn', content: [{ type: 'text', text: modelReply }] }; } } }) }));
   assert.ok(fromRegistry[0].includes('99 Test Ln'));
   ok('a missing record is 404, an already filed or dismissed receipt is 409 (never re-extracted), and the property address for the prompt comes from the registry');
+}
+
+console.log('Phase 3 — inbox storage rules (paths, sanitizer, shared-blob safety):');
+{
+  const fx = (n) => JSON.parse(fs.readFileSync(new URL(`./fixtures/receipts/${n}.json`, import.meta.url), 'utf8'));
+  const stamp = { updatedAt: '2026-11-07T10:00:00.000Z', updatedBy: 'JM' };
+  assert.deepEqual(parseReceiptPathname('receipts/pp/inbox/ri-abc-123/receipt-x9.jpg'), { propertyId: 'pp', inboxId: 'ri-abc-123' });
+  assert.deepEqual(parseReceiptPathname('receipts/pp/pur-1/file.jpg'), { propertyId: 'pp', purchaseId: 'pur-1' });
+  for (const bad of ['receipts/pp/inbox/ri-abc/a/b.jpg', 'receipts/pp/inbox/pur-1/f.jpg', 'receipts/pp/inbox/ri-abc', 'receipts/PP/inbox/ri-a/f.jpg', 'receipts/pp/inbox/ri-../f.jpg', 'receipts/pp/inbox/RI-abc/f.jpg', 'receipts/../inbox/ri-a/f.jpg', 'receipts/pp/inbox//f.jpg', 'receipts/pp/other/ri-a/f.jpg']) {
+    assert.equal(parseReceiptPathname(bad), null, bad);
+  }
+  ok('inbox blob paths parse to { propertyId, inboxId }; purchase paths are unchanged; traversal, wrong prefixes, uppercase and extra levels are rejected');
+
+  const rec = (o = {}) => ({ id: 'ri-abc-123', status: 'extracted', receipt: { pathname: 'receipts/pp/inbox/ri-abc-123/receipt-x9.pdf', name: 'a.pdf', contentType: 'application/pdf', uploadedAt: '2026-11-07T09:00:00Z', hash: 'a'.repeat(64) },
+    extraction: RL.validateExtraction(fx('minoan-F3F3D4B0')).extraction, error: null, purchaseIds: [], ...o });
+  const good = RL.sanitizeInboxRecord(rec({ updatedBy: 'HACK', updatedAt: 'x', mystery: 1 }), stamp);
+  assert.equal(good.ok, true);
+  assert.deepEqual([good.record.updatedAt, good.record.updatedBy], [stamp.updatedAt, 'JM']);
+  assert.deepEqual(Object.keys(good.record).sort(), ['error', 'extraction', 'id', 'purchaseIds', 'receipt', 'status', 'updatedAt', 'updatedBy']);
+  assert.equal(good.record.extraction.lines.length, 6);
+  const edited = rec(); edited.extraction.lines[1].decision = 'accept'; edited.extraction.lines[1].matchItemId = 'sh-toast'; edited.extraction.lines[1].lineTotal = 1111.11; edited.extraction.lines[1].suggestedTrade = 'Plumbing';
+  const keptEdits = RL.sanitizeInboxRecord(edited, stamp).record.extraction.lines[1];
+  assert.deepEqual([keptEdits.decision, keptEdits.matchItemId, keptEdits.lineTotal, keptEdits.suggestedTrade], ['accept', 'sh-toast', 1111.11, 'Plumbing']);
+  assert.equal(RL.sanitizeInboxRecord(rec({ extraction: null, status: 'needs-manual', error: 'boom' }), stamp).ok, true);
+  assert.equal(RL.sanitizeInboxRecord(rec({ extraction: null, status: 'pending' }), stamp).ok, true);
+  const bads = [{ id: 'abc' }, { id: 'RI-1' }, { status: 'weird' }, { receipt: null }, { receipt: { ...rec().receipt, pathname: 'receipts/pp/pur-1/f.pdf' } },
+    { receipt: { ...rec().receipt, pathname: 'receipts/pp/inbox/ri-other-999/f.pdf' } }, { receipt: { ...rec().receipt, contentType: 'text/html' } },
+    { extraction: { docType: 'napkin', lines: [] } }, { extraction: 'x' }, { purchaseIds: 'p1' }];
+  for (const b of bads) assert.equal(RL.sanitizeInboxRecord(rec(b), stamp).ok, false, JSON.stringify(b).slice(0, 60));
+  assert.equal(RL.sanitizeInboxRecord(null, stamp).ok, false);
+  const huge = rec(); huge.extraction.issues = []; huge.extraction.lines = Array.from({ length: 3000 }, (_, i) => ({ ...huge.extraction.lines[0], lineNo: i + 1, description: 'x'.repeat(250) }));
+  assert.equal(RL.sanitizeInboxRecord(huge, stamp).ok, false);
+  const withCard = RL.sanitizeInboxRecord(rec({ error: 'failed for 4111 1111 1111 1111' }), stamp).record;
+  assert.ok(!withCard.error.includes('4111 1111 1111 1111'));
+  ok('inbox records are strictly whitelisted and stamped by the server; review edits survive; the blob path must belong to THIS record; bad ids/status/content types, a forged purchase path, unusable extractions and oversize records are rejected; card numbers are redacted');
+
+  const purchases = [{ id: 'pur-1', receipts: [{ pathname: 'receipts/pp/inbox/ri-abc-123/receipt-x9.pdf' }] }, { id: 'pur-2', receipts: [] }, null];
+  const inbox = [rec(), { id: 'ri-zzz-1', receipt: { pathname: 'receipts/pp/inbox/ri-zzz-1/other.pdf' } }, { id: 'ri-bad' }, null];
+  const P = 'receipts/pp/inbox/ri-abc-123/receipt-x9.pdf';
+  assert.equal(isInboxReceiptReferenced(inbox, P), true);
+  assert.equal(isInboxReceiptReferenced(inbox, P, 'ri-abc-123'), false);
+  assert.equal(isInboxReceiptReferenced(inbox, 'receipts/pp/inbox/ri-none-1/f.pdf'), false);
+  assert.equal(blobIsReferenced({ purchases, inbox, pathname: P }), true);
+  assert.equal(blobIsReferenced({ purchases, inbox, pathname: P, excludeInboxId: 'ri-abc-123' }), true);       // a purchase (filed from this record) still shows it
+  assert.equal(blobIsReferenced({ purchases, inbox, pathname: P, excludeInboxId: 'ri-abc-123', excludePurchaseId: 'pur-1' }), false);
+  assert.equal(blobIsReferenced({ purchases: [{ id: 'pur-2', receipts: [] }], inbox, pathname: P, excludeInboxId: 'ri-abc-123' }), false);
+  assert.equal(blobIsReferenced({ purchases, inbox, pathname: P, excludePurchaseId: 'pur-1' }), true);          // the inbox record itself still holds it
+  assert.equal(blobIsReferenced({ purchases: [], inbox: [], pathname: P }), false);
+  assert.doesNotThrow(() => blobIsReferenced({ purchases: null, inbox: undefined, pathname: P }));
+  ok('shared-blob safety: a filed receipt stays viewable and undeletable while a purchase OR its inbox record still references it, and is only deletable when nothing else does');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

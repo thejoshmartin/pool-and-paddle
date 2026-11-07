@@ -37,6 +37,8 @@ export default async function handler(req, res) {
       // shopping list edits are a Redis hash (fields item:<id> / settings / tombstones); the seed
       // list itself ships in the app bundle, so only saved changes live here.
       shopping: await redis.hgetall(`shopping:${id}`),
+      // Receipt Inbox records (extractions awaiting review + filed history); the receipt files live in private Blob storage.
+      receiptInbox: await redis.hgetall(`receipt-inbox:${id}`),
     };
   }
 

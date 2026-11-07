@@ -17,10 +17,14 @@ const SAFE_SEG = /^[a-z0-9-]+$/;
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
 
-  const { propertyId, purchaseId, name, contentType, dataBase64 } = req.body || {};
+  const { propertyId, purchaseId, inboxId, name, contentType, dataBase64 } = req.body || {};
 
-  if (typeof propertyId !== 'string' || !SAFE_SEG.test(propertyId) ||
-      typeof purchaseId !== 'string' || !SAFE_SEG.test(purchaseId)) {
+  // Receipts attach to a purchase (`purchaseId`) or sit in the Receipt Inbox awaiting review (`inboxId`).
+  const isInbox = typeof inboxId === 'string' && inboxId !== '';
+  const idsOk = typeof propertyId === 'string' && SAFE_SEG.test(propertyId) && (isInbox
+    ? /^ri-[a-z0-9-]+$/.test(inboxId)
+    : typeof purchaseId === 'string' && SAFE_SEG.test(purchaseId) && purchaseId !== 'inbox');
+  if (!idsOk) {
     return res.status(400).json({ error: 'Invalid ids' });
   }
   if (typeof contentType !== 'string' || !ALLOWED_TYPE.test(contentType)) {
@@ -39,7 +43,9 @@ export default async function handler(req, res) {
   const extMatch = typeof name === 'string' ? name.match(/\.[a-z0-9]+$/i) : null;
   const ext = extMatch ? extMatch[0].toLowerCase() : '';
   const base = `receipt${ext}`.replace(/[^a-z0-9.\-_]/gi, '');
-  const pathname = `receipts/${propertyId}/${purchaseId}/${base}`;
+  const pathname = isInbox
+    ? `receipts/${propertyId}/inbox/${inboxId}/${base}`
+    : `receipts/${propertyId}/${purchaseId}/${base}`;
 
   const blob = await put(pathname, buffer, {
     access: 'private',
