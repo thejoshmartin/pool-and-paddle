@@ -34,12 +34,16 @@ function luhn(digits) {
   return sum % 10 === 0;
 }
 
-// Replace anything that looks like a real card number (13–19 digits, optional space/dash separators, passes
-// the Luhn check) with "••••". Luhn keeps order numbers and SKUs (which are long digit strings too) intact.
+// Real payment-card numbers are 13–16 digits (Visa/Mastercard/Amex/Diners/Discover) or 19 (some UnionPay). Anything else —
+// notably the 17-digit Amazon-style order numbers (3-7-7), which pass the Luhn check about 10% of the time — is NOT a card.
+const CARD_LENGTHS = new Set([13, 14, 15, 16, 19]);
+
+// Replace anything that looks like a real card number (a card length of digits, optional space/dash separators, passes the
+// Luhn check) with "••••". Matching the length AND Luhn keeps order numbers and SKUs (also long digit strings) intact.
 export function redactCardNumbers(text) {
   return String(text ?? "").replace(/\b\d(?:[ -]?\d){12,18}\b/g, (m) => {
     const digits = m.replace(/\D/g, "");
-    return digits.length >= 13 && digits.length <= 19 && luhn(digits) ? "••••" : m;
+    return CARD_LENGTHS.has(digits.length) && luhn(digits) ? "••••" : m;
   });
 }
 

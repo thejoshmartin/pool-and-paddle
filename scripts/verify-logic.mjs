@@ -1891,4 +1891,19 @@ console.log('Phase 3 — inbox storage rules (paths, sanitizer, shared-blob safe
   ok('shared-blob safety: a filed receipt stays viewable and undeletable while a purchase OR its inbox record still references it, and is only deletable when nothing else does');
 }
 
+console.log('Phase 3 fix — card redaction must not mangle order numbers:');
+{
+  // 11355500001112223 is a 17-digit Amazon-style order number that happens to pass the Luhn check (~10% of them do)
+  assert.equal(RL.redactCardNumbers('order 113-5550000-1112223 ok'), 'order 113-5550000-1112223 ok');
+  assert.equal(RL.redactCardNumbers('order 11355500001112223'), 'order 11355500001112223');
+  assert.equal(RL.redactCardNumbers('x 123456789012345678 y'), 'x 123456789012345678 y');   // 18 digits: not a card length
+  assert.equal(RL.redactCardNumbers('amex 378282246310005 end'), 'amex •••• end');           // 15 digits
+  assert.equal(RL.redactCardNumbers('diners 30569309025904 end'), 'diners •••• end');          // 14 digits
+  assert.equal(RL.redactCardNumbers('visa 4111-1111-1111-1111 end'), 'visa •••• end');         // 16 digits, dashed
+  const v = RL.validateExtraction({ docType: 'receipt', vendor: 'Amazon', orderNo: '113-5550000-1112223', lines: [{ description: 'x', qty: 1, lineTotal: 1, sku: '11355500001112223', suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction;
+  assert.equal(v.orderNo, '113-5550000-1112223');
+  assert.equal(v.lines[0].sku, '11355500001112223');
+  ok('real card lengths (13–16, 19 digits) are still redacted, but 17/18-digit order numbers and SKUs — including Luhn-valid Amazon-style ones — are left intact');
+}
+
 console.log(`\nAll ${passed} checks passed.`);
