@@ -24,7 +24,7 @@ import {
 import SHOPPING_SEED from "./shopping-seed.json";
 import {
   normalizeShoppingItem, mergeShopping, partitionShoppingFields, shoppingItemField, SHOPPING_SETTINGS_FIELD,
-  SHOPPING_CATEGORIES, sortedShoppingCategories, sortItemsAlpha, planShoppingForPurchases, advanceShoppingStatus, ITEM_PRIORITIES, ITEM_STATUSES, ZONES, VENDOR_TYPES, AGENT_ACTIONS, TIERS, QTY_BASES,
+  SHOPPING_CATEGORIES, sortedShoppingCategories, sortItemsAlpha, planShoppingForPurchases, advanceShoppingStatus, purchaseNeedsShopping, ITEM_PRIORITIES, ITEM_STATUSES, ZONES, VENDOR_TYPES, AGENT_ACTIONS, TIERS, QTY_BASES,
   NON_GLASS_CATEGORIES, emptyShoppingItem, emptyCandidate, computeQty, mealsCovered, landedTotal, perUnit,
   returnExposure, bestValue, candidateWarnings, forecastSpend, feesFor, taxFor, filterShoppingItems,
   groupShoppingItems, sanitizeShoppingSettings, buildPurchaseFromShopping,
@@ -3911,12 +3911,12 @@ function ReceiptInboxPanel({ inbox, loaded, loadError, canUse, uploads, onUpload
   );
 }
 
-function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, onAddLine, onAddToShopping, reimbursableVendors, inboxPanel, focusPurchaseId, focusPurchaseMode, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
+function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, onAddLine, onAddToShopping, shoppingItems, reimbursableVendors, inboxPanel, focusPurchaseId, focusPurchaseMode, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
   const [editingId, setEditingId] = useState(null);   // id | "new" | null
   const [expandedId, setExpandedId] = useState(null);
   const [shopNotice, setShopNotice] = useState(null);   // result of "Add to Shopping list"
   const [shopBusy, setShopBusy] = useState(false);
-  const addToShopping = async (list) => { if (shopBusy || !onAddToShopping) return; setShopBusy(true); try { setShopNotice(await onAddToShopping(list)); } finally { setShopBusy(false); } };
+  const addToShopping = async (list) => { if (shopBusy || !onAddToShopping) return; setShopBusy(true); try { setShopNotice(await onAddToShopping(list)); } catch (e) { setShopNotice({ ok: false, message: 'Could not add to the Shopping list — please try again.' }); } finally { setShopBusy(false); } };
   const [query, setQuery] = useState("");
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   useEffect(() => {
@@ -4171,7 +4171,7 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
                     <button onClick={() => onSave({ ...p, keepConfirmed: true })} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.mint}`, background: C.seafoamFaint, color: C.mintDark, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Keep</button>
                   )}
                   <button onClick={() => onAddLine && onAddLine(p)} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Add line to this order</button>
-                  {!p.shoppingItemId && onAddToShopping && (
+                  {onAddToShopping && purchaseNeedsShopping(p, shoppingItems) && (
                     <button disabled={shopBusy} onClick={() => addToShopping([p])} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer", opacity: shopBusy ? 0.6 : 1 }}>Add to Shopping list</button>
                   )}
                   <button onClick={() => { setEditingId(p.id); }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Edit</button>
@@ -4206,8 +4206,10 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
           <div style={{ fontSize: 12, fontWeight: 700, color: C.mintDark, padding: "4px 8px 8px", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
             <span>{orderHeader(g)}</span>
             {onAddToShopping && (() => {
-              const todo = purchases.filter(m => m.orderGroupId === g.orderGroupId && !m.shoppingItemId);
-              return todo.length > 0 ? <button disabled={shopBusy} onClick={() => addToShopping(todo)} style={{ padding: "8px 12px", minHeight: 36, borderRadius: 8, border: `1px solid ${C.mint}`, background: C.white, color: C.mintDark, fontFamily: font, fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: shopBusy ? 0.6 : 1 }}>Add {todo.length} line{todo.length === 1 ? "" : "s"} to Shopping list</button> : null;
+              const members = purchases.filter(m => m.orderGroupId === g.orderGroupId);
+              const todo = members.filter(m => purchaseNeedsShopping(m, shoppingItems));
+              const editingHere = members.some(m => m.id === editingId);   // an open form holds a snapshot of its line and would write the link back out
+              return todo.length > 0 ? <button disabled={shopBusy || editingHere} title={editingHere ? "Finish editing this order's line first" : ""} onClick={() => addToShopping(todo)} style={{ padding: "8px 12px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.mint}`, background: C.white, color: C.mintDark, fontFamily: font, fontSize: 13, fontWeight: 700, cursor: editingHere ? "not-allowed" : "pointer", opacity: shopBusy || editingHere ? 0.6 : 1 }}>Add {todo.length} line{todo.length === 1 ? "" : "s"} to Shopping list</button> : null;
             })()}
           </div>
           {g.purchases.map(renderPurchase)}
@@ -5470,22 +5472,34 @@ export default function App() {
   // line that shares the order-level fields and the SAME receipt pathnames (by reference).
   // Persisted immediately, like promote; each save is a targeted single-record PUT.
   // "Add to Shopping list" on filed purchases (backfill, or lines whose link was skipped): same rules as filing — link an
-  // existing item with the same SKU/name, else create an `ordered` one. Items are saved first, then each purchase's link, so a
-  // retry after a partial failure reuses the items already created (same-name match) instead of duplicating them.
+  // existing item with the same name, else create an `ordered` one. The items are saved FIRST and awaited; only purchases
+  // whose item really reached the server get their `shoppingItemId`, and a failed purchase save is rolled back locally, so a
+  // purchase never points at an item that was not saved and the button is offered again after a failure.
   const addPurchasesToShopping = async (list) => {
     if (!(shoppingReady && shoppingServerLoaded.current)) return { ok: false, message: 'The Shopping list has not finished loading — wait a moment and try again.' };
+    if (!purchasesServerLoaded.current) return { ok: false, message: 'Purchases have not finished loading — wait a moment and try again.' };
     const plan = planShoppingForPurchases({ purchases: list, shoppingItems: shopping.items, user: (getCurrentUser() || {}).code || '' });
     if (plan.purchaseLinks.length === 0) return { ok: true, message: 'Nothing to add — these purchases are already on the Shopping list.' };
     const live = new Set(purchases.map(p => p.id));
-    plan.newItems.forEach(it => saveShoppingItem(it));
-    for (const l of plan.itemLinks) {
-      const it = shopping.items.find(i => i.id === l.itemId);
-      if (it) saveShoppingItem({ ...it, status: advanceShoppingStatus(it.status, l.status), purchaseIds: [...new Set([...(it.purchaseIds || []).filter(id => live.has(id)), ...l.purchaseIds])] });
-    }
+    const itemOk = new Map();
+    await Promise.all([
+      ...plan.newItems.map(async it => { itemOk.set(it.id, await saveShoppingItemNow(it)); }),
+      ...plan.itemLinks.map(async l => {
+        const it = shopping.items.find(i => i.id === l.itemId);
+        if (!it) { itemOk.set(l.itemId, false); return; }
+        itemOk.set(l.itemId, await saveShoppingItemNow({ ...it, status: advanceShoppingStatus(it.status, l.status), purchaseIds: [...new Set([...(it.purchaseIds || []).filter(id => live.has(id)), ...l.purchaseIds])] }));
+      }),
+    ]);
+    const linkable = plan.purchaseLinks.filter(l => itemOk.get(l.itemId) === true);
     const byId = new Map(list.map(p => [p.id, p]));
-    const results = await Promise.all(plan.purchaseLinks.map(l => savePurchase({ ...byId.get(l.purchaseId), shoppingItemId: l.itemId })));
-    const failed = results.filter(r => r !== true).length;
-    if (failed) return { ok: false, message: `${failed} of ${plan.purchaseLinks.length} purchases could not be linked. Press the button again — items already created will be reused.` };
+    const results = await Promise.all(linkable.map(l => savePurchase({ ...byId.get(l.purchaseId), shoppingItemId: l.itemId })));
+    const failedLinks = linkable.filter((l, i) => results[i] !== true);
+    if (failedLinks.length) {
+      const wrong = new Map(failedLinks.map(l => [l.purchaseId, l.itemId]));
+      setPurchases(prev => prev.map(x => (wrong.get(x.id) === x.shoppingItemId ? { ...x, shoppingItemId: (byId.get(x.id) || {}).shoppingItemId ?? null } : x)));
+    }
+    const notDone = plan.purchaseLinks.length - (linkable.length - failedLinks.length);
+    if (notDone > 0) return { ok: false, message: `${notDone} of ${plan.purchaseLinks.length} purchases could not be added. Press the button again — items already saved will be reused.` };
     const linked = plan.itemLinks.length;
     return { ok: true, message: `Added ${plan.purchaseLinks.length} purchase${plan.purchaseLinks.length === 1 ? '' : 's'} to the Shopping list (${plan.newItems.length} new item${plan.newItems.length === 1 ? '' : 's'}${linked ? `, ${linked} linked to existing item${linked === 1 ? '' : 's'}` : ''}).` };
   };
@@ -5669,6 +5683,20 @@ export default function App() {
       items: prev.items.some(i => i.id === item.id) ? prev.items.map(i => (i.id === item.id ? item : i)) : [...prev.items, item],
     }));
     putShoppingFieldDebounced(shoppingItemField(item.id), item);
+  };
+  // Like saveShoppingItem but not debounced and it reports the outcome — used where something else (a purchase's
+  // shoppingItemId) must only point at an item that really reached the server.
+  const saveShoppingItemNow = (item) => {
+    setShopping(prev => ({
+      ...prev,
+      items: prev.items.some(i => i.id === item.id) ? prev.items.map(i => (i.id === item.id ? item : i)) : [...prev.items, item],
+    }));
+    const field = shoppingItemField(item.id);
+    cancelPendingShoppingField(field);
+    const prop = activePropertyRef.current;
+    return fetch(apiUrl('/api/shopping', prop), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ field, value: item }) })
+      .then(r => { if (!r.ok) { setSyncError('Failed to save shopping list'); return false; } setSyncError(null); return true; })
+      .catch(() => { setSyncError('Unable to reach server'); return false; });
   };
   // Deleting a seed item writes a tombstone (so the seed can't resurrect it); a user-created item is just removed.
   const removeShoppingItem = (id) => {
@@ -6061,7 +6089,7 @@ export default function App() {
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
       {activeView === "shopping" && <ShoppingView shopping={shopping} loaded={shoppingLoaded} loadError={shoppingLoadError} canEdit={shoppingReady} purchases={purchases} onSaveItem={saveShoppingItem} onRemoveItem={removeShoppingItem} onSaveSettings={saveShoppingSettings} onMarkPurchased={promoteShoppingItem} propertyId={activeProperty} />}
-      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} onAddToShopping={addPurchasesToShopping} reimbursableVendors={shopping.settings.reimbursableVendors} inboxPanel={{ inbox, loaded: inboxLoaded, loadError: inboxLoadError, canUse: inboxReady, uploads: inboxUploads, onUpload: uploadToInbox, onChange: saveInboxRecord, onChangeNow: saveInboxRecordNow, onRemove: removeInboxRecord, onRetry: retryInboxRecord, onFile: fileInboxRecord, shoppingItems: shopping.items, propertyAddress: activePropertyAddress, onOpenPurchase: openPurchase, notice: inboxNotice, onDismissNotice: () => setInboxNotice(null) }} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
+      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} onAddToShopping={addPurchasesToShopping} shoppingItems={shoppingLoaded && !shoppingLoadError ? shopping.items : null} reimbursableVendors={shopping.settings.reimbursableVendors} inboxPanel={{ inbox, loaded: inboxLoaded, loadError: inboxLoadError, canUse: inboxReady, uploads: inboxUploads, onUpload: uploadToInbox, onChange: saveInboxRecord, onChangeNow: saveInboxRecordNow, onRemove: removeInboxRecord, onRetry: retryInboxRecord, onFile: fileInboxRecord, shoppingItems: shopping.items, propertyAddress: activePropertyAddress, onOpenPurchase: openPurchase, notice: inboxNotice, onDismissNotice: () => setInboxNotice(null) }} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
       {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} loadError={houseInfoLoadError} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 
       {showMigrationModal && migrationNeeded && (

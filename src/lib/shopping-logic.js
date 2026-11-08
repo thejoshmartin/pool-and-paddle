@@ -864,7 +864,7 @@ export function shoppingStatusForPurchase(status) {
 // An existing item only ever moves forward when a purchase links to it (researching/shortlisted/approved → target;
 // ordered → received); anything further along is left alone.
 export function advanceShoppingStatus(current, target) {
-  if (["researching", "shortlisted", "approved"].includes(current)) return target;
+  if (["researching", "shortlisted", "approved"].includes(current)) return target;   // incl. "returned"
   if (current === "ordered" && target === "received") return "received";
   return current;
 }
@@ -883,7 +883,7 @@ export function planShoppingItems(entries, shoppingItems = [], user = "") {
   const newItems = [];
   const results = (entries || []).map((e) => {
     if (!e || e.skip) return null;
-    const sk = skuOf(e.sku), nm = normName(e.name);
+    const sk = skuOf(e.sku), nm = normName(String(e.name ?? "").trim().slice(0, 120));   // the stored name is cut to 120, so match on the same cut
     const all = [...pool, ...newItems];
     const found = all.find(it => sk && (it.candidates || []).some(c => c && skuOf(c.sku) === sk)) || all.find(it => nm && normName(it.name) === nm);
     if (found) {
@@ -915,6 +915,14 @@ export function planShoppingItems(entries, shoppingItems = [], user = "") {
   return { results, newItems };
 }
 
+// Does this purchase still need a Shopping link? No link, or a link to an item that no longer exists (only judged once the
+// list is loaded: pass `null` while it isn't, and a link is trusted).
+export function purchaseNeedsShopping(p, shoppingItems) {
+  if (!p) return false;
+  if (!p.shoppingItemId) return true;
+  return Array.isArray(shoppingItems) && !shoppingItems.some(i => i && i.id === p.shoppingItemId);
+}
+
 // "Add to Shopping list" for purchases that are already filed (a backfill, or lines whose link was skipped). Purchases
 // that already point at an existing item are skipped. Returns the new items to save, the purchase→item links to write,
 // and the EXISTING items that gained purchases ({ itemId, purchaseIds, status } — the caller appends to the item's
@@ -925,10 +933,11 @@ export function planShoppingForPurchases({ purchases, shoppingItems = [], user =
   const entries = todo.map(p => {
     const qty = Number(p.qty) > 0 ? Number(p.qty) : 1;
     const n = (v) => Number(v) || 0;
+    const hasUnit = p.unitPrice !== null && p.unitPrice !== undefined && p.unitPrice !== "" && Number.isFinite(Number(p.unitPrice));
     return {
-      ref: p.id, name: p.description || p.vendor, category: categoryForTrade(p.trade), room: p.room || "",
+      ref: p.id, name: String(p.description || "").trim(), category: categoryForTrade(p.trade), room: p.room || "",   // a blank description never dedupes by vendor name
       vendor: p.vendor || "", sourceVendor: p.sourceVendor || "",
-      unitPrice: p.unitPrice != null ? p.unitPrice : (p.totalPaid != null ? Math.round(((n(p.totalPaid) - n(p.tax) - n(p.shipping) - n(p.fees) + n(p.discount)) / qty) * 10000) / 10000 : null),
+      unitPrice: hasUnit ? Number(p.unitPrice) : (p.totalPaid != null && p.totalPaid !== "" ? Math.round(((n(p.totalPaid) - n(p.tax) - n(p.shipping) - n(p.fees) + n(p.discount)) / qty) * 10000) / 10000 : null),
       qty, tax: p.tax, shipping: p.shipping, fees: p.fees, discount: p.discount,
       status: shoppingStatusForPurchase(p.status), returnByDate: p.returnByDate || "",
     };
@@ -939,11 +948,14 @@ export function planShoppingForPurchases({ purchases, shoppingItems = [], user =
     if (!r) return;
     purchaseLinks.push({ purchaseId: todo[i].id, itemId: r.itemId });
     if (!r.mine) {
-      const cur = byItem.get(r.itemId) || { itemId: r.itemId, purchaseIds: [], status: "ordered" };
-      cur.purchaseIds.push(todo[i].id);
-      if (entries[i].status === "received") cur.status = "received";
+      const cur = byItem.get(r.itemId) || { itemId: r.itemId, purchaseIds: [], statuses: [] };
+      cur.purchaseIds.push(todo[i].id); cur.statuses.push(entries[i].status);
       byItem.set(r.itemId, cur);
     }
   });
-  return { newItems, purchaseLinks, itemLinks: [...byItem.values()] };
+  const itemLinks = [...byItem.values()].map(({ itemId, purchaseIds, statuses }) => ({
+    itemId, purchaseIds,
+    status: statuses.includes("received") ? "received" : statuses.every(x => x === "returned") ? "returned" : "ordered",
+  }));
+  return { newItems, purchaseLinks, itemLinks };
 }

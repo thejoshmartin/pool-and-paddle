@@ -2297,6 +2297,37 @@ console.log('Phase 3 second Opus review (all fixed):');
   assert.equal(SH.planShoppingForPurchases({ purchases: [pLinked], shoppingItems: shopItems, user: 'JM' }).newItems.length, 0);
   assert.equal(SH.sanitizeShoppingField('item:' + it.id, it, { updatedAt: 'x', updatedBy: 'JM' }).ok, true);
   ok('adding filed purchases to Shopping: a new ordered item (category from the trade, price reproduces what was paid, return-by carried) or a link to an existing same-name item; already-linked purchases are skipped; same-name lines share one item');
+
+  // Opus review of the backfill
+  // a purchase "needs Shopping" when it has no link OR its link points at an item that doesn't exist (once the list is loaded)
+  const nsItems = [{ id: 'sh-live' }];
+  assert.equal(SH.purchaseNeedsShopping({ shoppingItemId: null }, nsItems), true);
+  assert.equal(SH.purchaseNeedsShopping({ shoppingItemId: 'sh-live' }, nsItems), false);
+  assert.equal(SH.purchaseNeedsShopping({ shoppingItemId: 'sh-dead' }, nsItems), true, 'a dead link is offered again');
+  assert.equal(SH.purchaseNeedsShopping({ shoppingItemId: 'sh-dead' }, null), false, 'list not loaded: never guess from a missing list');
+  assert.equal(SH.purchaseNeedsShopping({ shoppingItemId: null }, null), true);
+  // returned purchases: item status follows the purchases being added
+  const retP = bp({ n: 7, d: 'Air fryer', t: 'Small Appliances', u: 90, paid: 90, st: 'Returned' });
+  const retPlan = SH.planShoppingForPurchases({ purchases: [retP], shoppingItems: shopItems, user: 'JM' });
+  assert.deepEqual(retPlan.itemLinks, [{ itemId: 'sh-seed-air', purchaseIds: ['p-7'], status: 'returned' }]);
+  assert.equal(SH.advanceShoppingStatus('researching', 'returned'), 'returned');
+  assert.equal(SH.advanceShoppingStatus('ordered', 'returned'), 'ordered', 'never moves a bought item to returned just because one linked purchase was');
+  assert.equal(SH.planShoppingForPurchases({ purchases: [retP], shoppingItems: [], user: 'JM' }).newItems[0].status, 'returned');
+  // blank descriptions never collapse into one vendor-named item
+  const blanks = SH.planShoppingForPurchases({ purchases: [bp({ n: 8, d: '', u: 10, paid: 10 }), bp({ n: 9, d: '   ', u: 99, paid: 99 })], shoppingItems: [{ id: 'sh-minoan', name: 'Minoan', candidates: [], purchaseIds: [] }], user: 'JM' });
+  assert.equal(blanks.newItems.length, 2); assert.ok(blanks.itemLinks.length === 0);
+  // a description longer than 120 characters matches its own stored (truncated) item on a retry
+  const longName = 'Very long upholstered platform bed with adjustable headboard '.repeat(3);
+  const first = SH.planShoppingForPurchases({ purchases: [bp({ n: 10, d: longName, u: 10, paid: 10 })], shoppingItems: [], user: 'JM' });
+  assert.equal(first.newItems[0].name.length, 120);
+  const again = SH.planShoppingForPurchases({ purchases: [bp({ n: 11, d: longName, u: 10, paid: 10 })], shoppingItems: first.newItems, user: 'JM' });
+  assert.equal(again.newItems.length, 0); assert.equal(again.itemLinks[0].itemId, first.newItems[0].id);
+  // unit price fallback: blank or "" unit price → derived from what was paid so landed cost still equals it
+  for (const blank of [null, '']) {
+    const fb = SH.planShoppingForPurchases({ purchases: [bp({ n: 12, d: 'Chairs', q: 3, u: blank, tax: 4.5, sh: 5, paid: 109.5 })], shoppingItems: [], user: 'JM' }).newItems[0];
+    assert.ok(Math.abs(SH.landedTotal(fb.candidates[0], { defaultTaxRate: 0.065 }) - 109.5) <= 0.01, 'landed ' + SH.landedTotal(fb.candidates[0], { defaultTaxRate: 0.065 }));
+  }
+  ok('Opus review: a dead Shopping link is offered again; returned purchases set a returned item; blank descriptions stay separate items; long names dedupe on retry; a missing unit price is derived from what was paid');
 }
 
 console.log(`\nAll ${passed} checks passed.`);
