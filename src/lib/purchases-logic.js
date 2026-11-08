@@ -185,6 +185,17 @@ export function reimbursementDefaultsFor(vendor, purchasedBy, vendors = DEFAULT_
   return { reimbursable: false, reimbursedBy: "", reimbursementStatus: "none" };
 }
 
+// Reimbursement fields to set when "Paid by" changes on a purchase. Sparrow paying clears them; an owner paying a
+// reimbursable vendor's order turns "Due from Sparrow" on — but only if nothing is recorded yet (never overwrites a
+// status, amount or draw already entered). Returns {} when nothing should change.
+export function payerChangePatch(d, newPayer, vendors = DEFAULT_REIMBURSABLE_VENDORS) {
+  if (newPayer === CONTRACTOR_PURCHASER) return reimbursementDefaultsFor(d.vendor, newPayer, vendors);
+  const untouched = !d.reimbursable && (d.reimbursementStatus || "none") === "none" && !d.drawNo;
+  if (!untouched) return {};
+  const def = reimbursementDefaultsFor(d.vendor, newPayer, vendors);
+  return def.reimbursable ? def : {};
+}
+
 // Badge for statements/quotes (which are not proof of payment). Null when nothing to flag.
 export function paymentBadge(p) {
   if (!p || (p.docType !== "statement" && p.docType !== "quote")) return null;

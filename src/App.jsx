@@ -8,7 +8,7 @@ import {
   PURCHASE_STATUSES, NOT_IN_ALLOWANCE, ALLOWANCE_CATEGORIES, EXHIBIT_B_TOTAL,
   ASSET_CLASSES, suggestAssetClass, buildCostSegCsv, fmtUSD, emptyPurchase,
   DELIVERED_TO_OPTIONS, REIMBURSEMENT_STATUSES, DOC_TYPES, CONTRACTOR_SCOPE, assetClassLabel,
-  defaultAllowanceFor, reimbursementDefaultsFor, normalizePurchase, netCost, paymentBadge,
+  defaultAllowanceFor, reimbursementDefaultsFor, payerChangePatch, normalizePurchase, netCost, paymentBadge,
   summarizePurchases, fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
   groupByOrder, newOrderGroupId, returnsClosingSoon, localISODate, daysBetween, statusChangePatch, formDefaultsTouched,
   purchaseComputedTotal, totalSuggestionNeeded,
@@ -22,7 +22,7 @@ import {
 import SHOPPING_SEED from "./shopping-seed.json";
 import {
   normalizeShoppingItem, mergeShopping, partitionShoppingFields, shoppingItemField, SHOPPING_SETTINGS_FIELD,
-  SHOPPING_CATEGORIES, ITEM_PRIORITIES, ITEM_STATUSES, ZONES, VENDOR_TYPES, AGENT_ACTIONS, TIERS, QTY_BASES,
+  SHOPPING_CATEGORIES, sortedShoppingCategories, sortItemsAlpha, ITEM_PRIORITIES, ITEM_STATUSES, ZONES, VENDOR_TYPES, AGENT_ACTIONS, TIERS, QTY_BASES,
   NON_GLASS_CATEGORIES, emptyShoppingItem, emptyCandidate, computeQty, mealsCovered, landedTotal, perUnit,
   returnExposure, bestValue, candidateWarnings, forecastSpend, feesFor, taxFor, filterShoppingItems,
   groupShoppingItems, sanitizeShoppingSettings, buildPurchaseFromShopping,
@@ -3569,7 +3569,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
         {field("Order / Invoice #", <input style={ppInput} value={d.invoiceNo} onChange={e => set({ invoiceNo: e.target.value })} />)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-        {field("Paid by", <select style={ppInput} value={d.purchasedBy} onChange={e => { const v = e.target.value; const patch = { purchasedBy: v, ownerPurchased: v !== CONTRACTOR_PURCHASER }; if (!allowanceTouched.current) patch.allowanceCategory = allowanceFor(d.trade, v); if (!reimbTouched.current || v === CONTRACTOR_PURCHASER) Object.assign(patch, reimbursementDefaultsFor(d.vendor, v, reimbursableVendors)); set(patch); }}><option value="">—</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
+        {field("Paid by", <select style={ppInput} value={d.purchasedBy} onChange={e => { const v = e.target.value; const patch = { purchasedBy: v, ownerPurchased: v !== CONTRACTOR_PURCHASER }; if (!allowanceTouched.current) patch.allowanceCategory = allowanceFor(d.trade, v); Object.assign(patch, !reimbTouched.current ? reimbursementDefaultsFor(d.vendor, v, reimbursableVendors) : payerChangePatch(d, v, reimbursableVendors)); set(patch); }}><option value="">—</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
         {field("Payment method", <select style={ppInput} value={d.paymentMethod} onChange={e => set({ paymentMethod: e.target.value })}><option value="">—</option>{PAYMENT_METHODS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
         {field("Whose money?", (
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.charcoal, padding: "9px 0" }}>
@@ -3702,7 +3702,7 @@ function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAdd
   const [order, setOrder] = useState(() => ({ purchasedBy: "", paymentMethod: null }));   // paymentMethod null = not touched → the extraction's suggestion
   const shownOrder = { ...order, paymentMethod: order.paymentMethod ?? (ex ? suggestPaymentMethod(ex.paymentMethod) : "") };   // what the form shows is exactly what gets filed
   const [filing, setFiling] = useState(false);
-  const activeItems = useMemo(() => (shoppingItems || []).filter(i => i && !i.dismissed), [shoppingItems]);
+  const activeItems = useMemo(() => sortItemsAlpha((shoppingItems || []).filter(i => i && !i.dismissed)), [shoppingItems]);
 
   // First time the reviewer sees an extraction: link lines to shopping items (exact SKU, then name similarity).
   useEffect(() => {
@@ -4532,7 +4532,7 @@ function ShoppingItemForm({ onSave, onCancel, isMobile }) {
     <div style={{ background: C.offWhite, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
         {field("Item", <input autoFocus style={ppInput} value={d.name} placeholder="e.g. Cheese board" onChange={e => set({ name: e.target.value })} />)}
-        {field("Category", <select style={ppInput} value={d.category} onChange={e => set({ category: e.target.value })}>{SHOPPING_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select>)}
+        {field("Category", <select style={ppInput} value={d.category} onChange={e => set({ category: e.target.value })}>{sortedShoppingCategories().map(c => <option key={c} value={c}>{c}</option>)}</select>)}
         {field("Room", <input style={ppInput} value={d.room} onChange={e => set({ room: e.target.value })} />)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
@@ -4715,7 +4715,7 @@ function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveI
         <input value={filters.search} onChange={setFilter("search")} placeholder="Search items, notes, vendors…" style={{ ...ppInput, maxWidth: 280 }} />
         <select value={groupBy} onChange={e => setGroupBy(e.target.value)} style={sel} aria-label="Group by"><option value="category">Group: category</option><option value="status">Group: status</option></select>
         <select value={filters.status} onChange={setFilter("status")} style={sel} aria-label="Status"><option value="all">All statuses</option>{ITEM_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>
-        <select value={filters.category} onChange={setFilter("category")} style={sel} aria-label="Category"><option value="all">All categories</option>{SHOPPING_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select>
+        <select value={filters.category} onChange={setFilter("category")} style={sel} aria-label="Category"><option value="all">All categories</option>{sortedShoppingCategories().map(c => <option key={c} value={c}>{c}</option>)}</select>
         <select value={filters.priority} onChange={setFilter("priority")} style={sel} aria-label="Priority"><option value="all">All priorities</option>{ITEM_PRIORITIES.map(p => <option key={p} value={p}>{priorityLabel[p]}</option>)}</select>
         <select value={filters.agentFlag} onChange={setFilter("agentFlag")} style={sel} aria-label="Agent flag"><option value="all">Any agent flag</option><option value="none">No flag</option>{AGENT_ACTIONS.map(a => <option key={a} value={a}>{a}</option>)}</select>
         <select value={filters.claimedBy} onChange={setFilter("claimedBy")} style={sel} aria-label="Claimed by"><option value="all">Anyone buying</option><option value="unclaimed">Unclaimed</option><option value="JM">JM buying</option><option value="KM">KM buying</option></select>

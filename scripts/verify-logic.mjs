@@ -2152,6 +2152,30 @@ console.log('Phase 3 second Opus review (all fixed):');
   assert.ok(/ship-to/i.test(promptText) && /exactly as printed/i.test(promptText));
   assert.ok(/ONLY .*reviewer.*(fix|confirm|decide)/i.test(promptText) && /do not list/i.test(promptText), 'issues is reserved for things the reviewer must act on');
   ok('the prompt no longer asks the model to flag address differences (the app does that, warn-only) and reserves "issues" for things the reviewer must act on, so a clean receipt can use Accept all');
+
+  // Shopping pickers are alphabetical
+  const cats = SH.sortedShoppingCategories();
+  assert.deepEqual([...cats].sort(), [...SH.SHOPPING_CATEGORIES].sort(), 'same categories, only reordered');
+  assert.equal(cats[cats.length - 1], 'Other');
+  const rest = cats.slice(0, -1);
+  assert.deepEqual(rest, [...rest].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })));
+  const picked = SH.sortItemsAlpha([{ id: '1', name: 'wine glasses' }, { id: '2', name: 'Air fryer' }, { id: '3', name: 'Bath towels' }, { id: '4', name: null }, null]);
+  assert.deepEqual(picked.map(i => i.id), ['2', '3', '1', '4']);
+  const orig = [{ id: 'b', name: 'B' }, { id: 'a', name: 'A' }];
+  SH.sortItemsAlpha(orig); assert.equal(orig[0].id, 'b', 'never reorders the caller\'s array');
+  ok('the Shopping item picker and the category lists sort A–Z (case-insensitive, "Other" last for categories) without touching the stored order');
+
+  // Changing "Paid by" on a saved purchase keeps the reimbursement in step
+  const PLg = await import('../src/lib/purchases-logic.js');
+  const sparrowPaid = { vendor: 'Minoan', purchasedBy: 'Sparrow (Contractor)', reimbursable: false, reimbursedBy: '', reimbursementStatus: 'none', drawNo: '' };
+  assert.deepEqual(PLg.payerChangePatch(sparrowPaid, 'Josh', ['Minoan']), { reimbursable: true, reimbursedBy: 'Sparrow (Contractor)', reimbursementStatus: 'pending' });
+  assert.deepEqual(PLg.payerChangePatch(sparrowPaid, 'Kerry', ['Minoan']), { reimbursable: true, reimbursedBy: 'Sparrow (Contractor)', reimbursementStatus: 'pending' });
+  assert.deepEqual(PLg.payerChangePatch({ ...sparrowPaid, vendor: 'Amazon' }, 'Josh', ['Minoan']), {}, 'a vendor Sparrow does not reimburse stays as is');
+  const owed = { ...sparrowPaid, purchasedBy: 'Josh', reimbursable: true, reimbursedBy: 'Sparrow (Contractor)', reimbursementStatus: 'requested', drawNo: '3' };
+  assert.deepEqual(PLg.payerChangePatch(owed, 'Kerry', ['Minoan']), {}, 'never overwrites reimbursement progress');
+  assert.deepEqual(PLg.payerChangePatch({ ...owed, reimbursable: false, reimbursementStatus: 'none', drawNo: '' }, 'Josh', ['Minoan']), { reimbursable: true, reimbursedBy: 'Sparrow (Contractor)', reimbursementStatus: 'pending' });
+  assert.deepEqual(PLg.payerChangePatch(owed, 'Sparrow (Contractor)', ['Minoan']), { reimbursable: false, reimbursedBy: '', reimbursementStatus: 'none' }, 'choosing Sparrow as payer clears it (existing rule)');
+  ok('moving a saved Minoan purchase from Sparrow-paid to Josh/Kerry-paid turns on "Due from Sparrow" (pending); existing reimbursement progress is never overwritten; Sparrow as payer still clears it');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

@@ -20,6 +20,12 @@ export const SHOPPING_CATEGORIES = [
   "Game Room & Recreation", "Furniture", "Electronics & Tech", "Safety & First Aid", "Other",
 ];
 
+const byName = (a, b) => String(a ?? "").localeCompare(String(b ?? ""), undefined, { sensitivity: "base" });
+// Pickers show categories A–Z with "Other" last (SHOPPING_CATEGORIES keeps its grouping order for storage/validation).
+export const sortedShoppingCategories = () => [...SHOPPING_CATEGORIES.filter(c => c !== "Other").sort(byName), "Other"];
+// Items A–Z by name for a picker; returns a new array (nulls dropped, unnamed last).
+export const sortItemsAlpha = (items) => (items || []).filter(Boolean).sort((a, b) => (a.name ? 0 : 1) - (b.name ? 0 : 1) || byName(a.name, b.name));
+
 // Spec §2.5: shopping category → Purchase trade.
 export const CATEGORY_TO_TRADE = {
   "Small Appliances": "Small Appliances",
