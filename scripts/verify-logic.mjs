@@ -2257,6 +2257,46 @@ console.log('Phase 3 second Opus review (all fixed):');
   assert.deepEqual(qIssues([null, 1, 1, null]), ['Line 1: quantity missing — assumed 1', 'Line 4: quantity missing — assumed 1'], 'one or two lines keep the per-line wording');
   assert.deepEqual(qIssues([1, 1]), []);
   ok('three or more lines without a quantity produce one summarized issue ("Lines 1–10 …"), one or two keep the per-line wording');
+
+  // ── Stale-tab banner: detect that a newer build is deployed ──
+  const AV = await import('../src/lib/app-version.js');
+  const pageHtml = (id) => `<!doctype html><html><head><script type="module" crossorigin src="/assets/${id}"></script><link rel="stylesheet" href="/assets/style.css"></head><body><div id="root"></div></body></html>`;
+  assert.equal(AV.bundleIdFromHtml(pageHtml('index-C2AEzjN0.js')), 'index-C2AEzjN0.js');
+  assert.equal(AV.bundleIdFromHtml('<html><body>Please log in</body></html>'), null);
+  assert.equal(AV.bundleIdFromHtml(null), null);
+  assert.equal(AV.isNewVersionAvailable('index-A1.js', pageHtml('index-B2.js')), true);
+  assert.equal(AV.isNewVersionAvailable('index-A1.js', pageHtml('index-A1.js')), false);
+  assert.equal(AV.isNewVersionAvailable(null, pageHtml('index-B2.js')), false, 'dev server / unknown current build: never nag');
+  assert.equal(AV.isNewVersionAvailable('index-A1.js', '<html>login redirect</html>'), false, 'a login page is not a new build');
+  ok('the new-version check compares the running bundle with the deployed page and never fires for a login page or an unknown build');
+
+  // ── Add filed purchases to the Shopping list (backfill + manual) ──
+  assert.equal(SH.categoryForTrade('Furniture / FF&E'), 'Furniture');
+  assert.equal(SH.categoryForTrade('Small Appliances'), 'Small Appliances');
+  assert.equal(SH.categoryForTrade('Linens & Soft Goods'), 'Linens & Towels');
+  assert.equal(SH.categoryForTrade('Plumbing'), 'Other');
+  assert.deepEqual(['Ordered', 'Received', 'Installed', 'Return started', 'Returned', ''].map(SH.shoppingStatusForPurchase), ['ordered', 'received', 'received', 'ordered', 'returned', 'ordered']);
+  const bp = (o) => ({ id: 'p-' + o.n, description: o.d, trade: o.t || 'Furniture / FF&E', room: o.room || '', vendor: 'Minoan', sourceVendor: 'Wayfair', qty: o.q || 1, unitPrice: o.u, tax: o.tax || 0, shipping: o.sh || 0, fees: o.fees || 0, discount: o.disc || null, totalPaid: o.paid, status: o.st || 'Ordered', returnByDate: o.rb || '', shoppingItemId: o.link || null, ...o.x });
+  const pBed = bp({ n: 1, d: 'King Bed', u: 196.87, tax: 12.5, fees: 7.1, paid: 216.47, room: 'Bedroom 1', rb: '2026-12-01' });
+  const pLinked = bp({ n: 2, d: 'Already linked', u: 10, paid: 10, link: 'sh-x' });
+  const pDup = bp({ n: 3, d: '  king   BED ', u: 50, paid: 50 });     // same normalized name as pBed → one item
+  const pHas = bp({ n: 4, d: 'Air fryer', t: 'Small Appliances', u: 90, paid: 90, st: 'Received' });
+  const shopItems = [{ id: 'sh-seed-air', name: 'Air Fryer', category: 'Small Appliances', candidates: [], purchaseIds: [], status: 'researching' }, { id: 'sh-x', name: 'Something else', category: 'Other', candidates: [], purchaseIds: ['p-2'], status: 'ordered' }];
+  assert.equal(SH.planShoppingForPurchases({ purchases: [{ ...pLinked, shoppingItemId: 'sh-gone' }], shoppingItems: shopItems, user: 'JM' }).newItems.length, 1, 'a link to an item that no longer exists counts as unlinked');
+  assert.deepEqual(['researching', 'shortlisted', 'approved', 'ordered', 'received', 'kept', 'returned'].map(c => SH.advanceShoppingStatus(c, 'received')), ['received', 'received', 'received', 'received', 'received', 'kept', 'returned']);
+  assert.deepEqual(['researching', 'ordered', 'kept'].map(c => SH.advanceShoppingStatus(c, 'ordered')), ['ordered', 'ordered', 'kept']);
+  const bf = SH.planShoppingForPurchases({ purchases: [pBed, pLinked, pDup, pHas], shoppingItems: shopItems, user: 'JM' });
+  assert.equal(bf.newItems.length, 1, 'bed (and its same-name twin) → one new item; the air fryer links to the existing item; the linked purchase is skipped');
+  const it = bf.newItems[0];
+  assert.equal(it.name, 'King Bed'); assert.equal(it.category, 'Furniture'); assert.equal(it.room, 'Bedroom 1'); assert.equal(it.status, 'ordered');
+  assert.deepEqual([...it.purchaseIds].sort(), ['p-1', 'p-3']);
+  assert.equal(it.candidates[0].vendor, 'Minoan'); assert.equal(it.candidates[0].sourceVendor, 'Wayfair'); assert.equal(it.candidates[0].returnByDate, '2026-12-01'); assert.equal(it.selectedCandidateId, it.candidates[0].id);
+  assert.ok(Math.abs(SH.landedTotal(it.candidates[0], { defaultTaxRate: 0.065 }) - 216.47) <= 0.01, 'the item reproduces what was paid');
+  assert.deepEqual(bf.purchaseLinks.map(l => [l.purchaseId, l.itemId === it.id ? 'NEW' : l.itemId]).sort(), [['p-1', 'NEW'], ['p-3', 'NEW'], ['p-4', 'sh-seed-air']]);
+  assert.deepEqual(bf.itemLinks, [{ itemId: 'sh-seed-air', purchaseIds: ['p-4'], status: 'received' }]);
+  assert.equal(SH.planShoppingForPurchases({ purchases: [pLinked], shoppingItems: shopItems, user: 'JM' }).newItems.length, 0);
+  assert.equal(SH.sanitizeShoppingField('item:' + it.id, it, { updatedAt: 'x', updatedBy: 'JM' }).ok, true);
+  ok('adding filed purchases to Shopping: a new ordered item (category from the trade, price reproduces what was paid, return-by carried) or a link to an existing same-name item; already-linked purchases are skipped; same-name lines share one item');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

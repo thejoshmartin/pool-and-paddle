@@ -14,6 +14,7 @@ import {
   purchaseComputedTotal, totalSuggestionNeeded,
 } from "./lib/purchases-logic.js";
 import { matchesFinishSearch, buildRoomCopies, mergeFinishes, finishItemField, furnitureField, roomField, tombstone, BUDGET_FIELD, partitionFinishFields } from "./lib/design-logic.js";
+import { bundleIdFromHtml, isNewVersionAvailable } from "./lib/app-version.js";
 import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, groupHouseInfoByCategory } from "./lib/house-info-logic.js";
 import {
   newInboxId, reconciles, matchLines, findDuplicates, addressMatches, mergeLines, canAcceptAll, fileProblems,
@@ -23,7 +24,7 @@ import {
 import SHOPPING_SEED from "./shopping-seed.json";
 import {
   normalizeShoppingItem, mergeShopping, partitionShoppingFields, shoppingItemField, SHOPPING_SETTINGS_FIELD,
-  SHOPPING_CATEGORIES, sortedShoppingCategories, sortItemsAlpha, ITEM_PRIORITIES, ITEM_STATUSES, ZONES, VENDOR_TYPES, AGENT_ACTIONS, TIERS, QTY_BASES,
+  SHOPPING_CATEGORIES, sortedShoppingCategories, sortItemsAlpha, planShoppingForPurchases, advanceShoppingStatus, ITEM_PRIORITIES, ITEM_STATUSES, ZONES, VENDOR_TYPES, AGENT_ACTIONS, TIERS, QTY_BASES,
   NON_GLASS_CATEGORIES, emptyShoppingItem, emptyCandidate, computeQty, mealsCovered, landedTotal, perUnit,
   returnExposure, bestValue, candidateWarnings, forecastSpend, feesFor, taxFor, filterShoppingItems,
   groupShoppingItems, sanitizeShoppingSettings, buildPurchaseFromShopping,
@@ -3910,9 +3911,12 @@ function ReceiptInboxPanel({ inbox, loaded, loadError, canUse, uploads, onUpload
   );
 }
 
-function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, onAddLine, reimbursableVendors, inboxPanel, focusPurchaseId, focusPurchaseMode, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
+function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceiptsChange, onAddLine, onAddToShopping, reimbursableVendors, inboxPanel, focusPurchaseId, focusPurchaseMode, onFocusHandled, propertyInServiceDate, onSetInServiceDate }) {
   const [editingId, setEditingId] = useState(null);   // id | "new" | null
   const [expandedId, setExpandedId] = useState(null);
+  const [shopNotice, setShopNotice] = useState(null);   // result of "Add to Shopping list"
+  const [shopBusy, setShopBusy] = useState(false);
+  const addToShopping = async (list) => { if (shopBusy || !onAddToShopping) return; setShopBusy(true); try { setShopNotice(await onAddToShopping(list)); } finally { setShopBusy(false); } };
   const [query, setQuery] = useState("");
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   useEffect(() => {
@@ -3986,6 +3990,12 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
         )}
       </div>
 
+      {shopNotice && (
+        <div role="status" style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", padding: "10px 14px", marginBottom: 12, borderRadius: 10, fontSize: 14, background: shopNotice.ok ? C.seafoamFaint : C.warnBg, color: shopNotice.ok ? C.mintDark : C.warnText, border: `1px solid ${shopNotice.ok ? C.seafoam : C.border}` }}>
+          <span>{shopNotice.message}</span>
+          <button onClick={() => setShopNotice(null)} aria-label="Dismiss" style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, minWidth: 44, minHeight: 44, color: "inherit" }}>×</button>
+        </div>
+      )}
       {inboxPanel && <ReceiptInboxPanel {...inboxPanel} purchases={purchases} isMobile={isMobile} />}
 
       {/* New purchase form — at the top so it's visible immediately when opened. Keyed on the
@@ -4161,6 +4171,9 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
                     <button onClick={() => onSave({ ...p, keepConfirmed: true })} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.mint}`, background: C.seafoamFaint, color: C.mintDark, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Keep</button>
                   )}
                   <button onClick={() => onAddLine && onAddLine(p)} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Add line to this order</button>
+                  {!p.shoppingItemId && onAddToShopping && (
+                    <button disabled={shopBusy} onClick={() => addToShopping([p])} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer", opacity: shopBusy ? 0.6 : 1 }}>Add to Shopping list</button>
+                  )}
                   <button onClick={() => { setEditingId(p.id); }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.charcoal, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Edit</button>
                   <button onClick={() => { if (window.confirm("Delete this purchase? Its receipts are deleted too, except any shared with other lines of the same order.")) { onDelete(p.id); setExpandedId(null); } }} style={{ padding: "10px 18px", minHeight: 44, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ocean, fontFamily: font, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Delete</button>
                 </div>
@@ -4190,8 +4203,12 @@ function PurchasesView({ purchases, activeProperty, onSave, onDelete, onReceipts
       };
       return groupByOrder(filtered).map(g => g.kind === "single" ? renderPurchase(g.purchase) : (
         <div key={g.orderGroupId} style={{ border: `1px solid ${C.seafoam}`, borderRadius: 14, padding: 8, marginBottom: 12, background: C.seafoamFaint }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: C.mintDark, padding: "4px 8px 8px" }}>
-            {orderHeader(g)}
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.mintDark, padding: "4px 8px 8px", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
+            <span>{orderHeader(g)}</span>
+            {onAddToShopping && (() => {
+              const todo = purchases.filter(m => m.orderGroupId === g.orderGroupId && !m.shoppingItemId);
+              return todo.length > 0 ? <button disabled={shopBusy} onClick={() => addToShopping(todo)} style={{ padding: "8px 12px", minHeight: 36, borderRadius: 8, border: `1px solid ${C.mint}`, background: C.white, color: C.mintDark, fontFamily: font, fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: shopBusy ? 0.6 : 1 }}>Add {todo.length} line{todo.length === 1 ? "" : "s"} to Shopping list</button> : null;
+            })()}
           </div>
           {g.purchases.map(renderPurchase)}
         </div>
@@ -5087,6 +5104,28 @@ export default function App() {
   const [targetBudget, setTargetBudget] = useState(() => loadFinishesFromCache(activeProperty).targetBudget);
   const [roomData, setRoomData] = useState(() => loadFinishesFromCache(activeProperty).roomData);
   const [syncError, setSyncError] = useState(null);
+  // A tab keeps running the build it loaded until it is reloaded, so after a deploy it can silently file with outdated
+  // rules. Compare this tab's entry bundle with the deployed page now and then and offer a reload (never in dev, where
+  // there is no hashed bundle).
+  const [newVersion, setNewVersion] = useState(false);
+  useEffect(() => {
+    const el = Array.from(document.scripts).find(sc => /\/assets\/index-[^/]+\.js/.test(sc.src || ''));
+    const current = el ? bundleIdFromHtml(el.src) : null;
+    if (!current) return undefined;
+    let stopped = false;
+    const check = async () => {
+      try {
+        const r = await fetch('/admin', { cache: 'no-store', credentials: 'same-origin' });
+        if (!r.ok) return;
+        const html = await r.text();
+        if (!stopped && isNewVersionAvailable(current, html)) setNewVersion(true);
+      } catch (e) { /* offline or blocked: try again later */ }
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') check(); };
+    const timer = setInterval(onVisible, 5 * 60 * 1000);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { stopped = true; clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, []);
   const serverLoaded = useRef(false);
   const finishesServerLoaded = useRef(false);
   const tasksFirstRun = useRef(true);
@@ -5430,6 +5469,26 @@ export default function App() {
   // "Add line to this order": give the source an order group if it has none, then create a new
   // line that shares the order-level fields and the SAME receipt pathnames (by reference).
   // Persisted immediately, like promote; each save is a targeted single-record PUT.
+  // "Add to Shopping list" on filed purchases (backfill, or lines whose link was skipped): same rules as filing — link an
+  // existing item with the same SKU/name, else create an `ordered` one. Items are saved first, then each purchase's link, so a
+  // retry after a partial failure reuses the items already created (same-name match) instead of duplicating them.
+  const addPurchasesToShopping = async (list) => {
+    if (!(shoppingReady && shoppingServerLoaded.current)) return { ok: false, message: 'The Shopping list has not finished loading — wait a moment and try again.' };
+    const plan = planShoppingForPurchases({ purchases: list, shoppingItems: shopping.items, user: (getCurrentUser() || {}).code || '' });
+    if (plan.purchaseLinks.length === 0) return { ok: true, message: 'Nothing to add — these purchases are already on the Shopping list.' };
+    const live = new Set(purchases.map(p => p.id));
+    plan.newItems.forEach(it => saveShoppingItem(it));
+    for (const l of plan.itemLinks) {
+      const it = shopping.items.find(i => i.id === l.itemId);
+      if (it) saveShoppingItem({ ...it, status: advanceShoppingStatus(it.status, l.status), purchaseIds: [...new Set([...(it.purchaseIds || []).filter(id => live.has(id)), ...l.purchaseIds])] });
+    }
+    const byId = new Map(list.map(p => [p.id, p]));
+    const results = await Promise.all(plan.purchaseLinks.map(l => savePurchase({ ...byId.get(l.purchaseId), shoppingItemId: l.itemId })));
+    const failed = results.filter(r => r !== true).length;
+    if (failed) return { ok: false, message: `${failed} of ${plan.purchaseLinks.length} purchases could not be linked. Press the button again — items already created will be reused.` };
+    const linked = plan.itemLinks.length;
+    return { ok: true, message: `Added ${plan.purchaseLinks.length} purchase${plan.purchaseLinks.length === 1 ? '' : 's'} to the Shopping list (${plan.newItems.length} new item${plan.newItems.length === 1 ? '' : 's'}${linked ? `, ${linked} linked to existing item${linked === 1 ? '' : 's'}` : ''}).` };
+  };
   const addLineToOrder = (source) => {
     let src = source;
     if (!src.orderGroupId) {
@@ -5990,13 +6049,19 @@ export default function App() {
           {syncError}{!syncError.includes('house info') ? ' — changes saved locally only' : ''}
         </div>
       )}
+      {newVersion && (
+        <div role="status" style={{ background: C.seafoamFaint, color: C.mintDark, padding: '8px 16px', textAlign: 'center', fontSize: '14px', borderBottom: `1px solid ${C.seafoam}`, display: 'flex', gap: 12, justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
+          <span>A new version of Pool &amp; Paddle is available. Finish what you are typing, then reload to use it.</span>
+          <button onClick={() => window.location.reload()} style={{ padding: '8px 14px', minHeight: 40, borderRadius: 8, border: `1px solid ${C.mint}`, background: C.mint, color: C.white, fontFamily: font, fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>Reload</button>
+        </div>
+      )}
       {activeView === "dashboard" && <Dashboard tasks={tasks} podcastData={PODCAST_DATABASE} finishes={finishes} onNavigateToItem={navigateToItem} purchases={purchases} onOpenPurchase={openPurchase} />}
       {activeView === "summary" && <ExecutiveSummary />}
       {activeView === "podcast" && <PodcastView podcastData={PODCAST_DATABASE} />}
       {activeView === "tasks" && <TaskView tasks={tasks} setTasks={setTasks} focusItemId={focusItemSource === "task" ? focusItemId : null} />}
       {activeView === "design" && <DesignView finishes={finishes} setFinishes={setFinishes} targetBudget={targetBudget} setTargetBudget={setTargetBudget} roomData={roomData} setRoomData={setRoomData} focusItemId={focusItemSource === "design" ? focusItemId : null} deletedFinishIds={deletedFinishIds} setDeletedFinishIds={setDeletedFinishIds} onPromote={promoteFinishItem} promotedFinishIds={promotedFinishIds} onPromoteFurniture={promoteFurnitureItem} promotedFurnitureIds={promotedFurnitureIds} writeFinishItem={writeFinishItem} tombstoneFinishItem={tombstoneFinishItem} removeFinishItem={removeFinishItem} writeFurniture={writeFurniture} removeFurniture={removeFurniture} writeRoomMeta={writeRoomMeta} writeBudget={writeBudget} />}
       {activeView === "shopping" && <ShoppingView shopping={shopping} loaded={shoppingLoaded} loadError={shoppingLoadError} canEdit={shoppingReady} purchases={purchases} onSaveItem={saveShoppingItem} onRemoveItem={removeShoppingItem} onSaveSettings={saveShoppingSettings} onMarkPurchased={promoteShoppingItem} propertyId={activeProperty} />}
-      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} reimbursableVendors={shopping.settings.reimbursableVendors} inboxPanel={{ inbox, loaded: inboxLoaded, loadError: inboxLoadError, canUse: inboxReady, uploads: inboxUploads, onUpload: uploadToInbox, onChange: saveInboxRecord, onChangeNow: saveInboxRecordNow, onRemove: removeInboxRecord, onRetry: retryInboxRecord, onFile: fileInboxRecord, shoppingItems: shopping.items, propertyAddress: activePropertyAddress, onOpenPurchase: openPurchase, notice: inboxNotice, onDismissNotice: () => setInboxNotice(null) }} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
+      {activeView === "purchases" && <PurchasesView purchases={purchases} activeProperty={activeProperty} onSave={savePurchase} onDelete={deletePurchase} onReceiptsChange={changePurchaseReceipts} onAddLine={addLineToOrder} onAddToShopping={addPurchasesToShopping} reimbursableVendors={shopping.settings.reimbursableVendors} inboxPanel={{ inbox, loaded: inboxLoaded, loadError: inboxLoadError, canUse: inboxReady, uploads: inboxUploads, onUpload: uploadToInbox, onChange: saveInboxRecord, onChangeNow: saveInboxRecordNow, onRemove: removeInboxRecord, onRetry: retryInboxRecord, onFile: fileInboxRecord, shoppingItems: shopping.items, propertyAddress: activePropertyAddress, onOpenPurchase: openPurchase, notice: inboxNotice, onDismissNotice: () => setInboxNotice(null) }} focusPurchaseId={focusPurchaseId} focusPurchaseMode={focusPurchaseMode} onFocusHandled={handlePurchaseFocusCleared} propertyInServiceDate={activeInServiceDate} onSetInServiceDate={setPropertyInServiceDate} />}
       {activeView === "house-info" && <HouseInfoView houseInfo={houseInfo} loaded={houseInfoLoaded} canAdd={houseInfoReady} loadError={houseInfoLoadError} onSave={saveHouseInfo} onDelete={deleteHouseInfo} />}
 
       {showMigrationModal && migrationNeeded && (

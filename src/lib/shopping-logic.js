@@ -842,3 +842,108 @@ export function priceChangedSinceApproval(item, settings) {
   const to = landedTotal(sel, settings);
   return Math.abs(to - from) >= 0.01 ? { from, to } : null;
 }
+
+
+// ── Putting bought items on the Shopping list ───────────────────────────────
+
+const TRADE_TO_CATEGORY = {
+  "Furniture / FF&E": "Furniture", "Small Appliances": "Small Appliances", "Linens & Soft Goods": "Linens & Towels",
+  "Supplies & Consumables": "Supplies & Consumables", "Electronics / AV": "Electronics & Tech",
+};
+// Best Shopping category for a Purchase trade. Trades that map to several categories (Kitchen & Dining) or to none
+// become "Other" — the reviewer can change it on the item.
+export const categoryForTrade = (trade) => TRADE_TO_CATEGORY[trade] || "Other";
+
+// Purchase status → Shopping item status.
+export function shoppingStatusForPurchase(status) {
+  if (status === "Received" || status === "Installed") return "received";
+  if (status === "Returned") return "returned";
+  return "ordered";
+}
+
+// An existing item only ever moves forward when a purchase links to it (researching/shortlisted/approved → target;
+// ordered → received); anything further along is left alone.
+export function advanceShoppingStatus(current, target) {
+  if (["researching", "shortlisted", "approved"].includes(current)) return target;
+  if (current === "ordered" && target === "received") return "received";
+  return current;
+}
+
+const normName = (v) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const skuOf = (v) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+// Shared core: for each entry that still needs a Shopping item, link an EXISTING non-dismissed item with the same SKU
+// (any candidate) or the same normalized name, otherwise create a new item (reusing one created earlier in this same
+// plan for a same-SKU/name entry). New items get one selected candidate that reproduces what was paid (tax, shipping,
+// fees and discount carried, so landed total = amount paid). Entries: { ref, skip, name, sku, category, room, vendor,
+// sourceVendor, unitPrice, qty, tax, shipping, fees, discount, status, returnByDate }.
+// Returns { results: [{ itemId, created }|null per entry], newItems }.
+export function planShoppingItems(entries, shoppingItems = [], user = "") {
+  const pool = (shoppingItems || []).filter(i => i && !i.dismissed);
+  const newItems = [];
+  const results = (entries || []).map((e) => {
+    if (!e || e.skip) return null;
+    const sk = skuOf(e.sku), nm = normName(e.name);
+    const all = [...pool, ...newItems];
+    const found = all.find(it => sk && (it.candidates || []).some(c => c && skuOf(c.sku) === sk)) || all.find(it => nm && normName(it.name) === nm);
+    if (found) {
+      const mine = newItems.includes(found);
+      if (mine) found.purchaseIds = [...found.purchaseIds, e.ref];
+      return { itemId: found.id, created: false, mine };
+    }
+    const item = emptyShoppingItem();
+    const cand = emptyCandidate();
+    const qty = Number(e.qty) > 0 ? Number(e.qty) : 1;
+    const goods = (Number(e.unitPrice) || 0) * qty - (Number(e.discount) || 0);
+    Object.assign(cand, {
+      vendor: e.vendor || "", sourceVendor: e.sourceVendor || "", sku: e.sku || "",
+      unitPrice: e.unitPrice ?? null, qtyToBuy: qty, source: user === "KM" ? "KM" : "JM",
+      estTax: e.tax ?? 0, shipping: e.shipping ?? 0, discount: e.discount || null,
+      transactionFeePct: goods > 0 ? (Number(e.fees) || 0) / goods : 0,
+      returnByDate: e.returnByDate || "",
+    });
+    Object.assign(item, {
+      name: String(e.name || e.vendor || "Purchased item").trim().slice(0, 120),
+      category: SHOPPING_CATEGORIES.includes(e.category) ? e.category : "Other",
+      room: e.room || "", status: e.status || "ordered",
+      qtyRule: { basis: "fixed", multiplier: 1, fixedQty: qty },
+      candidates: [cand], selectedCandidateId: cand.id, purchaseIds: [e.ref],
+    });
+    newItems.push(item);
+    return { itemId: item.id, created: true, mine: true };
+  });
+  return { results, newItems };
+}
+
+// "Add to Shopping list" for purchases that are already filed (a backfill, or lines whose link was skipped). Purchases
+// that already point at an existing item are skipped. Returns the new items to save, the purchase→item links to write,
+// and the EXISTING items that gained purchases ({ itemId, purchaseIds, status } — the caller appends to the item's
+// purchaseIds and moves its status forward with advanceShoppingStatus).
+export function planShoppingForPurchases({ purchases, shoppingItems = [], user = "" }) {
+  const exists = (id) => !!id && (shoppingItems || []).some(i => i && i.id === id);
+  const todo = (purchases || []).filter(p => p && !exists(p.shoppingItemId));
+  const entries = todo.map(p => {
+    const qty = Number(p.qty) > 0 ? Number(p.qty) : 1;
+    const n = (v) => Number(v) || 0;
+    return {
+      ref: p.id, name: p.description || p.vendor, category: categoryForTrade(p.trade), room: p.room || "",
+      vendor: p.vendor || "", sourceVendor: p.sourceVendor || "",
+      unitPrice: p.unitPrice != null ? p.unitPrice : (p.totalPaid != null ? Math.round(((n(p.totalPaid) - n(p.tax) - n(p.shipping) - n(p.fees) + n(p.discount)) / qty) * 10000) / 10000 : null),
+      qty, tax: p.tax, shipping: p.shipping, fees: p.fees, discount: p.discount,
+      status: shoppingStatusForPurchase(p.status), returnByDate: p.returnByDate || "",
+    };
+  });
+  const { results, newItems } = planShoppingItems(entries, shoppingItems, user);
+  const purchaseLinks = [], byItem = new Map();
+  results.forEach((r, i) => {
+    if (!r) return;
+    purchaseLinks.push({ purchaseId: todo[i].id, itemId: r.itemId });
+    if (!r.mine) {
+      const cur = byItem.get(r.itemId) || { itemId: r.itemId, purchaseIds: [], status: "ordered" };
+      cur.purchaseIds.push(todo[i].id);
+      if (entries[i].status === "received") cur.status = "received";
+      byItem.set(r.itemId, cur);
+    }
+  });
+  return { newItems, purchaseLinks, itemLinks: [...byItem.values()] };
+}
