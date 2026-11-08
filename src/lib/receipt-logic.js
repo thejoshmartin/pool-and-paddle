@@ -180,7 +180,7 @@ export function validateExtraction(json, now = new Date().toISOString()) {
   const extraction = {
     docType: json.docType,
     vendor: cleanStr(json.vendor, 120),
-    orderNo: strOrNull(json.orderNo, 80, true),
+    orderNo: strOrNull(typeof json.orderNo === "string" ? json.orderNo.trim().replace(/^#+\s*/, "") : json.orderNo, 80, true), // the card adds its own "#"
     orderDate: strOrNull(json.orderDate, 40),
     paidDate: strOrNull(json.paidDate, 40),
     paymentMethod: strOrNull(json.paymentMethod, 80),

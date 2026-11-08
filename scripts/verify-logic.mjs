@@ -2138,6 +2138,20 @@ console.log('Phase 3 second Opus review (all fixed):');
   const spaced = RL.validateExtraction({ docType: 'receipt', vendor: 'V', orderNo: '5500 0055 5555 5559', lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction;
   assert.ok(!spaced.orderNo.includes('5500 0055'));
   ok('order numbers and SKUs keep contiguous digit strings (even if they look like a card); a card number written with spaces is still removed from them; free text is redacted either way');
+
+  // Phase 4 fix-ups (first live read of a real Minoan receipt)
+  const hashEx = RL.validateExtraction({ docType: 'receipt', vendor: 'Minoan', orderNo: '#F088F252', lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction;
+  assert.equal(hashEx.orderNo, 'F088F252');
+  assert.equal(RL.validateExtraction({ docType: 'receipt', vendor: 'M', orderNo: ' ## F1 ', lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction.orderNo, 'F1');
+  assert.equal(RL.validateExtraction({ docType: 'receipt', vendor: 'M', orderNo: '#', lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction.orderNo, null);
+  ok('a leading # on the order number is dropped (the card adds its own #, so it showed "##F088F252"; duplicate checks now match with or without it)');
+
+  const promptText = buildExtractionPrompt({ propertyAddress: '6401 Broward Street, St. Augustine, FL 32080' });
+  const rule6 = promptText.split('\n').find(l => l.startsWith('6.')) || '';
+  assert.ok(!/address/i.test(rule6), 'rule 6 must not ask the model to report address differences: the app checks the address itself');
+  assert.ok(/ship-to/i.test(promptText) && /exactly as printed/i.test(promptText));
+  assert.ok(/ONLY .*reviewer.*(fix|confirm|decide)/i.test(promptText) && /do not list/i.test(promptText), 'issues is reserved for things the reviewer must act on');
+  ok('the prompt no longer asks the model to flag address differences (the app does that, warn-only) and reserves "issues" for things the reviewer must act on, so a clean receipt can use Accept all');
 }
 
 console.log(`\nAll ${passed} checks passed.`);
