@@ -2248,6 +2248,15 @@ console.log('Phase 3 second Opus review (all fixed):');
   assert.equal(mg.addToShopping, false);
   assert.equal(RL.mergeLines([{ description: 'a', qty: 1, lineTotal: 1, addToShopping: true }, { description: 'b', qty: 1, lineTotal: 1, addToShopping: true }], 1)[0].addToShopping, true);
   ok('Opus review: index pairing survives a skipped first line; a stale link is treated as unmatched; a same-SKU or same-name item is linked, not duplicated; the new item\'s price reproduces what was paid and the server accepts it; merging keeps an opt-out');
+
+  // many lines with no quantity (a closet quote prices each room once) → ONE issue, not one per line
+  const mkLine = (qty) => ({ description: 'room', qty, lineTotal: 100, suggestedTrade: 'Other', confidence: 0.9 });
+  const qIssues = (qtys) => RL.validateExtraction({ docType: 'statement', vendor: 'V', lines: qtys.map(mkLine), total: 100 * qtys.length }).extraction.issues.filter(i => /quantity/i.test(i));
+  assert.deepEqual(qIssues(Array(10).fill(null)), ['Lines 1–10: quantity missing — assumed 1 each']);
+  assert.deepEqual(qIssues([null, null, null, 2, null]), ['Lines 1–3, 5: quantity missing — assumed 1 each']);
+  assert.deepEqual(qIssues([null, 1, 1, null]), ['Line 1: quantity missing — assumed 1', 'Line 4: quantity missing — assumed 1'], 'one or two lines keep the per-line wording');
+  assert.deepEqual(qIssues([1, 1]), []);
+  ok('three or more lines without a quantity produce one summarized issue ("Lines 1–10 …"), one or two keep the per-line wording');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

@@ -124,6 +124,18 @@ function last4(v) {
 
 const MAX_ISSUES = 25;
 
+// [1,2,3,5] → "1–3, 5"
+function rangeLabel(nums) {
+  const out = [];
+  for (let i = 0; i < nums.length; ) {
+    let j = i;
+    while (j + 1 < nums.length && nums[j + 1] === nums[j] + 1) j += 1;
+    out.push(j > i ? `${nums[i]}–${nums[j]}` : String(nums[i]));
+    i = j + 1;
+  }
+  return out.join(", ");
+}
+
 // ── Validation / normalization ──────────────────────────────────────────────
 
 // Structure is strict (object, valid docType, lines array of objects); line-level problems are
@@ -138,6 +150,7 @@ export function validateExtraction(json, now = new Date().toISOString()) {
   const issues = new Set((Array.isArray(json.issues) ? json.issues : []).map(i => cleanStr(i, 500)).filter(Boolean));
   const handwritten = boolish(json.handwritten);
 
+  const noQty = [];   // line numbers with no usable quantity — reported once below
   const lines = json.lines.map((raw, idx) => {
     const n = idx + 1;
     let trade = raw.suggestedTrade;
@@ -146,7 +159,7 @@ export function validateExtraction(json, now = new Date().toISOString()) {
       trade = "Other";
     }
     let qty = parseMoney(raw.qty);
-    if (qty === null || qty <= 0) { issues.add(`Line ${n}: quantity missing — assumed 1`); qty = 1; }
+    if (qty === null || qty <= 0) { noQty.push(n); qty = 1; }
     let confidence = parseMoney(raw.confidence);
     confidence = confidence === null ? 0.5 : Math.min(1, Math.max(0, confidence));
     if (handwritten) confidence = Math.min(confidence, LOW_CONFIDENCE);
@@ -169,6 +182,9 @@ export function validateExtraction(json, now = new Date().toISOString()) {
       addToShopping: raw.addToShopping !== false,   // reviewer opt-out; default: every bought item lands on the Shopping list
     };
   });
+
+  if (noQty.length >= 3) issues.add(`${noQty.length === 1 ? "Line" : "Lines"} ${rangeLabel(noQty)}: quantity missing — assumed 1 each`);
+  else for (const n of noQty) issues.add(`Line ${n}: quantity missing — assumed 1`);
 
   // Receipts print discounts as "-$10.00"; the app's discount is always a positive amount that is SUBTRACTED. A negative one
   // would be added to every total, so normalize it and make the reviewer look (issues disable Accept all).
