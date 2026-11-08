@@ -11,7 +11,7 @@ import {
   PURCHASE_TRADES, DOC_TYPES, NOT_IN_ALLOWANCE, CONTRACTOR_PURCHASER, emptyPurchase, defaultAllowanceFor,
   reimbursementDefaultsFor, suggestAssetClass, newOrderGroupId,
 } from "./purchases-logic.js";
-import { SHOPPING_CATEGORIES, CATEGORY_TO_TRADE, emptyShoppingItem, emptyCandidate } from "./shopping-logic.js";
+import { SHOPPING_CATEGORIES, CATEGORY_TO_TRADE, planShoppingItems } from "./shopping-logic.js";
 
 export const EXTRACTION_MODEL = "claude-sonnet-5-5";
 export const RECEIPT_STATUSES = ["pending", "extracted", "needs-manual", "filed", "dismissed"];
@@ -476,39 +476,18 @@ export function categoryChangePatch(line, newCategory) {
 export function planShoppingFromInbox({ record, drafts, shoppingItems = [], user = "" }) {
   const ex = record && record.extraction;
   const accepted = ((ex && ex.lines) || []).filter(l => l && l.decision === "accept");
-  const pool = (shoppingItems || []).filter(i => i && !i.dismissed);
   const exists = (id) => !!id && (shoppingItems || []).some(i => i && i.id === id);
-  const newItems = [];
-  const out = (drafts || []).map((d, i) => {
+  const entries = (drafts || []).map((d, i) => {
     const line = accepted[i];
-    if (!line || d.shoppingItemId || (line.matchItemId && exists(line.matchItemId)) || line.addToShopping === false) return d;
-    const sk = skuKey(line.sku), nm = norm(line.description);
-    const found = [...pool, ...newItems].find(it => (sk && (it.candidates || []).some(c => c && skuKey(c.sku) === sk)))
-      || [...pool, ...newItems].find(it => nm && norm(it.name) === nm);
-    if (found) {
-      if (newItems.includes(found)) found.purchaseIds = [...found.purchaseIds, d.id];
-      return { ...d, shoppingItemId: found.id };
-    }
-    const item = emptyShoppingItem();
-    const cand = emptyCandidate();
-    const goods = (Number(d.unitPrice) || 0) * (Number(d.qty) || 0) - (Number(d.discount) || 0);
-    Object.assign(cand, {
-      vendor: ex.vendor || "", sourceVendor: line.sourceVendor || "", sku: line.sku || "",
-      unitPrice: d.unitPrice, qtyToBuy: d.qty, source: user === "KM" ? "KM" : "JM",
-      estTax: d.tax ?? 0, shipping: d.shipping ?? 0, discount: d.discount || null,
-      transactionFeePct: goods > 0 ? (Number(d.fees) || 0) / goods : 0,
-    });
-    Object.assign(item, {
-      name: String(line.description || ex.vendor || "Purchased item").trim().slice(0, 120),
-      category: SHOPPING_CATEGORIES.includes(line.suggestedCategory) ? line.suggestedCategory : "Other",
-      room: line.roomHint || "", status: "ordered",
-      qtyRule: { basis: "fixed", multiplier: 1, fixedQty: d.qty },
-      candidates: [cand], selectedCandidateId: cand.id, purchaseIds: [d.id],
-    });
-    newItems.push(item);
-    return { ...d, shoppingItemId: item.id };
+    if (!line || d.shoppingItemId || (line.matchItemId && exists(line.matchItemId)) || line.addToShopping === false) return { skip: true };
+    return {
+      ref: d.id, name: line.description || ex.vendor || "Purchased item", sku: line.sku, category: line.suggestedCategory,
+      room: line.roomHint, vendor: ex.vendor, sourceVendor: line.sourceVendor, unitPrice: d.unitPrice, qty: d.qty,
+      tax: d.tax, shipping: d.shipping, fees: d.fees, discount: d.discount, status: "ordered",
+    };
   });
-  return { drafts: out, newItems };
+  const { results, newItems } = planShoppingItems(entries, shoppingItems, user);
+  return { drafts: (drafts || []).map((d, i) => (results[i] ? { ...d, shoppingItemId: results[i].itemId } : d)), newItems };
 }
 
 // Best guess at the app's payment-method option from the receipt's free text ("" when unsure).

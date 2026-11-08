@@ -2257,6 +2257,77 @@ console.log('Phase 3 second Opus review (all fixed):');
   assert.deepEqual(qIssues([null, 1, 1, null]), ['Line 1: quantity missing — assumed 1', 'Line 4: quantity missing — assumed 1'], 'one or two lines keep the per-line wording');
   assert.deepEqual(qIssues([1, 1]), []);
   ok('three or more lines without a quantity produce one summarized issue ("Lines 1–10 …"), one or two keep the per-line wording');
+
+  // ── Stale-tab banner: detect that a newer build is deployed ──
+  const AV = await import('../src/lib/app-version.js');
+  const pageHtml = (id) => `<!doctype html><html><head><script type="module" crossorigin src="/assets/${id}"></script><link rel="stylesheet" href="/assets/style.css"></head><body><div id="root"></div></body></html>`;
+  assert.equal(AV.bundleIdFromHtml(pageHtml('index-C2AEzjN0.js')), 'index-C2AEzjN0.js');
+  assert.equal(AV.bundleIdFromHtml('<html><body>Please log in</body></html>'), null);
+  assert.equal(AV.bundleIdFromHtml(null), null);
+  assert.equal(AV.isNewVersionAvailable('index-A1.js', pageHtml('index-B2.js')), true);
+  assert.equal(AV.isNewVersionAvailable('index-A1.js', pageHtml('index-A1.js')), false);
+  assert.equal(AV.isNewVersionAvailable(null, pageHtml('index-B2.js')), false, 'dev server / unknown current build: never nag');
+  assert.equal(AV.isNewVersionAvailable('index-A1.js', '<html>login redirect</html>'), false, 'a login page is not a new build');
+  ok('the new-version check compares the running bundle with the deployed page and never fires for a login page or an unknown build');
+
+  // ── Add filed purchases to the Shopping list (backfill + manual) ──
+  assert.equal(SH.categoryForTrade('Furniture / FF&E'), 'Furniture');
+  assert.equal(SH.categoryForTrade('Small Appliances'), 'Small Appliances');
+  assert.equal(SH.categoryForTrade('Linens & Soft Goods'), 'Linens & Towels');
+  assert.equal(SH.categoryForTrade('Plumbing'), 'Other');
+  assert.deepEqual(['Ordered', 'Received', 'Installed', 'Return started', 'Returned', ''].map(SH.shoppingStatusForPurchase), ['ordered', 'received', 'received', 'ordered', 'returned', 'ordered']);
+  const bp = (o) => ({ id: 'p-' + o.n, description: o.d, trade: o.t || 'Furniture / FF&E', room: o.room || '', vendor: 'Minoan', sourceVendor: 'Wayfair', qty: o.q || 1, unitPrice: o.u, tax: o.tax || 0, shipping: o.sh || 0, fees: o.fees || 0, discount: o.disc || null, totalPaid: o.paid, status: o.st || 'Ordered', returnByDate: o.rb || '', shoppingItemId: o.link || null, ...o.x });
+  const pBed = bp({ n: 1, d: 'King Bed', u: 196.87, tax: 12.5, fees: 7.1, paid: 216.47, room: 'Bedroom 1', rb: '2026-12-01' });
+  const pLinked = bp({ n: 2, d: 'Already linked', u: 10, paid: 10, link: 'sh-x' });
+  const pDup = bp({ n: 3, d: '  king   BED ', u: 50, paid: 50 });     // same normalized name as pBed → one item
+  const pHas = bp({ n: 4, d: 'Air fryer', t: 'Small Appliances', u: 90, paid: 90, st: 'Received' });
+  const shopItems = [{ id: 'sh-seed-air', name: 'Air Fryer', category: 'Small Appliances', candidates: [], purchaseIds: [], status: 'researching' }, { id: 'sh-x', name: 'Something else', category: 'Other', candidates: [], purchaseIds: ['p-2'], status: 'ordered' }];
+  assert.equal(SH.planShoppingForPurchases({ purchases: [{ ...pLinked, shoppingItemId: 'sh-gone' }], shoppingItems: shopItems, user: 'JM' }).newItems.length, 1, 'a link to an item that no longer exists counts as unlinked');
+  assert.deepEqual(['researching', 'shortlisted', 'approved', 'ordered', 'received', 'kept', 'returned'].map(c => SH.advanceShoppingStatus(c, 'received')), ['received', 'received', 'received', 'received', 'received', 'kept', 'returned']);
+  assert.deepEqual(['researching', 'ordered', 'kept'].map(c => SH.advanceShoppingStatus(c, 'ordered')), ['ordered', 'ordered', 'kept']);
+  const bf = SH.planShoppingForPurchases({ purchases: [pBed, pLinked, pDup, pHas], shoppingItems: shopItems, user: 'JM' });
+  assert.equal(bf.newItems.length, 1, 'bed (and its same-name twin) → one new item; the air fryer links to the existing item; the linked purchase is skipped');
+  const it = bf.newItems[0];
+  assert.equal(it.name, 'King Bed'); assert.equal(it.category, 'Furniture'); assert.equal(it.room, 'Bedroom 1'); assert.equal(it.status, 'ordered');
+  assert.deepEqual([...it.purchaseIds].sort(), ['p-1', 'p-3']);
+  assert.equal(it.candidates[0].vendor, 'Minoan'); assert.equal(it.candidates[0].sourceVendor, 'Wayfair'); assert.equal(it.candidates[0].returnByDate, '2026-12-01'); assert.equal(it.selectedCandidateId, it.candidates[0].id);
+  assert.ok(Math.abs(SH.landedTotal(it.candidates[0], { defaultTaxRate: 0.065 }) - 216.47) <= 0.01, 'the item reproduces what was paid');
+  assert.deepEqual(bf.purchaseLinks.map(l => [l.purchaseId, l.itemId === it.id ? 'NEW' : l.itemId]).sort(), [['p-1', 'NEW'], ['p-3', 'NEW'], ['p-4', 'sh-seed-air']]);
+  assert.deepEqual(bf.itemLinks, [{ itemId: 'sh-seed-air', purchaseIds: ['p-4'], status: 'received' }]);
+  assert.equal(SH.planShoppingForPurchases({ purchases: [pLinked], shoppingItems: shopItems, user: 'JM' }).newItems.length, 0);
+  assert.equal(SH.sanitizeShoppingField('item:' + it.id, it, { updatedAt: 'x', updatedBy: 'JM' }).ok, true);
+  ok('adding filed purchases to Shopping: a new ordered item (category from the trade, price reproduces what was paid, return-by carried) or a link to an existing same-name item; already-linked purchases are skipped; same-name lines share one item');
+
+  // Opus review of the backfill
+  // a purchase "needs Shopping" when it has no link OR its link points at an item that doesn't exist (once the list is loaded)
+  const nsItems = [{ id: 'sh-live' }];
+  assert.equal(SH.purchaseNeedsShopping({ shoppingItemId: null }, nsItems), true);
+  assert.equal(SH.purchaseNeedsShopping({ shoppingItemId: 'sh-live' }, nsItems), false);
+  assert.equal(SH.purchaseNeedsShopping({ shoppingItemId: 'sh-dead' }, nsItems), true, 'a dead link is offered again');
+  assert.equal(SH.purchaseNeedsShopping({ shoppingItemId: 'sh-dead' }, null), false, 'list not loaded: never guess from a missing list');
+  assert.equal(SH.purchaseNeedsShopping({ shoppingItemId: null }, null), true);
+  // returned purchases: item status follows the purchases being added
+  const retP = bp({ n: 7, d: 'Air fryer', t: 'Small Appliances', u: 90, paid: 90, st: 'Returned' });
+  const retPlan = SH.planShoppingForPurchases({ purchases: [retP], shoppingItems: shopItems, user: 'JM' });
+  assert.deepEqual(retPlan.itemLinks, [{ itemId: 'sh-seed-air', purchaseIds: ['p-7'], status: 'returned' }]);
+  assert.equal(SH.advanceShoppingStatus('researching', 'returned'), 'returned');
+  assert.equal(SH.advanceShoppingStatus('ordered', 'returned'), 'ordered', 'never moves a bought item to returned just because one linked purchase was');
+  assert.equal(SH.planShoppingForPurchases({ purchases: [retP], shoppingItems: [], user: 'JM' }).newItems[0].status, 'returned');
+  // blank descriptions never collapse into one vendor-named item
+  const blanks = SH.planShoppingForPurchases({ purchases: [bp({ n: 8, d: '', u: 10, paid: 10 }), bp({ n: 9, d: '   ', u: 99, paid: 99 })], shoppingItems: [{ id: 'sh-minoan', name: 'Minoan', candidates: [], purchaseIds: [] }], user: 'JM' });
+  assert.equal(blanks.newItems.length, 2); assert.ok(blanks.itemLinks.length === 0);
+  // a description longer than 120 characters matches its own stored (truncated) item on a retry
+  const longName = 'Very long upholstered platform bed with adjustable headboard '.repeat(3);
+  const first = SH.planShoppingForPurchases({ purchases: [bp({ n: 10, d: longName, u: 10, paid: 10 })], shoppingItems: [], user: 'JM' });
+  assert.equal(first.newItems[0].name.length, 120);
+  const again = SH.planShoppingForPurchases({ purchases: [bp({ n: 11, d: longName, u: 10, paid: 10 })], shoppingItems: first.newItems, user: 'JM' });
+  assert.equal(again.newItems.length, 0); assert.equal(again.itemLinks[0].itemId, first.newItems[0].id);
+  // unit price fallback: blank or "" unit price → derived from what was paid so landed cost still equals it
+  for (const blank of [null, '']) {
+    const fb = SH.planShoppingForPurchases({ purchases: [bp({ n: 12, d: 'Chairs', q: 3, u: blank, tax: 4.5, sh: 5, paid: 109.5 })], shoppingItems: [], user: 'JM' }).newItems[0];
+    assert.ok(Math.abs(SH.landedTotal(fb.candidates[0], { defaultTaxRate: 0.065 }) - 109.5) <= 0.01, 'landed ' + SH.landedTotal(fb.candidates[0], { defaultTaxRate: 0.065 }));
+  }
+  ok('Opus review: a dead Shopping link is offered again; returned purchases set a returned item; blank descriptions stay separate items; long names dedupe on retry; a missing unit price is derived from what was paid');
 }
 
 console.log(`\nAll ${passed} checks passed.`);
