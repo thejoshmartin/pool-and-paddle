@@ -379,6 +379,7 @@ export function mergeLines(lines, index) {
     sku: a.sku || b.sku || null,
     confidence: Math.min(Number(a.confidence ?? 1), Number(b.confidence ?? 1)),
     matchItemId: null, matchScore: null, decision: null,
+    addToShopping: a.addToShopping !== false && b.addToShopping !== false,   // an opt-out on either line stands
   };
   return [...lines.slice(0, index - 1), merged, ...lines.slice(index + 1)].map((l, i) => ({ ...l, lineNo: i + 1 }));
 }
@@ -450,25 +451,39 @@ export function categoryChangePatch(line, newCategory) {
   return patch;
 }
 
-// Filing puts every accepted, unmatched line the reviewer did not opt out of on the Shopping list too, so what was bought
-// is never missing from it: a new `ordered` item with one selected candidate (vendor/SKU/price from the receipt) and the
-// purchase linked both ways. Returns new drafts (inputs are not mutated) and the items to save. Matched lines keep their
-// existing link and are updated by the caller.
+// Filing puts every accepted line the reviewer did not opt out of on the Shopping list too, so what was bought is never
+// missing from it. A line whose matched item still exists keeps that link. Otherwise an EXISTING item with the same SKU (any
+// candidate) or the same normalized name is linked instead of duplicated (the caller moves it to ordered); only then is a
+// new `ordered` item created, with one selected candidate that reproduces what was paid (tax, shipping, fees and discount
+// carried, so its landed total equals the purchase total) and the purchase linked both ways. Returns new drafts (inputs are
+// not mutated) and the items to save.
 export function planShoppingFromInbox({ record, drafts, shoppingItems = [], user = "" }) {
   const ex = record && record.extraction;
   const accepted = ((ex && ex.lines) || []).filter(l => l && l.decision === "accept");
+  const pool = (shoppingItems || []).filter(i => i && !i.dismissed);
+  const exists = (id) => !!id && (shoppingItems || []).some(i => i && i.id === id);
   const newItems = [];
   const out = (drafts || []).map((d, i) => {
     const line = accepted[i];
-    if (!line || d.shoppingItemId || line.matchItemId || line.addToShopping === false) return d;
+    if (!line || d.shoppingItemId || (line.matchItemId && exists(line.matchItemId)) || line.addToShopping === false) return d;
+    const sk = skuKey(line.sku), nm = norm(line.description);
+    const found = [...pool, ...newItems].find(it => (sk && (it.candidates || []).some(c => c && skuKey(c.sku) === sk)))
+      || [...pool, ...newItems].find(it => nm && norm(it.name) === nm);
+    if (found) {
+      if (newItems.includes(found)) found.purchaseIds = [...found.purchaseIds, d.id];
+      return { ...d, shoppingItemId: found.id };
+    }
     const item = emptyShoppingItem();
     const cand = emptyCandidate();
+    const goods = (Number(d.unitPrice) || 0) * (Number(d.qty) || 0) - (Number(d.discount) || 0);
     Object.assign(cand, {
       vendor: ex.vendor || "", sourceVendor: line.sourceVendor || "", sku: line.sku || "",
       unitPrice: d.unitPrice, qtyToBuy: d.qty, source: user === "KM" ? "KM" : "JM",
+      estTax: d.tax ?? 0, shipping: d.shipping ?? 0, discount: d.discount || null,
+      transactionFeePct: goods > 0 ? (Number(d.fees) || 0) / goods : 0,
     });
     Object.assign(item, {
-      name: String(line.description || ex.vendor || "Purchased item").slice(0, 120),
+      name: String(line.description || ex.vendor || "Purchased item").trim().slice(0, 120),
       category: SHOPPING_CATEGORIES.includes(line.suggestedCategory) ? line.suggestedCategory : "Other",
       room: line.roomHint || "", status: "ordered",
       qtyRule: { basis: "fixed", multiplier: 1, fixedQty: d.qty },

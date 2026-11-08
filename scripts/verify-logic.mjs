@@ -1501,7 +1501,7 @@ console.log('Phase 3 — extraction validation, reconcile, exact cost allocation
   ok('real Minoan fixtures A and B validate and reconcile; the ambiguous line-1 trade is a valid trade flagged below 0.9 confidence');
 
   assert.equal(vC.extraction.reconciles, false);
-  assert.deepEqual(vC.extraction.issues.slice(0, 4), C.issues);
+  assert.deepEqual(vC.extraction.issues.slice(0, C.issues.length), C.issues);
   assert.ok(vC.extraction.lines.every(l => l.confidence <= 0.7));
   assert.equal(vC.extraction.total, null);
   assert.equal(vC.extraction.lines[11].lineTotal, null);
@@ -2173,7 +2173,9 @@ console.log('Phase 3 second Opus review (all fixed):');
   assert.deepEqual(PLg.payerChangePatch({ ...sparrowPaid, vendor: 'Amazon' }, 'Josh', ['Minoan']), {}, 'a vendor Sparrow does not reimburse stays as is');
   const owed = { ...sparrowPaid, purchasedBy: 'Josh', reimbursable: true, reimbursedBy: 'Sparrow (Contractor)', reimbursementStatus: 'requested', drawNo: '3' };
   assert.deepEqual(PLg.payerChangePatch(owed, 'Kerry', ['Minoan']), {}, 'never overwrites reimbursement progress');
-  assert.deepEqual(PLg.payerChangePatch({ ...owed, reimbursable: false, reimbursementStatus: 'none', drawNo: '' }, 'Josh', ['Minoan']), { reimbursable: true, reimbursedBy: 'Sparrow (Contractor)', reimbursementStatus: 'pending' });
+  const ownerNo = { ...owed, purchasedBy: 'Josh', reimbursable: false, reimbursedBy: '', reimbursementStatus: 'none', drawNo: '' };
+  assert.deepEqual(PLg.payerChangePatch(ownerNo, 'Kerry', ['Minoan']), {}, 'owner → owner never re-applies a deliberate "not reimbursable"');
+  assert.deepEqual(PLg.payerChangePatch(ownerNo, '', ['Minoan']), {}, 'owner → blank neither');
   assert.deepEqual(PLg.payerChangePatch(owed, 'Sparrow (Contractor)', ['Minoan']), { reimbursable: false, reimbursedBy: '', reimbursementStatus: 'none' }, 'choosing Sparrow as payer clears it (existing rule)');
   ok('moving a saved Minoan purchase from Sparrow-paid to Josh/Kerry-paid turns on "Due from Sparrow" (pending); existing reimbursement progress is never overwritten; Sparrow as payer still clears it');
 
@@ -2213,6 +2215,39 @@ console.log('Phase 3 second Opus review (all fixed):');
   assert.equal(bedDrafts[0].shoppingItemId, null, 'the input drafts are not mutated');
   assert.ok(SH.SHOPPING_CATEGORIES.includes(ni.category));
   ok('filing a receipt also puts every unmatched, accepted line on the Shopping list (category, room, vendor/SKU/price, ordered, linked both ways); matched, opted-out and skipped lines make no new item');
+
+  // Opus review of phase4-fixups
+  // pairing by accepted index even when a SKIPPED line comes first
+  const skipFirst = { ...bedRec, extraction: { ...bedRec.extraction, lines: [bedRec.extraction.lines[3], ...bedRec.extraction.lines.slice(0, 3)] } };
+  const sfDrafts = RL.buildPurchasesFromInbox({ record: skipFirst, order: { purchasedBy: 'Josh' }, shoppingItems: bedItems, settings: { reimbursableVendors: [] }, propertyInServiceDate: '' });
+  const sfPlan = RL.planShoppingFromInbox({ record: skipFirst, drafts: sfDrafts, shoppingItems: bedItems, user: 'JM' });
+  assert.equal(sfPlan.newItems.length, 1); assert.equal(sfPlan.newItems[0].name, 'Dunphy Upholstered Platform Bed');
+  assert.equal(sfPlan.drafts[0].shoppingItemId, sfPlan.newItems[0].id, 'the bed (first ACCEPTED line) links to its new item even though a skipped line precedes it');
+  // a matchItemId that no longer resolves (item deleted elsewhere) is treated as unmatched
+  const stale = { ...bedRec, extraction: { ...bedRec.extraction, lines: bedRec.extraction.lines.map(l => (l.matchItemId ? { ...l, matchItemId: 'sh-gone' } : l)) } };
+  const stDrafts = RL.buildPurchasesFromInbox({ record: stale, order: { purchasedBy: 'Josh' }, shoppingItems: bedItems, settings: { reimbursableVendors: [] }, propertyInServiceDate: '' });
+  assert.equal(RL.planShoppingFromInbox({ record: stale, drafts: stDrafts, shoppingItems: bedItems, user: 'JM' }).newItems.length, 2, 'the air fryer line (stale link) and the bed both get items');
+  // no duplicates: an existing item with the same SKU or the same name is linked instead
+  const existing = [...bedItems, { id: 'sh-prev-bed', name: 'dunphy upholstered platform bed', category: 'Furniture', candidates: [{ id: 'c1', sku: 'X-9' }], purchaseIds: [] }, { id: 'sh-prev-sku', name: 'Different name', category: 'Other', candidates: [{ id: 'c2', sku: 'w1' }], purchaseIds: [] }];
+  const dupPlan = RL.planShoppingFromInbox({ record: bedRec, drafts: bedDrafts, shoppingItems: existing, user: 'JM' });
+  assert.equal(dupPlan.newItems.length, 0);
+  assert.equal(dupPlan.drafts[0].shoppingItemId, 'sh-prev-sku', 'exact SKU match wins');
+  const dupName = RL.planShoppingFromInbox({ record: bedRec, drafts: bedDrafts, shoppingItems: [existing[1]], user: 'JM' });
+  assert.equal(dupName.newItems.length, 0); assert.equal(dupName.drafts[0].shoppingItemId, 'sh-prev-bed', 'same normalized name links to the existing item');
+  // the new item's price reproduces what was paid (tax, shipping, fees, discount carried)
+  const payRec = { ...bedRec, extraction: { ...bedRec.extraction, lines: [{ lineNo: 1, description: '  Plates  ', sourceVendor: null, sku: null, qty: 12, unitPrice: 4, lineTotal: 48, suggestedTrade: 'Kitchen & Dining', suggestedCategory: 'Dinnerware', decision: 'accept', addToShopping: true, matchItemId: null, confidence: 0.9 }], tax: 3, shipping: 5, fees: 2, discounts: 1, total: 57 } };
+  const payDrafts = RL.buildPurchasesFromInbox({ record: payRec, order: { purchasedBy: 'Josh' }, shoppingItems: [], settings: { reimbursableVendors: [] }, propertyInServiceDate: '' });
+  const payItem = RL.planShoppingFromInbox({ record: payRec, drafts: payDrafts, shoppingItems: [], user: 'KM' }).newItems[0];
+  assert.equal(payItem.name, 'Plates'); assert.equal(payItem.candidates[0].source, 'KM');
+  assert.ok(Math.abs(SH.landedTotal(payItem.candidates[0], { defaultTaxRate: 0.065 }) - payDrafts[0].totalPaid) <= 0.01, 'landed total = what was paid: ' + SH.landedTotal(payItem.candidates[0], { defaultTaxRate: 0.065 }) + ' vs ' + payDrafts[0].totalPaid);
+  assert.equal(payItem.candidates[0].openStock, null);
+  // the server accepts a created item
+  assert.equal(SH.sanitizeShoppingField('item:' + payItem.id, payItem, { updatedAt: 'x', updatedBy: 'JM' }).ok, true);
+  // merging two lines keeps an opt-out from EITHER line
+  const mg = RL.mergeLines([{ description: 'a', qty: 1, lineTotal: 1, addToShopping: true }, { description: 'b', qty: 1, lineTotal: 1, addToShopping: false }], 1)[0];
+  assert.equal(mg.addToShopping, false);
+  assert.equal(RL.mergeLines([{ description: 'a', qty: 1, lineTotal: 1, addToShopping: true }, { description: 'b', qty: 1, lineTotal: 1, addToShopping: true }], 1)[0].addToShopping, true);
+  ok('Opus review: index pairing survives a skipped first line; a stale link is treated as unmatched; a same-SKU or same-name item is linked, not duplicated; the new item\'s price reproduces what was paid and the server accepts it; merging keeps an opt-out');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

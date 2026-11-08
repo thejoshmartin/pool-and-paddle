@@ -228,8 +228,7 @@
   "issues": [
     "$18,987 is written beside the room-darkening shades but equals closets $9,255 + light-filtering shades $9,732 exactly; it may be the order total rather than a line price",
     "TOTAL box is blank",
-    "statement, no payment recorded",
-    "customer address 3401 Broward does not match property"
+    "statement, no payment recorded"
   ],
   "model": "fixture",
   "extractedAt": "2026-11-07T00:00:00.000Z",

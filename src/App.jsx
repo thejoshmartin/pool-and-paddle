@@ -3822,7 +3822,7 @@ function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAdd
               {fld("Trade (Purchases)", <select style={ppInput} value={l.suggestedTrade} onChange={e => setLine(i, { suggestedTrade: e.target.value })}>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>, 170)}
               {fld("Category (Shopping)", <select style={ppInput} value={l.suggestedCategory || "Other"} onChange={e => setLine(i, categoryChangePatch(l, e.target.value))}>{sortedShoppingCategories().map(c => <option key={c} value={c}>{c}</option>)}</select>, 170)}
               {fld("Shopping item", <select style={ppInput} value={l.matchItemId || ""} onChange={e => setLine(i, { matchItemId: e.target.value || null })}><option value="">— none —</option>{activeItems.map(it => <option key={it.id} value={it.id}>{it.name}</option>)}</select>, 170)}
-              {!l.matchItemId && <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 16, alignSelf: "flex-end", paddingBottom: 8 }}><input type="checkbox" checked={l.addToShopping !== false} onChange={e => setLine(i, { addToShopping: e.target.checked })} style={{ accentColor: C.mint, width: 18, height: 18 }} />Also add to Shopping list</label>}
+              {!(l.matchItemId && activeItems.some(it => it.id === l.matchItemId)) && <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 16, alignSelf: "flex-end", paddingBottom: 8 }}><input type="checkbox" checked={l.addToShopping !== false} onChange={e => setLine(i, { addToShopping: e.target.checked })} style={{ accentColor: C.mint, width: 18, height: 18 }} />Also add to Shopping list</label>}
             </div>
           </div>
         );
@@ -5103,7 +5103,7 @@ export default function App() {
   const shoppingServerLoaded = useRef(false);
   const shoppingFirstRun = useRef(true);
   const shoppingFieldTimers = useRef({});    // field -> debounce timer
-  const shoppingFieldPending = useRef({});   // field -> latest unsent value
+  const shoppingFieldPending = useRef({});   // field -> { latest unsent value, the property it was edited in }
   const [inbox, setInbox] = useState([]);                 // Receipt Inbox records (no localStorage cache: they carry addresses)
   const [inboxLoaded, setInboxLoaded] = useState(false);
   const [inboxLoadError, setInboxLoadError] = useState(false);
@@ -5573,9 +5573,9 @@ export default function App() {
   // (a closure would keep the first render's null property and PUT without ?property=).
   const activePropertyRef = useRef(activeProperty);
   activePropertyRef.current = activeProperty;
-  const putShoppingField = (field, value, useKeepalive = false) => {
+  const putShoppingField = (field, value, useKeepalive = false, prop = activePropertyRef.current) => {
     if (!shoppingServerLoaded.current) return;
-    fetch(apiUrl('/api/shopping', activePropertyRef.current), {
+    fetch(apiUrl('/api/shopping', prop), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ field, value }),
@@ -5588,12 +5588,13 @@ export default function App() {
     delete shoppingFieldPending.current[field];
   };
   const putShoppingFieldDebounced = (field, value) => {
-    shoppingFieldPending.current[field] = value;
+    const prop = activePropertyRef.current;   // the property the edit was made in — not whichever is active when the timer fires
+    shoppingFieldPending.current[field] = { value, prop };
     if (shoppingFieldTimers.current[field]) clearTimeout(shoppingFieldTimers.current[field]);
     shoppingFieldTimers.current[field] = setTimeout(() => {
       delete shoppingFieldTimers.current[field];
       delete shoppingFieldPending.current[field];
-      putShoppingField(field, value);
+      putShoppingField(field, value, false, prop);
     }, 400);
   };
   const flushShoppingFields = () => {
@@ -5601,7 +5602,7 @@ export default function App() {
     const pending = shoppingFieldPending.current;
     shoppingFieldTimers.current = {};
     shoppingFieldPending.current = {};
-    for (const [field, value] of Object.entries(pending)) putShoppingField(field, value, true);
+    for (const [field, { value, prop }] of Object.entries(pending)) putShoppingField(field, value, true, prop);
   };
   const saveShoppingItem = (item) => {
     setShopping(prev => ({
@@ -5870,7 +5871,12 @@ export default function App() {
     if (built.length === 0) return false;
     // Every accepted line that matched no Shopping item (and wasn't opted out) also becomes an `ordered` Shopping item, saved
     // only AFTER the filing succeeded so a rollback never leaves stray items behind.
-    const { drafts, newItems } = planShoppingFromInbox({ record, drafts: built, shoppingItems: shopping.items, user: (getCurrentUser() || {}).code || '' });
+    // Shopping saves are silently skipped until that list has loaded for this property, so when it hasn't, file the purchases
+    // alone (no new items, no matched-item updates) and say so rather than losing the Shopping side without a trace.
+    const shopOk = shoppingReady && shoppingServerLoaded.current;
+    const { drafts, newItems } = shopOk
+      ? planShoppingFromInbox({ record, drafts: built, shoppingItems: shopping.items, user: (getCurrentUser() || {}).code || '' })
+      : { drafts: built.map(d => ({ ...d, shoppingItemId: null })), newItems: [] };
     inboxFiling.current.add(record.id);
     // All-or-nothing: wait for every purchase save, and only then mark the record filed. Any failure rolls the lot back
     // (quietly — the error message below must not be cleared by a rollback "success") so a retry can't double-file.
@@ -5895,7 +5901,7 @@ export default function App() {
     newItems.forEach(it => saveShoppingItem(it));
     const byItem = {};
     drafts.forEach(d => { if (d.shoppingItemId) (byItem[d.shoppingItemId] = byItem[d.shoppingItemId] || []).push(d.id); });
-    for (const [itemId, pids] of Object.entries(byItem)) {
+    for (const [itemId, pids] of shopOk ? Object.entries(byItem) : []) {
       const it = shopping.items.find(i => i.id === itemId);
       if (!it) continue;
       const live = (it.purchaseIds || []).filter(pid => purchases.some(p => p.id === pid));
@@ -5903,7 +5909,7 @@ export default function App() {
     }
     // Tell the user, with a link — never auto-navigate: that would close an open edit form (losing unsaved edits) and reset
     // the search/filters every time several receipts are filed in a row.
-    setInboxNotice({ text: `Filed ${drafts.length} purchase${drafts.length === 1 ? '' : 's'} from ${(record.extraction && record.extraction.vendor) || 'the receipt'}.`, purchaseId: drafts[0].id });
+    setInboxNotice({ text: `Filed ${drafts.length} purchase${drafts.length === 1 ? '' : 's'} from ${(record.extraction && record.extraction.vendor) || 'the receipt'}.${shopOk ? '' : ' The Shopping list was not loaded, so Shopping was not updated — add these items there by hand.'}`, purchaseId: drafts[0].id });
     if (inboxNoticeTimer.current) clearTimeout(inboxNoticeTimer.current);
     inboxNoticeTimer.current = setTimeout(() => setInboxNotice(null), 20000);
     return true;
