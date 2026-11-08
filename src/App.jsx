@@ -18,6 +18,7 @@ import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, grou
 import {
   newInboxId, reconciles, matchLines, findDuplicates, addressMatches, mergeLines, canAcceptAll, fileProblems,
   buildPurchasesFromInbox, suggestPaymentMethod, isLowConfidence, applyMatches, acceptUndecided, decideFilingOutcome,
+  categoryChangePatch, planShoppingFromInbox,
 } from "./lib/receipt-logic.js";
 import SHOPPING_SEED from "./shopping-seed.json";
 import {
@@ -3818,8 +3819,10 @@ function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAdd
               {fld("Qty", <input type="number" style={ppInput} value={l.qty ?? ""} onChange={e => setLine(i, { qty: numField(e.target.value) })} />, 70)}
               {fld("Unit price ($)", <input type="number" step="0.01" style={ppInput} value={l.unitPrice ?? ""} onChange={e => setLine(i, { unitPrice: numField(e.target.value) })} />, 100)}
               {fld("Line total ($)", <input type="number" step="0.01" style={{ ...ppInput, borderColor: l.lineTotal == null ? C.warnText : C.border }} value={l.lineTotal ?? ""} placeholder="required" onChange={e => setLine(i, { lineTotal: numField(e.target.value) })} />, 110)}
-              {fld("Trade", <select style={ppInput} value={l.suggestedTrade} onChange={e => setLine(i, { suggestedTrade: e.target.value })}>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>, 170)}
+              {fld("Trade (Purchases)", <select style={ppInput} value={l.suggestedTrade} onChange={e => setLine(i, { suggestedTrade: e.target.value })}>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>, 170)}
+              {fld("Category (Shopping)", <select style={ppInput} value={l.suggestedCategory || "Other"} onChange={e => setLine(i, categoryChangePatch(l, e.target.value))}>{sortedShoppingCategories().map(c => <option key={c} value={c}>{c}</option>)}</select>, 170)}
               {fld("Shopping item", <select style={ppInput} value={l.matchItemId || ""} onChange={e => setLine(i, { matchItemId: e.target.value || null })}><option value="">— none —</option>{activeItems.map(it => <option key={it.id} value={it.id}>{it.name}</option>)}</select>, 170)}
+              {!l.matchItemId && <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 16, alignSelf: "flex-end", paddingBottom: 8 }}><input type="checkbox" checked={l.addToShopping !== false} onChange={e => setLine(i, { addToShopping: e.target.checked })} style={{ accentColor: C.mint, width: 18, height: 18 }} />Also add to Shopping list</label>}
             </div>
           </div>
         );
@@ -5863,8 +5866,11 @@ export default function App() {
   // record filed, and moves linked shopping items to ordered. The ref guards against a double click.
   const fileInboxRecord = async (record, order) => {
     if (inboxFiling.current.has(record.id)) return false;
-    const drafts = buildPurchasesFromInbox({ record, order, shoppingItems: shopping.items, settings: shopping.settings, propertyInServiceDate: activeInServiceDate });
-    if (drafts.length === 0) return false;
+    const built = buildPurchasesFromInbox({ record, order, shoppingItems: shopping.items, settings: shopping.settings, propertyInServiceDate: activeInServiceDate });
+    if (built.length === 0) return false;
+    // Every accepted line that matched no Shopping item (and wasn't opted out) also becomes an `ordered` Shopping item, saved
+    // only AFTER the filing succeeded so a rollback never leaves stray items behind.
+    const { drafts, newItems } = planShoppingFromInbox({ record, drafts: built, shoppingItems: shopping.items, user: (getCurrentUser() || {}).code || '' });
     inboxFiling.current.add(record.id);
     // All-or-nothing: wait for every purchase save, and only then mark the record filed. Any failure rolls the lot back
     // (quietly — the error message below must not be cleared by a rollback "success") so a retry can't double-file.
@@ -5886,6 +5892,7 @@ export default function App() {
         : 'Could not mark the receipt as filed. Nothing was filed — please try again.');
       return false;
     }
+    newItems.forEach(it => saveShoppingItem(it));
     const byItem = {};
     drafts.forEach(d => { if (d.shoppingItemId) (byItem[d.shoppingItemId] = byItem[d.shoppingItemId] || []).push(d.id); });
     for (const [itemId, pids] of Object.entries(byItem)) {

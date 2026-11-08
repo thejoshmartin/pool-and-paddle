@@ -2176,6 +2176,43 @@ console.log('Phase 3 second Opus review (all fixed):');
   assert.deepEqual(PLg.payerChangePatch({ ...owed, reimbursable: false, reimbursementStatus: 'none', drawNo: '' }, 'Josh', ['Minoan']), { reimbursable: true, reimbursedBy: 'Sparrow (Contractor)', reimbursementStatus: 'pending' });
   assert.deepEqual(PLg.payerChangePatch(owed, 'Sparrow (Contractor)', ['Minoan']), { reimbursable: false, reimbursedBy: '', reimbursementStatus: 'none' }, 'choosing Sparrow as payer clears it (existing rule)');
   ok('moving a saved Minoan purchase from Sparrow-paid to Josh/Kerry-paid turns on "Due from Sparrow" (pending); existing reimbursement progress is never overwritten; Sparrow as payer still clears it');
+
+  // Receipt lines carry BOTH a Purchase trade and a Shopping category, and every bought item lands on the Shopping list
+  const tl = RL.validateExtraction({ docType: 'receipt', vendor: 'V', lines: [{ description: 'Bed', qty: 1, lineTotal: 10, suggestedTrade: 'Furniture / FF&E', suggestedCategory: 'Furniture', confidence: 0.9 }, { description: 'Mug', qty: 1, lineTotal: 5, suggestedTrade: 'Other', addToShopping: false, confidence: 0.9 }], total: 15 }).extraction;
+  assert.equal(tl.lines[0].addToShopping, true, 'default: add to the Shopping list');
+  assert.equal(tl.lines[1].addToShopping, false, 'a reviewer opt-out survives a save');
+  const mclient = { messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ docType: 'receipt', vendor: 'V', lines: [{ description: 'Bed', qty: 1, lineTotal: 10, suggestedTrade: 'Furniture / FF&E', suggestedCategory: 'Furniture', addToShopping: false, confidence: 0.9 }], total: 10 }) }], model: 'claude-sonnet-5-5' }) } };
+  const mex = await extractReceipt({ client: mclient, mediaType: 'application/pdf', base64: 'JVBERi0=', propertyAddress: 'x', now: '2026-11-07T00:00:00.000Z' });
+  assert.equal(mex.extraction.lines[0].addToShopping, true, 'the model cannot opt a line out');
+
+  // changing the Shopping category carries the Purchase trade along only while the trade was still following it
+  assert.deepEqual(RL.categoryChangePatch({ suggestedCategory: 'Other', suggestedTrade: 'Other' }, 'Furniture'), { suggestedCategory: 'Furniture', suggestedTrade: 'Furniture / FF&E' });
+  assert.deepEqual(RL.categoryChangePatch({ suggestedCategory: 'Dinnerware', suggestedTrade: 'Kitchen & Dining' }, 'Bath'), { suggestedCategory: 'Bath', suggestedTrade: 'Linens & Soft Goods' });
+  assert.deepEqual(RL.categoryChangePatch({ suggestedCategory: 'Dinnerware', suggestedTrade: 'Plumbing' }, 'Bath'), { suggestedCategory: 'Bath' }, 'a hand-picked trade is never overridden');
+  ok('a line has both a Shopping category and a Purchase trade; the category drives the trade only while the trade was still following it; the model cannot opt a line out of the Shopping list');
+
+  const bedRec = { id: 'ri-b', receipt: { pathname: 'receipts/pp/inbox/ri-b/f.pdf', name: 'f.pdf', contentType: 'application/pdf', uploadedAt: 'x' }, extraction: { docType: 'receipt', vendor: 'Minoan', orderNo: 'F1', paidDate: '2026-10-26', lines: [
+    { lineNo: 1, description: 'Dunphy Upholstered Platform Bed', sourceVendor: 'Wayfair', sku: 'W1', qty: 1, unitPrice: 196.87, lineTotal: 196.87, roomHint: 'Bedroom 2', suggestedTrade: 'Furniture / FF&E', suggestedCategory: 'Furniture', decision: 'accept', addToShopping: true, matchItemId: null, confidence: 0.9 },
+    { lineNo: 2, description: 'Air fryer', sourceVendor: null, sku: null, qty: 1, unitPrice: 50, lineTotal: 50, suggestedTrade: 'Small Appliances', suggestedCategory: 'Small Appliances', decision: 'accept', addToShopping: true, matchItemId: 'sh-seed-air', confidence: 0.9 },
+    { lineNo: 3, description: 'Pillow', qty: 2, unitPrice: 10, lineTotal: 20, suggestedTrade: 'Linens & Soft Goods', suggestedCategory: 'Linens & Towels', decision: 'accept', addToShopping: false, matchItemId: null, confidence: 0.9 },
+    { lineNo: 4, description: 'Skipped thing', qty: 1, unitPrice: 5, lineTotal: 5, suggestedTrade: 'Other', suggestedCategory: 'Other', decision: 'skip', addToShopping: true, matchItemId: null, confidence: 0.9 },
+  ], tax: 0, shipping: 0, fees: 0, discounts: 0, total: 271.87 } };
+  const bedItems = [{ id: 'sh-seed-air', name: 'Large air fryer', category: 'Small Appliances', candidates: [], purchaseIds: [] }];
+  const bedDrafts = RL.buildPurchasesFromInbox({ record: bedRec, order: { purchasedBy: 'Josh' }, shoppingItems: bedItems, settings: { reimbursableVendors: ['Minoan'] }, propertyInServiceDate: '' });
+  const plan = RL.planShoppingFromInbox({ record: bedRec, drafts: bedDrafts, shoppingItems: bedItems, user: 'JM' });
+  assert.equal(plan.newItems.length, 1, 'only the unmatched, opted-in, accepted line creates an item');
+  const ni = plan.newItems[0];
+  assert.equal(ni.name, 'Dunphy Upholstered Platform Bed'); assert.equal(ni.category, 'Furniture'); assert.equal(ni.room, 'Bedroom 2');
+  assert.equal(ni.status, 'ordered'); assert.equal(ni.userCreated, true);
+  assert.deepEqual(ni.purchaseIds, [bedDrafts[0].id]);
+  assert.equal(ni.candidates.length, 1); assert.equal(ni.selectedCandidateId, ni.candidates[0].id);
+  assert.equal(ni.candidates[0].vendor, 'Minoan'); assert.equal(ni.candidates[0].sourceVendor, 'Wayfair'); assert.equal(ni.candidates[0].sku, 'W1'); assert.equal(ni.candidates[0].unitPrice, 196.87); assert.equal(ni.candidates[0].qtyToBuy, 1);
+  assert.equal(plan.drafts[0].shoppingItemId, ni.id, 'the purchase links back to the new item');
+  assert.equal(plan.drafts[1].shoppingItemId, 'sh-seed-air', 'a matched line keeps its link');
+  assert.equal(plan.drafts[2].shoppingItemId, null, 'an opted-out line makes no Shopping item');
+  assert.equal(bedDrafts[0].shoppingItemId, null, 'the input drafts are not mutated');
+  assert.ok(SH.SHOPPING_CATEGORIES.includes(ni.category));
+  ok('filing a receipt also puts every unmatched, accepted line on the Shopping list (category, room, vendor/SKU/price, ordered, linked both ways); matched, opted-out and skipped lines make no new item');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

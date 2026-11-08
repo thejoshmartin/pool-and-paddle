@@ -11,7 +11,7 @@ import {
   PURCHASE_TRADES, DOC_TYPES, NOT_IN_ALLOWANCE, CONTRACTOR_PURCHASER, emptyPurchase, defaultAllowanceFor,
   reimbursementDefaultsFor, suggestAssetClass, newOrderGroupId,
 } from "./purchases-logic.js";
-import { SHOPPING_CATEGORIES } from "./shopping-logic.js";
+import { SHOPPING_CATEGORIES, CATEGORY_TO_TRADE, emptyShoppingItem, emptyCandidate } from "./shopping-logic.js";
 
 export const EXTRACTION_MODEL = "claude-sonnet-5-5";
 export const RECEIPT_STATUSES = ["pending", "extracted", "needs-manual", "filed", "dismissed"];
@@ -166,6 +166,7 @@ export function validateExtraction(json, now = new Date().toISOString()) {
       matchItemId: typeof raw.matchItemId === "string" && raw.matchItemId ? raw.matchItemId : null,
       matchScore: parseMoney(raw.matchScore),
       decision: raw.decision === "accept" || raw.decision === "skip" ? raw.decision : null,
+      addToShopping: raw.addToShopping !== false,   // reviewer opt-out; default: every bought item lands on the Shopping list
     };
   });
 
@@ -437,6 +438,46 @@ export function fileProblems(extraction, { purchasedBy } = {}) {
     if (!String(l.description || "").trim()) problems.push(`Line ${l.lineNo}: add a description`);
   }
   return problems;
+}
+
+// A line has both a Shopping category and a Purchase trade. Choosing a category carries its mapped trade along, but only
+// while the trade was still following the old category — a trade the reviewer picked by hand is never overridden.
+export function categoryChangePatch(line, newCategory) {
+  const patch = { suggestedCategory: newCategory };
+  const mapped = CATEGORY_TO_TRADE[newCategory];
+  const following = line.suggestedTrade === CATEGORY_TO_TRADE[line.suggestedCategory];
+  if (mapped && following) patch.suggestedTrade = mapped;
+  return patch;
+}
+
+// Filing puts every accepted, unmatched line the reviewer did not opt out of on the Shopping list too, so what was bought
+// is never missing from it: a new `ordered` item with one selected candidate (vendor/SKU/price from the receipt) and the
+// purchase linked both ways. Returns new drafts (inputs are not mutated) and the items to save. Matched lines keep their
+// existing link and are updated by the caller.
+export function planShoppingFromInbox({ record, drafts, shoppingItems = [], user = "" }) {
+  const ex = record && record.extraction;
+  const accepted = ((ex && ex.lines) || []).filter(l => l && l.decision === "accept");
+  const newItems = [];
+  const out = (drafts || []).map((d, i) => {
+    const line = accepted[i];
+    if (!line || d.shoppingItemId || line.matchItemId || line.addToShopping === false) return d;
+    const item = emptyShoppingItem();
+    const cand = emptyCandidate();
+    Object.assign(cand, {
+      vendor: ex.vendor || "", sourceVendor: line.sourceVendor || "", sku: line.sku || "",
+      unitPrice: d.unitPrice, qtyToBuy: d.qty, source: user === "KM" ? "KM" : "JM",
+    });
+    Object.assign(item, {
+      name: String(line.description || ex.vendor || "Purchased item").slice(0, 120),
+      category: SHOPPING_CATEGORIES.includes(line.suggestedCategory) ? line.suggestedCategory : "Other",
+      room: line.roomHint || "", status: "ordered",
+      qtyRule: { basis: "fixed", multiplier: 1, fixedQty: d.qty },
+      candidates: [cand], selectedCandidateId: cand.id, purchaseIds: [d.id],
+    });
+    newItems.push(item);
+    return { ...d, shoppingItemId: item.id };
+  });
+  return { drafts: out, newItems };
 }
 
 // Best guess at the app's payment-method option from the receipt's free text ("" when unsure).
