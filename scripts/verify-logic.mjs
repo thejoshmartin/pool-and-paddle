@@ -1501,7 +1501,7 @@ console.log('Phase 3 — extraction validation, reconcile, exact cost allocation
   ok('real Minoan fixtures A and B validate and reconcile; the ambiguous line-1 trade is a valid trade flagged below 0.9 confidence');
 
   assert.equal(vC.extraction.reconciles, false);
-  assert.deepEqual(vC.extraction.issues.slice(0, 4), C.issues);
+  assert.deepEqual(vC.extraction.issues.slice(0, C.issues.length), C.issues);
   assert.ok(vC.extraction.lines.every(l => l.confidence <= 0.7));
   assert.equal(vC.extraction.total, null);
   assert.equal(vC.extraction.lines[11].lineTotal, null);
@@ -2138,6 +2138,116 @@ console.log('Phase 3 second Opus review (all fixed):');
   const spaced = RL.validateExtraction({ docType: 'receipt', vendor: 'V', orderNo: '5500 0055 5555 5559', lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction;
   assert.ok(!spaced.orderNo.includes('5500 0055'));
   ok('order numbers and SKUs keep contiguous digit strings (even if they look like a card); a card number written with spaces is still removed from them; free text is redacted either way');
+
+  // Phase 4 fix-ups (first live read of a real Minoan receipt)
+  const hashEx = RL.validateExtraction({ docType: 'receipt', vendor: 'Minoan', orderNo: '#F088F252', lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction;
+  assert.equal(hashEx.orderNo, 'F088F252');
+  assert.equal(RL.validateExtraction({ docType: 'receipt', vendor: 'M', orderNo: ' ## F1 ', lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction.orderNo, 'F1');
+  assert.equal(RL.validateExtraction({ docType: 'receipt', vendor: 'M', orderNo: '#', lines: [{ description: 'x', qty: 1, lineTotal: 1, suggestedTrade: 'Other', confidence: 0.9 }], total: 1 }).extraction.orderNo, null);
+  ok('a leading # on the order number is dropped (the card adds its own #, so it showed "##F088F252"; duplicate checks now match with or without it)');
+
+  const promptText = buildExtractionPrompt({ propertyAddress: '6401 Broward Street, St. Augustine, FL 32080' });
+  const rule6 = promptText.split('\n').find(l => l.startsWith('6.')) || '';
+  assert.ok(!/address/i.test(rule6), 'rule 6 must not ask the model to report address differences: the app checks the address itself');
+  assert.ok(/ship-to/i.test(promptText) && /exactly as printed/i.test(promptText));
+  assert.ok(/ONLY .*reviewer.*(fix|confirm|decide)/i.test(promptText) && /do not list/i.test(promptText), 'issues is reserved for things the reviewer must act on');
+  ok('the prompt no longer asks the model to flag address differences (the app does that, warn-only) and reserves "issues" for things the reviewer must act on, so a clean receipt can use Accept all');
+
+  // Shopping pickers are alphabetical
+  const cats = SH.sortedShoppingCategories();
+  assert.deepEqual([...cats].sort(), [...SH.SHOPPING_CATEGORIES].sort(), 'same categories, only reordered');
+  assert.equal(cats[cats.length - 1], 'Other');
+  const rest = cats.slice(0, -1);
+  assert.deepEqual(rest, [...rest].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })));
+  const picked = SH.sortItemsAlpha([{ id: '1', name: 'wine glasses' }, { id: '2', name: 'Air fryer' }, { id: '3', name: 'Bath towels' }, { id: '4', name: null }, null]);
+  assert.deepEqual(picked.map(i => i.id), ['2', '3', '1', '4']);
+  const orig = [{ id: 'b', name: 'B' }, { id: 'a', name: 'A' }];
+  SH.sortItemsAlpha(orig); assert.equal(orig[0].id, 'b', 'never reorders the caller\'s array');
+  ok('the Shopping item picker and the category lists sort A–Z (case-insensitive, "Other" last for categories) without touching the stored order');
+
+  // Changing "Paid by" on a saved purchase keeps the reimbursement in step
+  const PLg = await import('../src/lib/purchases-logic.js');
+  const sparrowPaid = { vendor: 'Minoan', purchasedBy: 'Sparrow (Contractor)', reimbursable: false, reimbursedBy: '', reimbursementStatus: 'none', drawNo: '' };
+  assert.deepEqual(PLg.payerChangePatch(sparrowPaid, 'Josh', ['Minoan']), { reimbursable: true, reimbursedBy: 'Sparrow (Contractor)', reimbursementStatus: 'pending' });
+  assert.deepEqual(PLg.payerChangePatch(sparrowPaid, 'Kerry', ['Minoan']), { reimbursable: true, reimbursedBy: 'Sparrow (Contractor)', reimbursementStatus: 'pending' });
+  assert.deepEqual(PLg.payerChangePatch({ ...sparrowPaid, vendor: 'Amazon' }, 'Josh', ['Minoan']), {}, 'a vendor Sparrow does not reimburse stays as is');
+  const owed = { ...sparrowPaid, purchasedBy: 'Josh', reimbursable: true, reimbursedBy: 'Sparrow (Contractor)', reimbursementStatus: 'requested', drawNo: '3' };
+  assert.deepEqual(PLg.payerChangePatch(owed, 'Kerry', ['Minoan']), {}, 'never overwrites reimbursement progress');
+  const ownerNo = { ...owed, purchasedBy: 'Josh', reimbursable: false, reimbursedBy: '', reimbursementStatus: 'none', drawNo: '' };
+  assert.deepEqual(PLg.payerChangePatch(ownerNo, 'Kerry', ['Minoan']), {}, 'owner → owner never re-applies a deliberate "not reimbursable"');
+  assert.deepEqual(PLg.payerChangePatch(ownerNo, '', ['Minoan']), {}, 'owner → blank neither');
+  assert.deepEqual(PLg.payerChangePatch(owed, 'Sparrow (Contractor)', ['Minoan']), { reimbursable: false, reimbursedBy: '', reimbursementStatus: 'none' }, 'choosing Sparrow as payer clears it (existing rule)');
+  ok('moving a saved Minoan purchase from Sparrow-paid to Josh/Kerry-paid turns on "Due from Sparrow" (pending); existing reimbursement progress is never overwritten; Sparrow as payer still clears it');
+
+  // Receipt lines carry BOTH a Purchase trade and a Shopping category, and every bought item lands on the Shopping list
+  const tl = RL.validateExtraction({ docType: 'receipt', vendor: 'V', lines: [{ description: 'Bed', qty: 1, lineTotal: 10, suggestedTrade: 'Furniture / FF&E', suggestedCategory: 'Furniture', confidence: 0.9 }, { description: 'Mug', qty: 1, lineTotal: 5, suggestedTrade: 'Other', addToShopping: false, confidence: 0.9 }], total: 15 }).extraction;
+  assert.equal(tl.lines[0].addToShopping, true, 'default: add to the Shopping list');
+  assert.equal(tl.lines[1].addToShopping, false, 'a reviewer opt-out survives a save');
+  const mclient = { messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ docType: 'receipt', vendor: 'V', lines: [{ description: 'Bed', qty: 1, lineTotal: 10, suggestedTrade: 'Furniture / FF&E', suggestedCategory: 'Furniture', addToShopping: false, confidence: 0.9 }], total: 10 }) }], model: 'claude-sonnet-5-5' }) } };
+  const mex = await extractReceipt({ client: mclient, mediaType: 'application/pdf', base64: 'JVBERi0=', propertyAddress: 'x', now: '2026-11-07T00:00:00.000Z' });
+  assert.equal(mex.extraction.lines[0].addToShopping, true, 'the model cannot opt a line out');
+
+  // changing the Shopping category carries the Purchase trade along only while the trade was still following it
+  assert.deepEqual(RL.categoryChangePatch({ suggestedCategory: 'Other', suggestedTrade: 'Other' }, 'Furniture'), { suggestedCategory: 'Furniture', suggestedTrade: 'Furniture / FF&E' });
+  assert.deepEqual(RL.categoryChangePatch({ suggestedCategory: 'Dinnerware', suggestedTrade: 'Kitchen & Dining' }, 'Bath'), { suggestedCategory: 'Bath', suggestedTrade: 'Linens & Soft Goods' });
+  assert.deepEqual(RL.categoryChangePatch({ suggestedCategory: 'Dinnerware', suggestedTrade: 'Plumbing' }, 'Bath'), { suggestedCategory: 'Bath' }, 'a hand-picked trade is never overridden');
+  ok('a line has both a Shopping category and a Purchase trade; the category drives the trade only while the trade was still following it; the model cannot opt a line out of the Shopping list');
+
+  const bedRec = { id: 'ri-b', receipt: { pathname: 'receipts/pp/inbox/ri-b/f.pdf', name: 'f.pdf', contentType: 'application/pdf', uploadedAt: 'x' }, extraction: { docType: 'receipt', vendor: 'Minoan', orderNo: 'F1', paidDate: '2026-10-26', lines: [
+    { lineNo: 1, description: 'Dunphy Upholstered Platform Bed', sourceVendor: 'Wayfair', sku: 'W1', qty: 1, unitPrice: 196.87, lineTotal: 196.87, roomHint: 'Bedroom 2', suggestedTrade: 'Furniture / FF&E', suggestedCategory: 'Furniture', decision: 'accept', addToShopping: true, matchItemId: null, confidence: 0.9 },
+    { lineNo: 2, description: 'Air fryer', sourceVendor: null, sku: null, qty: 1, unitPrice: 50, lineTotal: 50, suggestedTrade: 'Small Appliances', suggestedCategory: 'Small Appliances', decision: 'accept', addToShopping: true, matchItemId: 'sh-seed-air', confidence: 0.9 },
+    { lineNo: 3, description: 'Pillow', qty: 2, unitPrice: 10, lineTotal: 20, suggestedTrade: 'Linens & Soft Goods', suggestedCategory: 'Linens & Towels', decision: 'accept', addToShopping: false, matchItemId: null, confidence: 0.9 },
+    { lineNo: 4, description: 'Skipped thing', qty: 1, unitPrice: 5, lineTotal: 5, suggestedTrade: 'Other', suggestedCategory: 'Other', decision: 'skip', addToShopping: true, matchItemId: null, confidence: 0.9 },
+  ], tax: 0, shipping: 0, fees: 0, discounts: 0, total: 271.87 } };
+  const bedItems = [{ id: 'sh-seed-air', name: 'Large air fryer', category: 'Small Appliances', candidates: [], purchaseIds: [] }];
+  const bedDrafts = RL.buildPurchasesFromInbox({ record: bedRec, order: { purchasedBy: 'Josh' }, shoppingItems: bedItems, settings: { reimbursableVendors: ['Minoan'] }, propertyInServiceDate: '' });
+  const plan = RL.planShoppingFromInbox({ record: bedRec, drafts: bedDrafts, shoppingItems: bedItems, user: 'JM' });
+  assert.equal(plan.newItems.length, 1, 'only the unmatched, opted-in, accepted line creates an item');
+  const ni = plan.newItems[0];
+  assert.equal(ni.name, 'Dunphy Upholstered Platform Bed'); assert.equal(ni.category, 'Furniture'); assert.equal(ni.room, 'Bedroom 2');
+  assert.equal(ni.status, 'ordered'); assert.equal(ni.userCreated, true);
+  assert.deepEqual(ni.purchaseIds, [bedDrafts[0].id]);
+  assert.equal(ni.candidates.length, 1); assert.equal(ni.selectedCandidateId, ni.candidates[0].id);
+  assert.equal(ni.candidates[0].vendor, 'Minoan'); assert.equal(ni.candidates[0].sourceVendor, 'Wayfair'); assert.equal(ni.candidates[0].sku, 'W1'); assert.equal(ni.candidates[0].unitPrice, 196.87); assert.equal(ni.candidates[0].qtyToBuy, 1);
+  assert.equal(plan.drafts[0].shoppingItemId, ni.id, 'the purchase links back to the new item');
+  assert.equal(plan.drafts[1].shoppingItemId, 'sh-seed-air', 'a matched line keeps its link');
+  assert.equal(plan.drafts[2].shoppingItemId, null, 'an opted-out line makes no Shopping item');
+  assert.equal(bedDrafts[0].shoppingItemId, null, 'the input drafts are not mutated');
+  assert.ok(SH.SHOPPING_CATEGORIES.includes(ni.category));
+  ok('filing a receipt also puts every unmatched, accepted line on the Shopping list (category, room, vendor/SKU/price, ordered, linked both ways); matched, opted-out and skipped lines make no new item');
+
+  // Opus review of phase4-fixups
+  // pairing by accepted index even when a SKIPPED line comes first
+  const skipFirst = { ...bedRec, extraction: { ...bedRec.extraction, lines: [bedRec.extraction.lines[3], ...bedRec.extraction.lines.slice(0, 3)] } };
+  const sfDrafts = RL.buildPurchasesFromInbox({ record: skipFirst, order: { purchasedBy: 'Josh' }, shoppingItems: bedItems, settings: { reimbursableVendors: [] }, propertyInServiceDate: '' });
+  const sfPlan = RL.planShoppingFromInbox({ record: skipFirst, drafts: sfDrafts, shoppingItems: bedItems, user: 'JM' });
+  assert.equal(sfPlan.newItems.length, 1); assert.equal(sfPlan.newItems[0].name, 'Dunphy Upholstered Platform Bed');
+  assert.equal(sfPlan.drafts[0].shoppingItemId, sfPlan.newItems[0].id, 'the bed (first ACCEPTED line) links to its new item even though a skipped line precedes it');
+  // a matchItemId that no longer resolves (item deleted elsewhere) is treated as unmatched
+  const stale = { ...bedRec, extraction: { ...bedRec.extraction, lines: bedRec.extraction.lines.map(l => (l.matchItemId ? { ...l, matchItemId: 'sh-gone' } : l)) } };
+  const stDrafts = RL.buildPurchasesFromInbox({ record: stale, order: { purchasedBy: 'Josh' }, shoppingItems: bedItems, settings: { reimbursableVendors: [] }, propertyInServiceDate: '' });
+  assert.equal(RL.planShoppingFromInbox({ record: stale, drafts: stDrafts, shoppingItems: bedItems, user: 'JM' }).newItems.length, 2, 'the air fryer line (stale link) and the bed both get items');
+  // no duplicates: an existing item with the same SKU or the same name is linked instead
+  const existing = [...bedItems, { id: 'sh-prev-bed', name: 'dunphy upholstered platform bed', category: 'Furniture', candidates: [{ id: 'c1', sku: 'X-9' }], purchaseIds: [] }, { id: 'sh-prev-sku', name: 'Different name', category: 'Other', candidates: [{ id: 'c2', sku: 'w1' }], purchaseIds: [] }];
+  const dupPlan = RL.planShoppingFromInbox({ record: bedRec, drafts: bedDrafts, shoppingItems: existing, user: 'JM' });
+  assert.equal(dupPlan.newItems.length, 0);
+  assert.equal(dupPlan.drafts[0].shoppingItemId, 'sh-prev-sku', 'exact SKU match wins');
+  const dupName = RL.planShoppingFromInbox({ record: bedRec, drafts: bedDrafts, shoppingItems: [existing[1]], user: 'JM' });
+  assert.equal(dupName.newItems.length, 0); assert.equal(dupName.drafts[0].shoppingItemId, 'sh-prev-bed', 'same normalized name links to the existing item');
+  // the new item's price reproduces what was paid (tax, shipping, fees, discount carried)
+  const payRec = { ...bedRec, extraction: { ...bedRec.extraction, lines: [{ lineNo: 1, description: '  Plates  ', sourceVendor: null, sku: null, qty: 12, unitPrice: 4, lineTotal: 48, suggestedTrade: 'Kitchen & Dining', suggestedCategory: 'Dinnerware', decision: 'accept', addToShopping: true, matchItemId: null, confidence: 0.9 }], tax: 3, shipping: 5, fees: 2, discounts: 1, total: 57 } };
+  const payDrafts = RL.buildPurchasesFromInbox({ record: payRec, order: { purchasedBy: 'Josh' }, shoppingItems: [], settings: { reimbursableVendors: [] }, propertyInServiceDate: '' });
+  const payItem = RL.planShoppingFromInbox({ record: payRec, drafts: payDrafts, shoppingItems: [], user: 'KM' }).newItems[0];
+  assert.equal(payItem.name, 'Plates'); assert.equal(payItem.candidates[0].source, 'KM');
+  assert.ok(Math.abs(SH.landedTotal(payItem.candidates[0], { defaultTaxRate: 0.065 }) - payDrafts[0].totalPaid) <= 0.01, 'landed total = what was paid: ' + SH.landedTotal(payItem.candidates[0], { defaultTaxRate: 0.065 }) + ' vs ' + payDrafts[0].totalPaid);
+  assert.equal(payItem.candidates[0].openStock, null);
+  // the server accepts a created item
+  assert.equal(SH.sanitizeShoppingField('item:' + payItem.id, payItem, { updatedAt: 'x', updatedBy: 'JM' }).ok, true);
+  // merging two lines keeps an opt-out from EITHER line
+  const mg = RL.mergeLines([{ description: 'a', qty: 1, lineTotal: 1, addToShopping: true }, { description: 'b', qty: 1, lineTotal: 1, addToShopping: false }], 1)[0];
+  assert.equal(mg.addToShopping, false);
+  assert.equal(RL.mergeLines([{ description: 'a', qty: 1, lineTotal: 1, addToShopping: true }, { description: 'b', qty: 1, lineTotal: 1, addToShopping: true }], 1)[0].addToShopping, true);
+  ok('Opus review: index pairing survives a skipped first line; a stale link is treated as unmatched; a same-SKU or same-name item is linked, not duplicated; the new item\'s price reproduces what was paid and the server accepts it; merging keeps an opt-out');
 }
 
 console.log(`\nAll ${passed} checks passed.`);

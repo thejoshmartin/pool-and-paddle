@@ -8,7 +8,7 @@ import {
   PURCHASE_STATUSES, NOT_IN_ALLOWANCE, ALLOWANCE_CATEGORIES, EXHIBIT_B_TOTAL,
   ASSET_CLASSES, suggestAssetClass, buildCostSegCsv, fmtUSD, emptyPurchase,
   DELIVERED_TO_OPTIONS, REIMBURSEMENT_STATUSES, DOC_TYPES, CONTRACTOR_SCOPE, assetClassLabel,
-  defaultAllowanceFor, reimbursementDefaultsFor, normalizePurchase, netCost, paymentBadge,
+  defaultAllowanceFor, reimbursementDefaultsFor, payerChangePatch, normalizePurchase, netCost, paymentBadge,
   summarizePurchases, fundingSource, reimbursementsDue, allowanceCredits, allowancePool,
   groupByOrder, newOrderGroupId, returnsClosingSoon, localISODate, daysBetween, statusChangePatch, formDefaultsTouched,
   purchaseComputedTotal, totalSuggestionNeeded,
@@ -18,11 +18,12 @@ import { HOUSE_INFO_CATEGORIES, emptyHouseInfoItem, matchesHouseInfoSearch, grou
 import {
   newInboxId, reconciles, matchLines, findDuplicates, addressMatches, mergeLines, canAcceptAll, fileProblems,
   buildPurchasesFromInbox, suggestPaymentMethod, isLowConfidence, applyMatches, acceptUndecided, decideFilingOutcome,
+  categoryChangePatch, planShoppingFromInbox,
 } from "./lib/receipt-logic.js";
 import SHOPPING_SEED from "./shopping-seed.json";
 import {
   normalizeShoppingItem, mergeShopping, partitionShoppingFields, shoppingItemField, SHOPPING_SETTINGS_FIELD,
-  SHOPPING_CATEGORIES, ITEM_PRIORITIES, ITEM_STATUSES, ZONES, VENDOR_TYPES, AGENT_ACTIONS, TIERS, QTY_BASES,
+  SHOPPING_CATEGORIES, sortedShoppingCategories, sortItemsAlpha, ITEM_PRIORITIES, ITEM_STATUSES, ZONES, VENDOR_TYPES, AGENT_ACTIONS, TIERS, QTY_BASES,
   NON_GLASS_CATEGORIES, emptyShoppingItem, emptyCandidate, computeQty, mealsCovered, landedTotal, perUnit,
   returnExposure, bestValue, candidateWarnings, forecastSpend, feesFor, taxFor, filterShoppingItems,
   groupShoppingItems, sanitizeShoppingSettings, buildPurchaseFromShopping,
@@ -3569,7 +3570,7 @@ function PurchaseForm({ initial, onSave, onCancel, propertyId, isMobile, draftKe
         {field("Order / Invoice #", <input style={ppInput} value={d.invoiceNo} onChange={e => set({ invoiceNo: e.target.value })} />)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-        {field("Paid by", <select style={ppInput} value={d.purchasedBy} onChange={e => { const v = e.target.value; const patch = { purchasedBy: v, ownerPurchased: v !== CONTRACTOR_PURCHASER }; if (!allowanceTouched.current) patch.allowanceCategory = allowanceFor(d.trade, v); if (!reimbTouched.current || v === CONTRACTOR_PURCHASER) Object.assign(patch, reimbursementDefaultsFor(d.vendor, v, reimbursableVendors)); set(patch); }}><option value="">—</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
+        {field("Paid by", <select style={ppInput} value={d.purchasedBy} onChange={e => { const v = e.target.value; const patch = { purchasedBy: v, ownerPurchased: v !== CONTRACTOR_PURCHASER }; if (!allowanceTouched.current) patch.allowanceCategory = allowanceFor(d.trade, v); Object.assign(patch, !reimbTouched.current ? reimbursementDefaultsFor(d.vendor, v, reimbursableVendors) : payerChangePatch(d, v, reimbursableVendors)); set(patch); }}><option value="">—</option>{PURCHASED_BY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
         {field("Payment method", <select style={ppInput} value={d.paymentMethod} onChange={e => set({ paymentMethod: e.target.value })}><option value="">—</option>{PAYMENT_METHODS.map(p => <option key={p} value={p}>{p}</option>)}</select>)}
         {field("Whose money?", (
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.charcoal, padding: "9px 0" }}>
@@ -3702,7 +3703,7 @@ function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAdd
   const [order, setOrder] = useState(() => ({ purchasedBy: "", paymentMethod: null }));   // paymentMethod null = not touched → the extraction's suggestion
   const shownOrder = { ...order, paymentMethod: order.paymentMethod ?? (ex ? suggestPaymentMethod(ex.paymentMethod) : "") };   // what the form shows is exactly what gets filed
   const [filing, setFiling] = useState(false);
-  const activeItems = useMemo(() => (shoppingItems || []).filter(i => i && !i.dismissed), [shoppingItems]);
+  const activeItems = useMemo(() => sortItemsAlpha((shoppingItems || []).filter(i => i && !i.dismissed)), [shoppingItems]);
 
   // First time the reviewer sees an extraction: link lines to shopping items (exact SKU, then name similarity).
   useEffect(() => {
@@ -3818,8 +3819,10 @@ function ReceiptInboxCard({ record, shoppingItems, purchases, inbox, propertyAdd
               {fld("Qty", <input type="number" style={ppInput} value={l.qty ?? ""} onChange={e => setLine(i, { qty: numField(e.target.value) })} />, 70)}
               {fld("Unit price ($)", <input type="number" step="0.01" style={ppInput} value={l.unitPrice ?? ""} onChange={e => setLine(i, { unitPrice: numField(e.target.value) })} />, 100)}
               {fld("Line total ($)", <input type="number" step="0.01" style={{ ...ppInput, borderColor: l.lineTotal == null ? C.warnText : C.border }} value={l.lineTotal ?? ""} placeholder="required" onChange={e => setLine(i, { lineTotal: numField(e.target.value) })} />, 110)}
-              {fld("Trade", <select style={ppInput} value={l.suggestedTrade} onChange={e => setLine(i, { suggestedTrade: e.target.value })}>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>, 170)}
+              {fld("Trade (Purchases)", <select style={ppInput} value={l.suggestedTrade} onChange={e => setLine(i, { suggestedTrade: e.target.value })}>{PURCHASE_TRADES.map(t => <option key={t} value={t}>{t}</option>)}</select>, 170)}
+              {fld("Category (Shopping)", <select style={ppInput} value={l.suggestedCategory || "Other"} onChange={e => setLine(i, categoryChangePatch(l, e.target.value))}>{sortedShoppingCategories().map(c => <option key={c} value={c}>{c}</option>)}</select>, 170)}
               {fld("Shopping item", <select style={ppInput} value={l.matchItemId || ""} onChange={e => setLine(i, { matchItemId: e.target.value || null })}><option value="">— none —</option>{activeItems.map(it => <option key={it.id} value={it.id}>{it.name}</option>)}</select>, 170)}
+              {!(l.matchItemId && activeItems.some(it => it.id === l.matchItemId)) && <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 16, alignSelf: "flex-end", paddingBottom: 8 }}><input type="checkbox" checked={l.addToShopping !== false} onChange={e => setLine(i, { addToShopping: e.target.checked })} style={{ accentColor: C.mint, width: 18, height: 18 }} />Also add to Shopping list</label>}
             </div>
           </div>
         );
@@ -4532,7 +4535,7 @@ function ShoppingItemForm({ onSave, onCancel, isMobile }) {
     <div style={{ background: C.offWhite, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
         {field("Item", <input autoFocus style={ppInput} value={d.name} placeholder="e.g. Cheese board" onChange={e => set({ name: e.target.value })} />)}
-        {field("Category", <select style={ppInput} value={d.category} onChange={e => set({ category: e.target.value })}>{SHOPPING_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select>)}
+        {field("Category", <select style={ppInput} value={d.category} onChange={e => set({ category: e.target.value })}>{sortedShoppingCategories().map(c => <option key={c} value={c}>{c}</option>)}</select>)}
         {field("Room", <input style={ppInput} value={d.room} onChange={e => set({ room: e.target.value })} />)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
@@ -4715,7 +4718,7 @@ function ShoppingView({ shopping, loaded, loadError, canEdit, purchases, onSaveI
         <input value={filters.search} onChange={setFilter("search")} placeholder="Search items, notes, vendors…" style={{ ...ppInput, maxWidth: 280 }} />
         <select value={groupBy} onChange={e => setGroupBy(e.target.value)} style={sel} aria-label="Group by"><option value="category">Group: category</option><option value="status">Group: status</option></select>
         <select value={filters.status} onChange={setFilter("status")} style={sel} aria-label="Status"><option value="all">All statuses</option>{ITEM_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>
-        <select value={filters.category} onChange={setFilter("category")} style={sel} aria-label="Category"><option value="all">All categories</option>{SHOPPING_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select>
+        <select value={filters.category} onChange={setFilter("category")} style={sel} aria-label="Category"><option value="all">All categories</option>{sortedShoppingCategories().map(c => <option key={c} value={c}>{c}</option>)}</select>
         <select value={filters.priority} onChange={setFilter("priority")} style={sel} aria-label="Priority"><option value="all">All priorities</option>{ITEM_PRIORITIES.map(p => <option key={p} value={p}>{priorityLabel[p]}</option>)}</select>
         <select value={filters.agentFlag} onChange={setFilter("agentFlag")} style={sel} aria-label="Agent flag"><option value="all">Any agent flag</option><option value="none">No flag</option>{AGENT_ACTIONS.map(a => <option key={a} value={a}>{a}</option>)}</select>
         <select value={filters.claimedBy} onChange={setFilter("claimedBy")} style={sel} aria-label="Claimed by"><option value="all">Anyone buying</option><option value="unclaimed">Unclaimed</option><option value="JM">JM buying</option><option value="KM">KM buying</option></select>
@@ -5100,7 +5103,7 @@ export default function App() {
   const shoppingServerLoaded = useRef(false);
   const shoppingFirstRun = useRef(true);
   const shoppingFieldTimers = useRef({});    // field -> debounce timer
-  const shoppingFieldPending = useRef({});   // field -> latest unsent value
+  const shoppingFieldPending = useRef({});   // field -> { latest unsent value, the property it was edited in }
   const [inbox, setInbox] = useState([]);                 // Receipt Inbox records (no localStorage cache: they carry addresses)
   const [inboxLoaded, setInboxLoaded] = useState(false);
   const [inboxLoadError, setInboxLoadError] = useState(false);
@@ -5570,9 +5573,9 @@ export default function App() {
   // (a closure would keep the first render's null property and PUT without ?property=).
   const activePropertyRef = useRef(activeProperty);
   activePropertyRef.current = activeProperty;
-  const putShoppingField = (field, value, useKeepalive = false) => {
+  const putShoppingField = (field, value, useKeepalive = false, prop = activePropertyRef.current) => {
     if (!shoppingServerLoaded.current) return;
-    fetch(apiUrl('/api/shopping', activePropertyRef.current), {
+    fetch(apiUrl('/api/shopping', prop), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ field, value }),
@@ -5585,12 +5588,13 @@ export default function App() {
     delete shoppingFieldPending.current[field];
   };
   const putShoppingFieldDebounced = (field, value) => {
-    shoppingFieldPending.current[field] = value;
+    const prop = activePropertyRef.current;   // the property the edit was made in — not whichever is active when the timer fires
+    shoppingFieldPending.current[field] = { value, prop };
     if (shoppingFieldTimers.current[field]) clearTimeout(shoppingFieldTimers.current[field]);
     shoppingFieldTimers.current[field] = setTimeout(() => {
       delete shoppingFieldTimers.current[field];
       delete shoppingFieldPending.current[field];
-      putShoppingField(field, value);
+      putShoppingField(field, value, false, prop);
     }, 400);
   };
   const flushShoppingFields = () => {
@@ -5598,7 +5602,7 @@ export default function App() {
     const pending = shoppingFieldPending.current;
     shoppingFieldTimers.current = {};
     shoppingFieldPending.current = {};
-    for (const [field, value] of Object.entries(pending)) putShoppingField(field, value, true);
+    for (const [field, { value, prop }] of Object.entries(pending)) putShoppingField(field, value, true, prop);
   };
   const saveShoppingItem = (item) => {
     setShopping(prev => ({
@@ -5863,8 +5867,16 @@ export default function App() {
   // record filed, and moves linked shopping items to ordered. The ref guards against a double click.
   const fileInboxRecord = async (record, order) => {
     if (inboxFiling.current.has(record.id)) return false;
-    const drafts = buildPurchasesFromInbox({ record, order, shoppingItems: shopping.items, settings: shopping.settings, propertyInServiceDate: activeInServiceDate });
-    if (drafts.length === 0) return false;
+    const built = buildPurchasesFromInbox({ record, order, shoppingItems: shopping.items, settings: shopping.settings, propertyInServiceDate: activeInServiceDate });
+    if (built.length === 0) return false;
+    // Every accepted line that matched no Shopping item (and wasn't opted out) also becomes an `ordered` Shopping item, saved
+    // only AFTER the filing succeeded so a rollback never leaves stray items behind.
+    // Shopping saves are silently skipped until that list has loaded for this property, so when it hasn't, file the purchases
+    // alone (no new items, no matched-item updates) and say so rather than losing the Shopping side without a trace.
+    const shopOk = shoppingReady && shoppingServerLoaded.current;
+    const { drafts, newItems } = shopOk
+      ? planShoppingFromInbox({ record, drafts: built, shoppingItems: shopping.items, user: (getCurrentUser() || {}).code || '' })
+      : { drafts: built.map(d => ({ ...d, shoppingItemId: null })), newItems: [] };
     inboxFiling.current.add(record.id);
     // All-or-nothing: wait for every purchase save, and only then mark the record filed. Any failure rolls the lot back
     // (quietly — the error message below must not be cleared by a rollback "success") so a retry can't double-file.
@@ -5886,9 +5898,10 @@ export default function App() {
         : 'Could not mark the receipt as filed. Nothing was filed — please try again.');
       return false;
     }
+    newItems.forEach(it => saveShoppingItem(it));
     const byItem = {};
     drafts.forEach(d => { if (d.shoppingItemId) (byItem[d.shoppingItemId] = byItem[d.shoppingItemId] || []).push(d.id); });
-    for (const [itemId, pids] of Object.entries(byItem)) {
+    for (const [itemId, pids] of shopOk ? Object.entries(byItem) : []) {
       const it = shopping.items.find(i => i.id === itemId);
       if (!it) continue;
       const live = (it.purchaseIds || []).filter(pid => purchases.some(p => p.id === pid));
@@ -5896,7 +5909,7 @@ export default function App() {
     }
     // Tell the user, with a link — never auto-navigate: that would close an open edit form (losing unsaved edits) and reset
     // the search/filters every time several receipts are filed in a row.
-    setInboxNotice({ text: `Filed ${drafts.length} purchase${drafts.length === 1 ? '' : 's'} from ${(record.extraction && record.extraction.vendor) || 'the receipt'}.`, purchaseId: drafts[0].id });
+    setInboxNotice({ text: `Filed ${drafts.length} purchase${drafts.length === 1 ? '' : 's'} from ${(record.extraction && record.extraction.vendor) || 'the receipt'}.${shopOk ? '' : ' The Shopping list was not loaded, so Shopping was not updated — add these items there by hand.'}`, purchaseId: drafts[0].id });
     if (inboxNoticeTimer.current) clearTimeout(inboxNoticeTimer.current);
     inboxNoticeTimer.current = setTimeout(() => setInboxNotice(null), 20000);
     return true;
